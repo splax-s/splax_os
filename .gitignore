@@ -1,0 +1,38 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo
+Cargo.lock
+!Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug files
+*.pdb
+*.dSYM/
+
+# QEMU
+*.img
+*.iso
+*.qcow2
+
+# Logs
+*.log
+
+# Documentation build
+/docs/book/
+
+# Coverage
+/coverage/
+*.profraw
+*.profdata

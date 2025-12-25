@@ -1,0 +1,14 @@
+[package]
+name = "splax_native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "S-NATIVE: Native code sandbox for Splax OS"
+
+[dependencies]
+spin = { workspace = true }
+log = { workspace = true }
+
+[features]
+default = []
+debug = []

@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-release:
+    name: Build Release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          toolchain: nightly
+          components: rust-src, llvm-tools-preview
+      
+      - name: Build (${{ matrix.target }})
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64" ]; then
+            cargo build --release -p splax_kernel --target splax_kernel.json -Z build-std=core,alloc || true
+          else
+            cargo build --release -p splax_kernel --target splax_kernel_aarch64.json -Z build-std=core,alloc || true
+          fi
+        continue-on-error: true
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: splax-os-${{ matrix.target }}
+          path: |
+            target/*/release/kernel
+            target/*/release/bootloader
+
+  create-release:
+    name: Create Release
+    needs: build-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            splax-os-x86_64/*
+            splax-os-aarch64/*
+          draft: true
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

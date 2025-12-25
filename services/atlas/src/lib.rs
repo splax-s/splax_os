@@ -1,0 +1,447 @@
+//! # S-ATLAS: Service Registry & Discovery
+//!
+//! S-ATLAS is the service discovery backbone of Splax OS. It allows services
+//! to register themselves and discover other services by name.
+//!
+//! ## Core Responsibilities
+//!
+//! 1. **Service Registration**: Services announce their presence and capabilities
+//! 2. **Service Discovery**: Services find each other by name or capability
+//! 3. **Health Monitoring**: Heartbeat-based liveness checking
+//! 4. **Capability Mediation**: Facilitates capability exchange between services
+//!
+//! ## Security Model
+//!
+//! All operations require appropriate capability tokens:
+//! - Registration requires a "service:register" capability
+//! - Discovery requires a "service:discover" capability
+//! - Direct channel creation requires both parties' consent via capabilities
+//!
+//! ## Example
+//!
+//! ```ignore
+//! // Register a service
+//! let service_id = atlas.register(
+//!     "auth-service",
+//!     ServiceInfo { version: "1.0.0", capabilities: vec!["auth:verify"] },
+//!     registration_token,
+//! )?;
+//!
+//! // Discover a service
+//! let auth = atlas.discover("auth-service", discovery_token)?;
+//! ```
+
+#![no_std]
+
+extern crate alloc;
+
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use spin::Mutex;
+
+/// Service identifier - unique within the system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ServiceId(pub u64);
+
+impl ServiceId {
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+}
+
+/// Capability token placeholder (would import from kernel in real impl).
+#[derive(Debug, Clone, Copy)]
+pub struct CapabilityToken {
+    value: [u64; 4],
+}
+
+/// Process ID placeholder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessId(pub u64);
+
+/// Information about a registered service.
+#[derive(Debug, Clone)]
+pub struct ServiceInfo {
+    /// Human-readable service name
+    pub name: String,
+    /// Service version (semver)
+    pub version: String,
+    /// Capabilities this service provides
+    pub provided_capabilities: Vec<String>,
+    /// Required capabilities to use this service
+    pub required_capabilities: Vec<String>,
+    /// Service description
+    pub description: String,
+}
+
+/// Internal service registry entry.
+#[derive(Debug, Clone)]
+struct ServiceEntry {
+    /// Unique service ID
+    id: ServiceId,
+    /// Service information
+    info: ServiceInfo,
+    /// Process hosting this service
+    process: ProcessId,
+    /// Registration timestamp (cycles)
+    registered_at: u64,
+    /// Last heartbeat timestamp
+    last_heartbeat: u64,
+    /// Service health status
+    status: ServiceStatus,
+}
+
+/// Service health status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceStatus {
+    /// Service is healthy and responding
+    Healthy,
+    /// Service missed recent heartbeats
+    Degraded,
+    /// Service is not responding
+    Unhealthy,
+    /// Service is shutting down
+    Draining,
+}
+
+/// Configuration for S-ATLAS.
+#[derive(Debug, Clone)]
+pub struct AtlasConfig {
+    /// Maximum number of registered services
+    pub max_services: usize,
+    /// Heartbeat interval in cycles
+    pub heartbeat_interval: u64,
+    /// Number of missed heartbeats before marking unhealthy
+    pub unhealthy_threshold: u32,
+    /// Enable service health monitoring
+    pub health_monitoring: bool,
+}
+
+impl Default for AtlasConfig {
+    fn default() -> Self {
+        Self {
+            max_services: 4096,
+            heartbeat_interval: 1_000_000_000, // ~1 second at 1GHz
+            unhealthy_threshold: 3,
+            health_monitoring: true,
+        }
+    }
+}
+
+/// The S-ATLAS service registry.
+pub struct Atlas {
+    config: AtlasConfig,
+    /// Services indexed by ID
+    services: Mutex<BTreeMap<ServiceId, ServiceEntry>>,
+    /// Services indexed by name (for discovery)
+    by_name: Mutex<BTreeMap<String, ServiceId>>,
+    /// Next service ID to assign
+    next_id: Mutex<u64>,
+}
+
+impl Atlas {
+    /// Creates a new S-ATLAS instance.
+    pub fn new(config: AtlasConfig) -> Self {
+        Self {
+            config,
+            services: Mutex::new(BTreeMap::new()),
+            by_name: Mutex::new(BTreeMap::new()),
+            next_id: Mutex::new(1),
+        }
+    }
+
+    /// Registers a new service.
+    ///
+    /// # Arguments
+    ///
+    /// * `info` - Service information
+    /// * `process` - Process hosting the service
+    /// * `cap_token` - Capability token authorizing registration
+    ///
+    /// # Returns
+    ///
+    /// The new service ID.
+    ///
+    /// # Errors
+    ///
+    /// - `AtlasError::ServiceExists` if a service with this name already exists
+    /// - `AtlasError::RegistryFull` if max services reached
+    /// - `AtlasError::InvalidCapability` if token doesn't authorize registration
+    pub fn register(
+        &self,
+        info: ServiceInfo,
+        process: ProcessId,
+        _cap_token: &CapabilityToken,
+    ) -> Result<ServiceId, AtlasError> {
+        // Check if service name already exists
+        if self.by_name.lock().contains_key(&info.name) {
+            return Err(AtlasError::ServiceExists);
+        }
+
+        // Check capacity
+        let mut services = self.services.lock();
+        if services.len() >= self.config.max_services {
+            return Err(AtlasError::RegistryFull);
+        }
+
+        // Generate new ID
+        let mut next_id = self.next_id.lock();
+        let id = ServiceId::new(*next_id);
+        *next_id += 1;
+
+        // Get current timestamp (placeholder)
+        let now = 0u64; // Would use arch::read_cycle_counter()
+
+        let entry = ServiceEntry {
+            id,
+            info: info.clone(),
+            process,
+            registered_at: now,
+            last_heartbeat: now,
+            status: ServiceStatus::Healthy,
+        };
+
+        // Insert into both indexes
+        services.insert(id, entry);
+        self.by_name.lock().insert(info.name, id);
+
+        Ok(id)
+    }
+
+    /// Discovers a service by name.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Service name to find
+    /// * `cap_token` - Capability token authorizing discovery
+    ///
+    /// # Returns
+    ///
+    /// Service information if found.
+    pub fn discover(
+        &self,
+        name: &str,
+        _cap_token: &CapabilityToken,
+    ) -> Result<DiscoveryResult, AtlasError> {
+        let id = self
+            .by_name
+            .lock()
+            .get(name)
+            .copied()
+            .ok_or(AtlasError::ServiceNotFound)?;
+
+        let services = self.services.lock();
+        let entry = services.get(&id).ok_or(AtlasError::ServiceNotFound)?;
+
+        Ok(DiscoveryResult {
+            id: entry.id,
+            info: entry.info.clone(),
+            status: entry.status,
+        })
+    }
+
+    /// Discovers services by capability.
+    ///
+    /// Finds all services that provide a specific capability.
+    ///
+    /// # Arguments
+    ///
+    /// * `capability` - Capability to search for
+    /// * `cap_token` - Token authorizing discovery
+    ///
+    /// # Returns
+    ///
+    /// List of services providing the capability.
+    pub fn discover_by_capability(
+        &self,
+        capability: &str,
+        _cap_token: &CapabilityToken,
+    ) -> Result<Vec<DiscoveryResult>, AtlasError> {
+        let services = self.services.lock();
+        let results: Vec<_> = services
+            .values()
+            .filter(|e| {
+                e.status == ServiceStatus::Healthy
+                    && e.info.provided_capabilities.iter().any(|c| c == capability)
+            })
+            .map(|e| DiscoveryResult {
+                id: e.id,
+                info: e.info.clone(),
+                status: e.status,
+            })
+            .collect();
+
+        Ok(results)
+    }
+
+    /// Updates a service's heartbeat.
+    ///
+    /// Services should call this periodically to indicate they're alive.
+    pub fn heartbeat(
+        &self,
+        service_id: ServiceId,
+        _cap_token: &CapabilityToken,
+    ) -> Result<(), AtlasError> {
+        let mut services = self.services.lock();
+        let entry = services
+            .get_mut(&service_id)
+            .ok_or(AtlasError::ServiceNotFound)?;
+
+        let now = 0u64; // Would use arch::read_cycle_counter()
+        entry.last_heartbeat = now;
+        entry.status = ServiceStatus::Healthy;
+
+        Ok(())
+    }
+
+    /// Unregisters a service.
+    ///
+    /// # Arguments
+    ///
+    /// * `service_id` - Service to unregister
+    /// * `cap_token` - Capability authorizing unregistration
+    pub fn unregister(
+        &self,
+        service_id: ServiceId,
+        _cap_token: &CapabilityToken,
+    ) -> Result<(), AtlasError> {
+        let mut services = self.services.lock();
+        let entry = services
+            .remove(&service_id)
+            .ok_or(AtlasError::ServiceNotFound)?;
+
+        self.by_name.lock().remove(&entry.info.name);
+
+        Ok(())
+    }
+
+    /// Lists all registered services.
+    pub fn list_services(
+        &self,
+        _cap_token: &CapabilityToken,
+    ) -> Result<Vec<DiscoveryResult>, AtlasError> {
+        let services = self.services.lock();
+        let results: Vec<_> = services
+            .values()
+            .map(|e| DiscoveryResult {
+                id: e.id,
+                info: e.info.clone(),
+                status: e.status,
+            })
+            .collect();
+
+        Ok(results)
+    }
+
+    /// Gets the current service count.
+    pub fn service_count(&self) -> usize {
+        self.services.lock().len()
+    }
+
+    /// Checks health of all services and updates statuses.
+    ///
+    /// This should be called periodically by a health monitoring task.
+    pub fn check_health(&self) {
+        if !self.config.health_monitoring {
+            return;
+        }
+
+        let now = 0u64; // Would use arch::read_cycle_counter()
+        let threshold = self.config.heartbeat_interval * self.config.unhealthy_threshold as u64;
+
+        let mut services = self.services.lock();
+        for entry in services.values_mut() {
+            let elapsed = now.saturating_sub(entry.last_heartbeat);
+            entry.status = if elapsed > threshold {
+                ServiceStatus::Unhealthy
+            } else if elapsed > self.config.heartbeat_interval {
+                ServiceStatus::Degraded
+            } else {
+                ServiceStatus::Healthy
+            };
+        }
+    }
+}
+
+/// Result of a service discovery.
+#[derive(Debug, Clone)]
+pub struct DiscoveryResult {
+    /// Service ID
+    pub id: ServiceId,
+    /// Service information
+    pub info: ServiceInfo,
+    /// Current health status
+    pub status: ServiceStatus,
+}
+
+/// S-ATLAS errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtlasError {
+    /// Service with this name already exists
+    ServiceExists,
+    /// Service not found
+    ServiceNotFound,
+    /// Service registry is full
+    RegistryFull,
+    /// Invalid capability token
+    InvalidCapability,
+    /// Operation not permitted
+    PermissionDenied,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_token() -> CapabilityToken {
+        CapabilityToken { value: [1, 2, 3, 4] }
+    }
+
+    #[test]
+    fn test_register_and_discover() {
+        let atlas = Atlas::new(AtlasConfig::default());
+        let token = dummy_token();
+
+        let info = ServiceInfo {
+            name: String::from("test-service"),
+            version: String::from("1.0.0"),
+            provided_capabilities: alloc::vec![String::from("test:capability")],
+            required_capabilities: alloc::vec![],
+            description: String::from("A test service"),
+        };
+
+        let id = atlas
+            .register(info, ProcessId(1), &token)
+            .expect("should register");
+
+        let result = atlas
+            .discover("test-service", &token)
+            .expect("should discover");
+
+        assert_eq!(result.id, id);
+        assert_eq!(result.info.name, "test-service");
+    }
+
+    #[test]
+    fn test_duplicate_registration_fails() {
+        let atlas = Atlas::new(AtlasConfig::default());
+        let token = dummy_token();
+
+        let info = ServiceInfo {
+            name: String::from("duplicate"),
+            version: String::from("1.0.0"),
+            provided_capabilities: alloc::vec![],
+            required_capabilities: alloc::vec![],
+            description: String::from(""),
+        };
+
+        atlas
+            .register(info.clone(), ProcessId(1), &token)
+            .expect("first should succeed");
+
+        let result = atlas.register(info, ProcessId(2), &token);
+        assert_eq!(result, Err(AtlasError::ServiceExists));
+    }
+}

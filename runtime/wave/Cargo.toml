@@ -1,0 +1,18 @@
+[package]
+name = "splax_wave"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "S-WAVE: WebAssembly runtime for Splax OS"
+
+[dependencies]
+spin = { workspace = true }
+log = { workspace = true }
+
+[features]
+default = []
+debug = []
+# Enable WASI compatibility layer
+wasi = []
+# Enable SIMD support
+simd = []

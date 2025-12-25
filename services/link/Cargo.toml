@@ -1,0 +1,14 @@
+[package]
+name = "splax_link"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "S-LINK: Internal capability-bound messaging for Splax OS"
+
+[dependencies]
+spin = { workspace = true }
+log = { workspace = true }
+
+[features]
+default = []
+debug = []

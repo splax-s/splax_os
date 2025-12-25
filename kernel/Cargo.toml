@@ -1,0 +1,33 @@
+[package]
+name = "splax_kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "S-CORE: The Splax OS microkernel - scheduling, memory, IPC, and capabilities"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "splax_kernel"
+path = "src/main.rs"
+
+[[bin]]
+name = "splax_kernel_aarch64"
+path = "src/main_aarch64.rs"
+
+[dependencies]
+spin = { workspace = true }
+bitflags = { workspace = true }
+log = { workspace = true }
+
+[features]
+default = []
+# Enable kernel debugging features
+debug = []
+# Enable performance profiling
+profiling = []
+# x86_64 architecture support
+arch_x86_64 = []
+# aarch64 architecture support  
+arch_aarch64 = []

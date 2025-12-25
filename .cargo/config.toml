@@ -1,0 +1,41 @@
+# Splax OS Build Configuration
+# This file configures Cargo for building the Splax OS kernel and components
+
+# Note: build-std is now specified via command line for kernel builds
+# to avoid affecting other crates in the workspace
+
+[target.x86_64-unknown-none]
+linker = "rust-lld"
+rustflags = [
+    "-C", "link-arg=-Tkernel/linker.ld",
+    "-C", "link-arg=--no-pie",
+    "-C", "relocation-model=static",
+]
+
+[target.aarch64-unknown-none]
+linker = "rust-lld"
+rustflags = [
+    "-C", "link-arg=-Tkernel/linker-aarch64.ld",
+    "-C", "link-arg=--no-pie",
+    "-C", "relocation-model=static",
+]
+
+[target.x86_64-splax-none]
+linker = "rust-lld"
+runner = "qemu-system-x86_64 -drive format=raw,file="
+
+[target.aarch64-splax-none]
+linker = "rust-lld"
+runner = "qemu-system-aarch64 -M virt -cpu cortex-a72 -drive format=raw,file="
+
+[alias]
+# Build the kernel for x86_64
+kbuild = "build -p splax_kernel --target x86_64-unknown-none -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem --release"
+# Build the kernel for aarch64
+kbuild-arm = "build -p splax_kernel --bin splax_kernel_aarch64 --target aarch64-unknown-none -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem --release"
+# Run tests
+ktest = "test --lib"
+
+[env]
+# Ensure we're using the nightly toolchain features
+RUSTFLAGS = ""

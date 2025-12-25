@@ -1,0 +1,18 @@
+[package]
+name = "splax_storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "S-STORAGE: Object storage service for Splax OS"
+
+[dependencies]
+spin = { workspace = true }
+log = { workspace = true }
+
+[features]
+default = []
+debug = []
+# Enable compression support
+compression = []
+# Enable encryption support
+encryption = []

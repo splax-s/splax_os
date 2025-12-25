@@ -1,0 +1,18 @@
+[package]
+name = "splax_code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "S-CODE: Editor interface for Splax OS"
+
+[dependencies]
+spin = { workspace = true }
+log = { workspace = true }
+
+[[bin]]
+name = "s-code"
+path = "src/main.rs"
+
+[features]
+default = []
+debug = []

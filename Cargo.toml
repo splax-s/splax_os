@@ -1,0 +1,37 @@
+[workspace]
+members = [
+    "bootloader",
+    "kernel",
+    "services/atlas",
+    "services/link",
+    "services/gate",
+    "services/storage",
+    "runtime/wave",
+    "runtime/native",
+    "tools/term",
+    "tools/code",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+authors = ["Splax OS Team"]
+repository = "https://github.com/splax/splax_os"
+description = "A production-grade, capability-secure, distributed-first operating system"
+
+[workspace.dependencies]
+# Shared dependencies across workspace
+spin = "0.9"
+bitflags = "2.4"
+log = "0.4"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = "z"

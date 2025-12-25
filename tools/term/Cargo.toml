@@ -1,0 +1,18 @@
+[package]
+name = "splax_term"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "S-TERM: Command-line interface for Splax OS"
+
+[dependencies]
+spin = { workspace = true }
+log = { workspace = true }
+
+[[bin]]
+name = "s-term"
+path = "src/main.rs"
+
+[features]
+default = []
+debug = []

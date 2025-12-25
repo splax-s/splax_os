@@ -1,0 +1,15 @@
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+    grub-pc-bin \
+    grub-common \
+    xorriso \
+    mtools \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY docker/build-iso.sh /build-iso.sh
+RUN chmod +x /build-iso.sh
+
+CMD ["/build-iso.sh"]
