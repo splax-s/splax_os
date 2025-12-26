@@ -37,8 +37,10 @@ extern crate alloc;
 
 pub mod arch;
 pub mod cap;
+pub mod fs;
 pub mod ipc;
 pub mod mm;
+pub mod net;
 pub mod process;
 pub mod sched;
 pub mod smp;
@@ -183,19 +185,49 @@ pub extern "C" fn kernel_main(_boot_info: *const u8) -> ! {
     let config = KernelConfig::default();
     let mut kernel = Kernel::new(config);
 
+    // Print kernel init message before network
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::fmt::Write;
+        let mut serial = arch::x86_64::serial::SERIAL.lock();
+        let _ = writeln!(serial, "[kernel] Initializing subsystems...");
+        drop(serial);
+    }
+    
+    // Initialize filesystem
+    fs::init();
+    
+    // Initialize network subsystem
+    net::init();
+    
+    // Run network diagnostics
+    net::run_diagnostics();
+
+    // Print completion messages and show VGA status
     #[cfg(target_arch = "x86_64")]
     {
         use arch::x86_64::vga::{self, Color};
         use core::fmt::Write;
-        let mut serial = arch::x86_64::serial::SERIAL.lock();
-        let _ = writeln!(serial, "[kernel] Kernel initialized, entering main loop");
-        drop(serial);
         
+        // Serial output
+        if let Some(mut serial) = arch::x86_64::serial::SERIAL.try_lock() {
+            let _ = writeln!(serial, "[kernel] All subsystems initialized");
+            let _ = writeln!(serial, "[kernel] Entering main loop...");
+            let _ = writeln!(serial);
+            let _ = writeln!(serial, "=== Splax OS Serial Console ===");
+            let _ = writeln!(serial, "Type 'help' for available commands.");
+            let _ = writeln!(serial);
+            let _ = write!(serial, "splax> ");
+        }
+        
+        // VGA output
         vga::set_color(Color::LightGreen, Color::Black);
         vga_println!("[OK] Kernel initialized");
         vga_println!("[OK] S-CAP capability system ready");
         vga_println!("[OK] S-LINK IPC system ready");
         vga_println!("[OK] S-ATLAS service registry ready");
+        vga_println!("[OK] Filesystem: ramfs (4 MB)");
+        vga_println!("[OK] Network: virtio-net (10.0.2.15)");
         vga::set_color(Color::LightGray, Color::Black);
         vga_println!();
         vga::set_color(Color::Yellow, Color::Black);
@@ -228,4 +260,60 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     loop {
         arch::halt();
     }
+}
+
+// Memory functions required by compiler_builtins
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    let mut i = 0;
+    while i < n {
+        unsafe { *dest.add(i) = *src.add(i) };
+        i += 1;
+    }
+    dest
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    if src < dest as *const u8 {
+        // copy backwards
+        let mut i = n;
+        while i > 0 {
+            i -= 1;
+            unsafe { *dest.add(i) = *src.add(i) };
+        }
+    } else {
+        // copy forwards
+        let mut i = 0;
+        while i < n {
+            unsafe { *dest.add(i) = *src.add(i) };
+            i += 1;
+        }
+    }
+    dest
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn memset(dest: *mut u8, c: i32, n: usize) -> *mut u8 {
+    let mut i = 0;
+    while i < n {
+        unsafe { *dest.add(i) = c as u8 };
+        i += 1;
+    }
+    dest
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
+    let mut i = 0;
+    while i < n {
+        let a = unsafe { *s1.add(i) };
+        let b = unsafe { *s2.add(i) };
+        if a != b {
+            return (a as i32) - (b as i32);
+        }
+        i += 1;
+    }
+    0
 }

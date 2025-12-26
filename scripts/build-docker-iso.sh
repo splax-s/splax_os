@@ -10,11 +10,11 @@ cd "$PROJECT_ROOT"
 
 # Build kernel first
 echo "==> Building kernel..."
-cargo build -p splax_kernel --bin splax_kernel --target x86_64-unknown-none --release
+cargo build -p splax_kernel --bin splax_kernel --target splax_kernel.json -Zbuild-std=core,alloc --release
 
-KERNEL="target/x86_64-unknown-none/release/splax_kernel"
+KERNEL="target/splax_kernel/release/splax_kernel.elf"
 if [[ ! -f "$KERNEL" ]]; then
-    echo "Error: Kernel not found"
+    echo "Error: Kernel not found at $KERNEL"
     exit 1
 fi
 

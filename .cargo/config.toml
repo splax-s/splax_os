@@ -12,6 +12,14 @@ rustflags = [
     "-C", "relocation-model=static",
 ]
 
+[target.splax_kernel]
+linker = "rust-lld"
+rustflags = [
+    "-C", "link-arg=-Tkernel/linker-x86_64.ld",
+    "-C", "link-arg=--no-pie",
+    "-C", "relocation-model=static",
+]
+
 [target.aarch64-unknown-none]
 linker = "rust-lld"
 rustflags = [

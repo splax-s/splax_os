@@ -872,6 +872,7 @@ pub extern "C" fn main() -> i32 {
 }
 
 /// Panic handler.
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
@@ -879,6 +880,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

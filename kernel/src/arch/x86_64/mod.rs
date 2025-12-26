@@ -103,6 +103,7 @@ unsafe fn setup_idt() {
         // Hardware interrupt handlers
         IDT.set_handler(vector::PIC_TIMER, timer_handler as *const () as u64, 0, 0x8E);
         IDT.set_handler(vector::PIC_KEYBOARD, keyboard_handler as *const () as u64, 0, 0x8E);
+        IDT.set_handler(vector::PIC_COM1, serial_handler as *const () as u64, 0, 0x8E);
     }
 }
 

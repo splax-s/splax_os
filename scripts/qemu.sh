@@ -99,6 +99,9 @@ if [[ "$USE_ISO" == true ]]; then
         "-cdrom" "$ISO_IMG"
         "-serial" "stdio"
         "-m" "512M"
+        # Network: virtio-net with user-mode networking
+        "-device" "virtio-net-pci,netdev=net0"
+        "-netdev" "user,id=net0,hostfwd=tcp::8080-:80"
     )
     
     if [[ "$NO_GUI" == true ]]; then

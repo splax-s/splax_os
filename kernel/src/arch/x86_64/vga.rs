@@ -3,6 +3,7 @@
 //! Provides text output to the VGA text mode buffer at 0xB8000.
 //! This allows visible output on the QEMU display.
 
+use core::arch::asm;
 use core::fmt;
 use spin::Mutex;
 
@@ -12,6 +13,16 @@ const VGA_BUFFER: usize = 0xB8000;
 /// VGA text mode dimensions
 const VGA_WIDTH: usize = 80;
 const VGA_HEIGHT: usize = 25;
+
+/// VGA CRT Controller ports
+const VGA_CRTC_ADDR: u16 = 0x3D4;
+const VGA_CRTC_DATA: u16 = 0x3D5;
+
+/// VGA CRT Controller registers
+const VGA_CURSOR_HIGH: u8 = 0x0E;
+const VGA_CURSOR_LOW: u8 = 0x0F;
+const VGA_CURSOR_START: u8 = 0x0A;
+const VGA_CURSOR_END: u8 = 0x0B;
 
 /// VGA color codes
 #[allow(dead_code)]
@@ -143,6 +154,8 @@ impl Writer {
                 self.column += 1;
             }
         }
+        // Update hardware cursor to follow text position
+        update_hardware_cursor(self.row, self.column);
     }
 
     /// Write a string to the screen
@@ -217,6 +230,11 @@ pub fn init() {
         w.clear();
         w.set_color(Color::LightCyan, Color::Black);
     }
+    drop(writer);
+    
+    // Enable and position the hardware cursor
+    enable_cursor();
+    update_hardware_cursor(0, 0);
 }
 
 /// Print to the VGA display
@@ -270,6 +288,52 @@ pub fn backspace() {
                     blank
                 );
             }
+            // Update hardware cursor position
+            update_hardware_cursor(writer.row, writer.column);
         }
+    }
+}
+
+/// Enable and configure the hardware text cursor
+pub fn enable_cursor() {
+    unsafe {
+        // Set cursor start scanline (bit 5 = cursor disable, we want it enabled)
+        // Cursor scanlines 13-15 for underline style
+        asm!("out dx, al", in("dx") VGA_CRTC_ADDR, in("al") VGA_CURSOR_START);
+        asm!("out dx, al", in("dx") VGA_CRTC_DATA, in("al") 13u8); // Start at scanline 13
+        
+        asm!("out dx, al", in("dx") VGA_CRTC_ADDR, in("al") VGA_CURSOR_END);
+        asm!("out dx, al", in("dx") VGA_CRTC_DATA, in("al") 15u8); // End at scanline 15
+    }
+}
+
+/// Disable the hardware text cursor
+#[allow(dead_code)]
+pub fn disable_cursor() {
+    unsafe {
+        asm!("out dx, al", in("dx") VGA_CRTC_ADDR, in("al") VGA_CURSOR_START);
+        asm!("out dx, al", in("dx") VGA_CRTC_DATA, in("al") 0x20u8); // Bit 5 = disable
+    }
+}
+
+/// Update the hardware cursor position
+pub fn update_hardware_cursor(row: usize, col: usize) {
+    let pos: u16 = (row * VGA_WIDTH + col) as u16;
+    
+    unsafe {
+        // Set cursor position low byte
+        asm!("out dx, al", in("dx") VGA_CRTC_ADDR, in("al") VGA_CURSOR_LOW);
+        asm!("out dx, al", in("dx") VGA_CRTC_DATA, in("al") (pos & 0xFF) as u8);
+        
+        // Set cursor position high byte
+        asm!("out dx, al", in("dx") VGA_CRTC_ADDR, in("al") VGA_CURSOR_HIGH);
+        asm!("out dx, al", in("dx") VGA_CRTC_DATA, in("al") ((pos >> 8) & 0xFF) as u8);
+    }
+}
+
+/// Update cursor to current writer position
+pub fn sync_cursor() {
+    if let Some(ref writer) = *VGA_WRITER.lock() {
+        update_hardware_cursor(writer.row, writer.column);
     }
 }

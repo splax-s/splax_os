@@ -20,6 +20,7 @@ mod registers {
 
 /// Line status register bits.
 mod line_status {
+    pub const DATA_READY: u8 = 0x01;
     pub const OUTPUT_EMPTY: u8 = 0x20;
 }
 
@@ -55,12 +56,29 @@ impl SerialPort {
             
             // IRQs enabled, RTS/DSR set
             outb(self.base + registers::MODEM_CTRL, 0x0B);
+            
+            // Enable receive data available interrupt
+            outb(self.base + registers::INT_ENABLE, 0x01);
         }
     }
 
     /// Checks if the transmit buffer is empty.
     fn is_transmit_empty(&self) -> bool {
         unsafe { (inb(self.base + registers::LINE_STATUS) & line_status::OUTPUT_EMPTY) != 0 }
+    }
+    
+    /// Checks if data is available to read.
+    pub fn has_data(&self) -> bool {
+        unsafe { (inb(self.base + registers::LINE_STATUS) & line_status::DATA_READY) != 0 }
+    }
+    
+    /// Reads a byte from the serial port (non-blocking).
+    pub fn read_byte(&self) -> Option<u8> {
+        if self.has_data() {
+            Some(unsafe { inb(self.base + registers::DATA) })
+        } else {
+            None
+        }
     }
 
     /// Writes a byte to the serial port.

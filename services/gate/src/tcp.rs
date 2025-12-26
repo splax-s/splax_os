@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use super::{CapabilityToken, ConnectionState, GateError};
 
 /// TCP connection handle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TcpConnectionId(pub u64);
 
 /// TCP connection information.

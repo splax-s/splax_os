@@ -28,6 +28,7 @@ extern crate alloc;
 
 pub mod tcp;
 pub mod http;
+pub mod network;
 
 use alloc::string::String;
 use alloc::vec::Vec;
