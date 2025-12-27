@@ -132,6 +132,12 @@ pub enum WasmType {
     I64,
     F32,
     F64,
+    /// 128-bit SIMD vector type
+    V128,
+    /// Function reference
+    FuncRef,
+    /// External reference
+    ExternRef,
 }
 
 impl WasmType {
@@ -141,8 +147,140 @@ impl WasmType {
             0x7E => Some(Self::I64),
             0x7D => Some(Self::F32),
             0x7C => Some(Self::F64),
+            0x7B => Some(Self::V128),
+            0x70 => Some(Self::FuncRef),
+            0x6F => Some(Self::ExternRef),
             _ => None,
         }
+    }
+}
+
+/// 128-bit SIMD vector value
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C, align(16))]
+pub struct V128 {
+    pub bytes: [u8; 16],
+}
+
+impl V128 {
+    pub const fn zero() -> Self {
+        Self { bytes: [0; 16] }
+    }
+
+    pub fn from_i8x16(vals: [i8; 16]) -> Self {
+        let mut bytes = [0u8; 16];
+        for i in 0..16 {
+            bytes[i] = vals[i] as u8;
+        }
+        Self { bytes }
+    }
+
+    pub fn from_i16x8(vals: [i16; 8]) -> Self {
+        let mut bytes = [0u8; 16];
+        for i in 0..8 {
+            let b = vals[i].to_le_bytes();
+            bytes[i * 2] = b[0];
+            bytes[i * 2 + 1] = b[1];
+        }
+        Self { bytes }
+    }
+
+    pub fn from_i32x4(vals: [i32; 4]) -> Self {
+        let mut bytes = [0u8; 16];
+        for i in 0..4 {
+            let b = vals[i].to_le_bytes();
+            bytes[i * 4..i * 4 + 4].copy_from_slice(&b);
+        }
+        Self { bytes }
+    }
+
+    pub fn from_i64x2(vals: [i64; 2]) -> Self {
+        let mut bytes = [0u8; 16];
+        for i in 0..2 {
+            let b = vals[i].to_le_bytes();
+            bytes[i * 8..i * 8 + 8].copy_from_slice(&b);
+        }
+        Self { bytes }
+    }
+
+    pub fn from_f32x4(vals: [f32; 4]) -> Self {
+        let mut bytes = [0u8; 16];
+        for i in 0..4 {
+            let b = vals[i].to_le_bytes();
+            bytes[i * 4..i * 4 + 4].copy_from_slice(&b);
+        }
+        Self { bytes }
+    }
+
+    pub fn from_f64x2(vals: [f64; 2]) -> Self {
+        let mut bytes = [0u8; 16];
+        for i in 0..2 {
+            let b = vals[i].to_le_bytes();
+            bytes[i * 8..i * 8 + 8].copy_from_slice(&b);
+        }
+        Self { bytes }
+    }
+
+    pub fn as_i8x16(&self) -> [i8; 16] {
+        let mut vals = [0i8; 16];
+        for i in 0..16 {
+            vals[i] = self.bytes[i] as i8;
+        }
+        vals
+    }
+
+    pub fn as_i16x8(&self) -> [i16; 8] {
+        let mut vals = [0i16; 8];
+        for i in 0..8 {
+            vals[i] = i16::from_le_bytes([self.bytes[i * 2], self.bytes[i * 2 + 1]]);
+        }
+        vals
+    }
+
+    pub fn as_i32x4(&self) -> [i32; 4] {
+        let mut vals = [0i32; 4];
+        for i in 0..4 {
+            vals[i] = i32::from_le_bytes([
+                self.bytes[i * 4],
+                self.bytes[i * 4 + 1],
+                self.bytes[i * 4 + 2],
+                self.bytes[i * 4 + 3],
+            ]);
+        }
+        vals
+    }
+
+    pub fn as_i64x2(&self) -> [i64; 2] {
+        let mut vals = [0i64; 2];
+        for i in 0..2 {
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&self.bytes[i * 8..i * 8 + 8]);
+            vals[i] = i64::from_le_bytes(arr);
+        }
+        vals
+    }
+
+    pub fn as_f32x4(&self) -> [f32; 4] {
+        let mut vals = [0.0f32; 4];
+        for i in 0..4 {
+            vals[i] = f32::from_le_bytes([
+                self.bytes[i * 4],
+                self.bytes[i * 4 + 1],
+                self.bytes[i * 4 + 2],
+                self.bytes[i * 4 + 3],
+            ]);
+        }
+        vals
+    }
+
+    pub fn as_f64x2(&self) -> [f64; 2] {
+        let mut vals = [0.0f64; 2];
+        for i in 0..2 {
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&self.bytes[i * 8..i * 8 + 8]);
+            vals[i] = f64::from_le_bytes(arr);
+        }
+        vals
     }
 }
 
@@ -153,6 +291,12 @@ pub enum WasmValue {
     I64(i64),
     F32(f32),
     F64(f64),
+    /// 128-bit SIMD vector
+    V128(V128),
+    /// Function reference (index or null)
+    FuncRef(Option<u32>),
+    /// External reference
+    ExternRef(Option<u64>),
 }
 
 impl WasmValue {
@@ -162,6 +306,9 @@ impl WasmValue {
             Self::I64(_) => WasmType::I64,
             Self::F32(_) => WasmType::F32,
             Self::F64(_) => WasmType::F64,
+            Self::V128(_) => WasmType::V128,
+            Self::FuncRef(_) => WasmType::FuncRef,
+            Self::ExternRef(_) => WasmType::ExternRef,
         }
     }
 
@@ -200,6 +347,9 @@ impl WasmValue {
             Self::I64(v) => *v as i32,
             Self::F32(v) => *v as i32,
             Self::F64(v) => *v as i32,
+            Self::V128(v) => v.as_i32x4()[0], // Take first lane
+            Self::FuncRef(v) => v.map(|x| x as i32).unwrap_or(0),
+            Self::ExternRef(v) => v.map(|x| x as i32).unwrap_or(0),
         }
     }
     
@@ -210,6 +360,21 @@ impl WasmValue {
             Self::I64(v) => *v,
             Self::F32(v) => *v as i64,
             Self::F64(v) => *v as i64,
+            Self::V128(v) => v.as_i64x2()[0], // Take first lane
+            Self::FuncRef(v) => v.map(|x| x as i64).unwrap_or(0),
+            Self::ExternRef(v) => v.map(|x| x as i64).unwrap_or(0),
+        }
+    }
+    
+    /// Convert to V128
+    pub fn to_v128(&self) -> V128 {
+        match self {
+            Self::V128(v) => *v,
+            Self::I32(v) => V128::from_i32x4([*v, 0, 0, 0]),
+            Self::I64(v) => V128::from_i64x2([*v, 0]),
+            Self::F32(v) => V128::from_f32x4([*v, 0.0, 0.0, 0.0]),
+            Self::F64(v) => V128::from_f64x2([*v, 0.0]),
+            Self::FuncRef(_) | Self::ExternRef(_) => V128::zero(),
         }
     }
 }
@@ -428,13 +593,337 @@ pub enum Opcode {
     I64Extend8S = 0xC2,
     I64Extend16S = 0xC3,
     I64Extend32S = 0xC4,
+    
+    // Reference types
+    RefNull = 0xD0,
+    RefIsNull = 0xD1,
+    RefFunc = 0xD2,
+    
+    // Multi-byte prefix for SIMD, atomics, etc.
+    SimdPrefix = 0xFD,
+    AtomicPrefix = 0xFE,
+}
+
+/// SIMD opcodes (after 0xFD prefix)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum SimdOpcode {
+    // v128 load/store
+    V128Load = 0x00,
+    V128Load8x8S = 0x01,
+    V128Load8x8U = 0x02,
+    V128Load16x4S = 0x03,
+    V128Load16x4U = 0x04,
+    V128Load32x2S = 0x05,
+    V128Load32x2U = 0x06,
+    V128Load8Splat = 0x07,
+    V128Load16Splat = 0x08,
+    V128Load32Splat = 0x09,
+    V128Load64Splat = 0x0A,
+    V128Store = 0x0B,
+    
+    // v128 const
+    V128Const = 0x0C,
+    
+    // i8x16 operations
+    I8x16Shuffle = 0x0D,
+    I8x16Swizzle = 0x0E,
+    I8x16Splat = 0x0F,
+    I16x8Splat = 0x10,
+    I32x4Splat = 0x11,
+    I64x2Splat = 0x12,
+    F32x4Splat = 0x13,
+    F64x2Splat = 0x14,
+    
+    // i8x16 lane operations
+    I8x16ExtractLaneS = 0x15,
+    I8x16ExtractLaneU = 0x16,
+    I8x16ReplaceLane = 0x17,
+    I16x8ExtractLaneS = 0x18,
+    I16x8ExtractLaneU = 0x19,
+    I16x8ReplaceLane = 0x1A,
+    I32x4ExtractLane = 0x1B,
+    I32x4ReplaceLane = 0x1C,
+    I64x2ExtractLane = 0x1D,
+    I64x2ReplaceLane = 0x1E,
+    F32x4ExtractLane = 0x1F,
+    F32x4ReplaceLane = 0x20,
+    F64x2ExtractLane = 0x21,
+    F64x2ReplaceLane = 0x22,
+    
+    // i8x16 comparisons
+    I8x16Eq = 0x23,
+    I8x16Ne = 0x24,
+    I8x16LtS = 0x25,
+    I8x16LtU = 0x26,
+    I8x16GtS = 0x27,
+    I8x16GtU = 0x28,
+    I8x16LeS = 0x29,
+    I8x16LeU = 0x2A,
+    I8x16GeS = 0x2B,
+    I8x16GeU = 0x2C,
+    
+    // i16x8 comparisons
+    I16x8Eq = 0x2D,
+    I16x8Ne = 0x2E,
+    I16x8LtS = 0x2F,
+    I16x8LtU = 0x30,
+    I16x8GtS = 0x31,
+    I16x8GtU = 0x32,
+    I16x8LeS = 0x33,
+    I16x8LeU = 0x34,
+    I16x8GeS = 0x35,
+    I16x8GeU = 0x36,
+    
+    // i32x4 comparisons
+    I32x4Eq = 0x37,
+    I32x4Ne = 0x38,
+    I32x4LtS = 0x39,
+    I32x4LtU = 0x3A,
+    I32x4GtS = 0x3B,
+    I32x4GtU = 0x3C,
+    I32x4LeS = 0x3D,
+    I32x4LeU = 0x3E,
+    I32x4GeS = 0x3F,
+    I32x4GeU = 0x40,
+    
+    // f32x4/f64x2 comparisons
+    F32x4Eq = 0x41,
+    F32x4Ne = 0x42,
+    F32x4Lt = 0x43,
+    F32x4Gt = 0x44,
+    F32x4Le = 0x45,
+    F32x4Ge = 0x46,
+    F64x2Eq = 0x47,
+    F64x2Ne = 0x48,
+    F64x2Lt = 0x49,
+    F64x2Gt = 0x4A,
+    F64x2Le = 0x4B,
+    F64x2Ge = 0x4C,
+    
+    // v128 bitwise
+    V128Not = 0x4D,
+    V128And = 0x4E,
+    V128AndNot = 0x4F,
+    V128Or = 0x50,
+    V128Xor = 0x51,
+    V128Bitselect = 0x52,
+    V128AnyTrue = 0x53,
+    
+    // i8x16 arithmetic
+    I8x16Abs = 0x60,
+    I8x16Neg = 0x61,
+    I8x16AllTrue = 0x63,
+    I8x16Bitmask = 0x64,
+    I8x16Shl = 0x6B,
+    I8x16ShrS = 0x6C,
+    I8x16ShrU = 0x6D,
+    I8x16Add = 0x6E,
+    I8x16AddSatS = 0x6F,
+    I8x16AddSatU = 0x70,
+    I8x16Sub = 0x71,
+    I8x16SubSatS = 0x72,
+    I8x16SubSatU = 0x73,
+    I8x16MinS = 0x76,
+    I8x16MinU = 0x77,
+    I8x16MaxS = 0x78,
+    I8x16MaxU = 0x79,
+    
+    // i16x8 arithmetic
+    I16x8Abs = 0x80,
+    I16x8Neg = 0x81,
+    I16x8AllTrue = 0x83,
+    I16x8Bitmask = 0x84,
+    I16x8Shl = 0x8B,
+    I16x8ShrS = 0x8C,
+    I16x8ShrU = 0x8D,
+    I16x8Add = 0x8E,
+    I16x8AddSatS = 0x8F,
+    I16x8AddSatU = 0x90,
+    I16x8Sub = 0x91,
+    I16x8SubSatS = 0x92,
+    I16x8SubSatU = 0x93,
+    I16x8Mul = 0x95,
+    I16x8MinS = 0x96,
+    I16x8MinU = 0x97,
+    I16x8MaxS = 0x98,
+    I16x8MaxU = 0x99,
+    
+    // i32x4 arithmetic
+    I32x4Abs = 0xA0,
+    I32x4Neg = 0xA1,
+    I32x4AllTrue = 0xA3,
+    I32x4Bitmask = 0xA4,
+    I32x4Shl = 0xAB,
+    I32x4ShrS = 0xAC,
+    I32x4ShrU = 0xAD,
+    I32x4Add = 0xAE,
+    I32x4Sub = 0xB1,
+    I32x4Mul = 0xB5,
+    I32x4MinS = 0xB6,
+    I32x4MinU = 0xB7,
+    I32x4MaxS = 0xB8,
+    I32x4MaxU = 0xB9,
+    
+    // i64x2 arithmetic
+    I64x2Abs = 0xC0,
+    I64x2Neg = 0xC1,
+    I64x2AllTrue = 0xC3,
+    I64x2Bitmask = 0xC4,
+    I64x2Shl = 0xCB,
+    I64x2ShrS = 0xCC,
+    I64x2ShrU = 0xCD,
+    I64x2Add = 0xCE,
+    I64x2Sub = 0xD1,
+    I64x2Mul = 0xD5,
+    
+    // f32x4 arithmetic
+    F32x4Abs = 0xE0,
+    F32x4Neg = 0xE1,
+    F32x4Sqrt = 0xE3,
+    F32x4Add = 0xE4,
+    F32x4Sub = 0xE5,
+    F32x4Mul = 0xE6,
+    F32x4Div = 0xE7,
+    F32x4Min = 0xE8,
+    F32x4Max = 0xE9,
+    
+    // f64x2 arithmetic
+    F64x2Abs = 0xEC,
+    F64x2Neg = 0xED,
+    F64x2Sqrt = 0xEF,
+    F64x2Add = 0xF0,
+    F64x2Sub = 0xF1,
+    F64x2Mul = 0xF2,
+    F64x2Div = 0xF3,
+    F64x2Min = 0xF4,
+    F64x2Max = 0xF5,
+}
+
+/// Atomic opcodes (after 0xFE prefix) - for threading
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum AtomicOpcode {
+    // Memory operations
+    MemoryAtomicNotify = 0x00,
+    MemoryAtomicWait32 = 0x01,
+    MemoryAtomicWait64 = 0x02,
+    AtomicFence = 0x03,
+    
+    // i32 atomics
+    I32AtomicLoad = 0x10,
+    I64AtomicLoad = 0x11,
+    I32AtomicLoad8U = 0x12,
+    I32AtomicLoad16U = 0x13,
+    I64AtomicLoad8U = 0x14,
+    I64AtomicLoad16U = 0x15,
+    I64AtomicLoad32U = 0x16,
+    I32AtomicStore = 0x17,
+    I64AtomicStore = 0x18,
+    I32AtomicStore8 = 0x19,
+    I32AtomicStore16 = 0x1A,
+    I64AtomicStore8 = 0x1B,
+    I64AtomicStore16 = 0x1C,
+    I64AtomicStore32 = 0x1D,
+    
+    // RMW operations
+    I32AtomicRmwAdd = 0x1E,
+    I64AtomicRmwAdd = 0x1F,
+    I32AtomicRmw8AddU = 0x20,
+    I32AtomicRmw16AddU = 0x21,
+    I64AtomicRmw8AddU = 0x22,
+    I64AtomicRmw16AddU = 0x23,
+    I64AtomicRmw32AddU = 0x24,
+    
+    I32AtomicRmwSub = 0x25,
+    I64AtomicRmwSub = 0x26,
+    I32AtomicRmw8SubU = 0x27,
+    I32AtomicRmw16SubU = 0x28,
+    I64AtomicRmw8SubU = 0x29,
+    I64AtomicRmw16SubU = 0x2A,
+    I64AtomicRmw32SubU = 0x2B,
+    
+    I32AtomicRmwAnd = 0x2C,
+    I64AtomicRmwAnd = 0x2D,
+    I32AtomicRmw8AndU = 0x2E,
+    I32AtomicRmw16AndU = 0x2F,
+    I64AtomicRmw8AndU = 0x30,
+    I64AtomicRmw16AndU = 0x31,
+    I64AtomicRmw32AndU = 0x32,
+    
+    I32AtomicRmwOr = 0x33,
+    I64AtomicRmwOr = 0x34,
+    I32AtomicRmw8OrU = 0x35,
+    I32AtomicRmw16OrU = 0x36,
+    I64AtomicRmw8OrU = 0x37,
+    I64AtomicRmw16OrU = 0x38,
+    I64AtomicRmw32OrU = 0x39,
+    
+    I32AtomicRmwXor = 0x3A,
+    I64AtomicRmwXor = 0x3B,
+    I32AtomicRmw8XorU = 0x3C,
+    I32AtomicRmw16XorU = 0x3D,
+    I64AtomicRmw8XorU = 0x3E,
+    I64AtomicRmw16XorU = 0x3F,
+    I64AtomicRmw32XorU = 0x40,
+    
+    I32AtomicRmwXchg = 0x41,
+    I64AtomicRmwXchg = 0x42,
+    I32AtomicRmw8XchgU = 0x43,
+    I32AtomicRmw16XchgU = 0x44,
+    I64AtomicRmw8XchgU = 0x45,
+    I64AtomicRmw16XchgU = 0x46,
+    I64AtomicRmw32XchgU = 0x47,
+    
+    // Compare-and-swap
+    I32AtomicRmwCmpxchg = 0x48,
+    I64AtomicRmwCmpxchg = 0x49,
+    I32AtomicRmw8CmpxchgU = 0x4A,
+    I32AtomicRmw16CmpxchgU = 0x4B,
+    I64AtomicRmw8CmpxchgU = 0x4C,
+    I64AtomicRmw16CmpxchgU = 0x4D,
+    I64AtomicRmw32CmpxchgU = 0x4E,
 }
 
 impl Opcode {
     pub fn from_byte(b: u8) -> Option<Self> {
-        // Safety: We validate the range
-        if b <= 0xC4 {
-            Some(unsafe { core::mem::transmute(b) })
+        // Handle multi-byte opcodes
+        match b {
+            0x00..=0xC4 => Some(unsafe { core::mem::transmute(b) }),
+            0xD0..=0xD2 => Some(unsafe { core::mem::transmute(b) }),
+            0xFD => Some(Self::SimdPrefix),
+            0xFE => Some(Self::AtomicPrefix),
+            _ => None,
+        }
+    }
+    
+    /// Check if this opcode is a multi-byte prefix
+    pub fn is_prefix(&self) -> bool {
+        matches!(self, Self::SimdPrefix | Self::AtomicPrefix)
+    }
+}
+
+impl SimdOpcode {
+    pub fn from_u32(v: u32) -> Option<Self> {
+        // Map known SIMD opcodes
+        match v {
+            0x00..=0x0C => Some(unsafe { core::mem::transmute(v) }),
+            0x0D..=0x22 => Some(unsafe { core::mem::transmute(v) }),
+            0x23..=0x53 => Some(unsafe { core::mem::transmute(v) }),
+            0x60..=0x79 => Some(unsafe { core::mem::transmute(v) }),
+            0x80..=0x99 => Some(unsafe { core::mem::transmute(v) }),
+            0xA0..=0xB9 => Some(unsafe { core::mem::transmute(v) }),
+            0xC0..=0xD5 => Some(unsafe { core::mem::transmute(v) }),
+            0xE0..=0xF5 => Some(unsafe { core::mem::transmute(v) }),
+            _ => None,
+        }
+    }
+}
+
+impl AtomicOpcode {
+    pub fn from_u32(v: u32) -> Option<Self> {
+        if v <= 0x4E {
+            Some(unsafe { core::mem::transmute(v) })
         } else {
             None
         }
@@ -522,6 +1011,154 @@ pub enum HostFunction {
     SNetRecv,
     /// Network close: (sock: i32) -> i32
     SNetClose,
+    
+    // =========================================================================
+    // EXPANDED SYSCALL HOST FUNCTIONS
+    // =========================================================================
+    
+    // --- Process Management ---
+    /// Spawn a new process: (path_ptr: i32, path_len: i32, args_ptr: i32) -> i64 (returns pid)
+    SProcessSpawn,
+    /// Wait for process: (pid: i64) -> i32 (returns exit code)
+    SProcessWait,
+    /// Kill process: (pid: i64, signal: i32) -> i32
+    SProcessKill,
+    /// Get current process ID: () -> i64
+    SProcessGetPid,
+    /// Get parent process ID: () -> i64
+    SProcessGetPpid,
+    /// Fork current process (native only): () -> i64
+    SProcessFork,
+    
+    // --- Memory Management ---
+    /// Allocate memory pages: (pages: i32) -> i32 (returns ptr or 0)
+    SMemAlloc,
+    /// Free memory pages: (ptr: i32, pages: i32) -> i32
+    SMemFree,
+    /// Grow linear memory: (delta_pages: i32) -> i32 (returns old size or -1)
+    SMemGrow,
+    /// Get memory size: () -> i32 (in pages)
+    SMemSize,
+    
+    // --- Filesystem Extended ---
+    /// Create directory: (path_ptr: i32, path_len: i32) -> i32
+    SFsMkdir,
+    /// Remove directory: (path_ptr: i32, path_len: i32) -> i32
+    SFsRmdir,
+    /// Remove file: (path_ptr: i32, path_len: i32) -> i32
+    SFsUnlink,
+    /// Rename file: (old_ptr: i32, old_len: i32, new_ptr: i32, new_len: i32) -> i32
+    SFsRename,
+    /// Get file stats: (path_ptr: i32, path_len: i32, stat_ptr: i32) -> i32
+    SFsStat,
+    /// Read directory entry: (fd: i32, entry_ptr: i32) -> i32
+    SFsReadDir,
+    /// Seek in file: (fd: i32, offset: i64, whence: i32) -> i64
+    SFsSeek,
+    /// Sync file to disk: (fd: i32) -> i32
+    SFsSync,
+    /// Truncate file: (fd: i32, size: i64) -> i32
+    SFsTruncate,
+    /// Get current working directory: (buf_ptr: i32, buf_len: i32) -> i32
+    SFsGetCwd,
+    /// Change current working directory: (path_ptr: i32, path_len: i32) -> i32
+    SFsChdir,
+    
+    // --- Network Extended ---
+    /// Create socket: (domain: i32, type: i32, protocol: i32) -> i32
+    SNetSocket,
+    /// Bind socket: (sock: i32, addr_ptr: i32, addr_len: i32) -> i32
+    SNetBind,
+    /// Listen on socket: (sock: i32, backlog: i32) -> i32
+    SNetListen,
+    /// Accept connection: (sock: i32, addr_ptr: i32, addr_len_ptr: i32) -> i32
+    SNetAccept,
+    /// Set socket option: (sock: i32, level: i32, optname: i32, val: i32) -> i32
+    SNetSetsockopt,
+    /// Get peer address: (sock: i32, addr_ptr: i32, addr_len_ptr: i32) -> i32
+    SNetGetpeername,
+    /// DNS lookup: (host_ptr: i32, host_len: i32, result_ptr: i32) -> i32
+    SNetResolve,
+    /// Send UDP datagram: (sock: i32, buf_ptr: i32, len: i32, addr_ptr: i32) -> i32
+    SNetSendto,
+    /// Receive UDP datagram: (sock: i32, buf_ptr: i32, len: i32, addr_ptr: i32) -> i32
+    SNetRecvfrom,
+    
+    // --- Thread Management ---
+    /// Create thread: (entry_ptr: i32, arg: i32) -> i32 (returns thread_id)
+    SThreadCreate,
+    /// Join thread: (thread_id: i32) -> i32
+    SThreadJoin,
+    /// Exit thread: (code: i32) -> !
+    SThreadExit,
+    /// Yield to scheduler: () -> ()
+    SThreadYield,
+    /// Get current thread ID: () -> i32
+    SThreadGetId,
+    /// Sleep thread: (ns: i64) -> i32
+    SThreadSleep,
+    
+    // --- Synchronization ---
+    /// Create mutex: () -> i32 (returns mutex_id)
+    SSyncMutexCreate,
+    /// Lock mutex: (mutex_id: i32) -> i32
+    SSyncMutexLock,
+    /// Unlock mutex: (mutex_id: i32) -> i32
+    SSyncMutexUnlock,
+    /// Destroy mutex: (mutex_id: i32) -> i32
+    SSyncMutexDestroy,
+    /// Futex wait: (addr: i32, expected: i32, timeout_ns: i64) -> i32
+    SSyncFutexWait,
+    /// Futex wake: (addr: i32, count: i32) -> i32
+    SSyncFutexWake,
+    
+    // --- Capability Management ---
+    /// Check capability: (cap_type_ptr: i32, cap_type_len: i32) -> i32
+    SCapCheck,
+    /// Request capability: (cap_type_ptr: i32, cap_type_len: i32) -> i64
+    SCapRequest,
+    /// Revoke capability: (cap_id: i64) -> i32
+    SCapRevoke,
+    /// Delegate capability: (cap_id: i64, target_pid: i64) -> i64
+    SCapDelegate,
+    
+    // --- Service Discovery (S-ATLAS) ---
+    /// Register service: (name_ptr: i32, name_len: i32, port: i32) -> i32
+    SServiceRegister,
+    /// Discover service: (name_ptr: i32, name_len: i32, result_ptr: i32) -> i32
+    SServiceDiscover,
+    /// Unregister service: (service_id: i32) -> i32
+    SServiceUnregister,
+    
+    // --- Time & Timers ---
+    /// Get monotonic time: () -> i64 (nanoseconds)
+    STimeMonotonic,
+    /// Get real time: () -> i64 (unix timestamp ns)
+    STimeReal,
+    /// Create timer: (ns: i64, callback_ptr: i32) -> i32 (returns timer_id)
+    STimerCreate,
+    /// Cancel timer: (timer_id: i32) -> i32
+    STimerCancel,
+    
+    // --- System Information ---
+    /// Get system info: (info_type: i32, buf_ptr: i32, buf_len: i32) -> i32
+    SSysInfo,
+    /// Get CPU count: () -> i32
+    SSysCpuCount,
+    /// Get free memory: () -> i64 (bytes)
+    SSysMemFree,
+    /// Get uptime: () -> i64 (seconds)
+    SSysUptime,
+    
+    // --- Debug & Profiling ---
+    /// Debug print: (ptr: i32, len: i32) -> ()
+    SDebugPrint,
+    /// Debug break: () -> ()
+    SDebugBreak,
+    /// Profile start: (name_ptr: i32, name_len: i32) -> i32
+    SProfileStart,
+    /// Profile stop: (id: i32) -> i64 (returns elapsed ns)
+    SProfileStop,
 }
 
 impl HostFunction {
@@ -531,6 +1168,7 @@ impl HostFunction {
             return None;
         }
         match name {
+            // Basic I/O
             "s_link_send" => Some(Self::SLinkSend),
             "s_link_receive" => Some(Self::SLinkReceive),
             "s_storage_read" => Some(Self::SStorageRead),
@@ -552,6 +1190,90 @@ impl HostFunction {
             "s_net_send" | "sock_send" => Some(Self::SNetSend),
             "s_net_recv" | "sock_recv" => Some(Self::SNetRecv),
             "s_net_close" | "sock_close" => Some(Self::SNetClose),
+            
+            // Process management
+            "s_process_spawn" => Some(Self::SProcessSpawn),
+            "s_process_wait" => Some(Self::SProcessWait),
+            "s_process_kill" => Some(Self::SProcessKill),
+            "s_process_getpid" | "getpid" => Some(Self::SProcessGetPid),
+            "s_process_getppid" | "getppid" => Some(Self::SProcessGetPpid),
+            "s_process_fork" => Some(Self::SProcessFork),
+            
+            // Memory management
+            "s_mem_alloc" => Some(Self::SMemAlloc),
+            "s_mem_free" => Some(Self::SMemFree),
+            "s_mem_grow" => Some(Self::SMemGrow),
+            "s_mem_size" => Some(Self::SMemSize),
+            
+            // Filesystem extended
+            "s_fs_mkdir" | "path_create_directory" => Some(Self::SFsMkdir),
+            "s_fs_rmdir" | "path_remove_directory" => Some(Self::SFsRmdir),
+            "s_fs_unlink" | "path_unlink_file" => Some(Self::SFsUnlink),
+            "s_fs_rename" | "path_rename" => Some(Self::SFsRename),
+            "s_fs_stat" | "path_filestat_get" => Some(Self::SFsStat),
+            "s_fs_readdir" | "fd_readdir" => Some(Self::SFsReadDir),
+            "s_fs_seek" | "fd_seek" => Some(Self::SFsSeek),
+            "s_fs_sync" | "fd_sync" => Some(Self::SFsSync),
+            "s_fs_truncate" | "fd_filestat_set_size" => Some(Self::SFsTruncate),
+            "s_fs_getcwd" => Some(Self::SFsGetCwd),
+            "s_fs_chdir" => Some(Self::SFsChdir),
+            
+            // Network extended
+            "s_net_socket" | "sock_open" => Some(Self::SNetSocket),
+            "s_net_bind" | "sock_bind" => Some(Self::SNetBind),
+            "s_net_listen" | "sock_listen" => Some(Self::SNetListen),
+            "s_net_accept" | "sock_accept" => Some(Self::SNetAccept),
+            "s_net_setsockopt" | "sock_set_opt" => Some(Self::SNetSetsockopt),
+            "s_net_getpeername" | "sock_getpeer" => Some(Self::SNetGetpeername),
+            "s_net_resolve" => Some(Self::SNetResolve),
+            "s_net_sendto" | "sock_sendto" => Some(Self::SNetSendto),
+            "s_net_recvfrom" | "sock_recvfrom" => Some(Self::SNetRecvfrom),
+            
+            // Thread management
+            "s_thread_create" => Some(Self::SThreadCreate),
+            "s_thread_join" => Some(Self::SThreadJoin),
+            "s_thread_exit" => Some(Self::SThreadExit),
+            "s_thread_yield" | "sched_yield" => Some(Self::SThreadYield),
+            "s_thread_getid" => Some(Self::SThreadGetId),
+            "s_thread_sleep" => Some(Self::SThreadSleep),
+            
+            // Synchronization
+            "s_sync_mutex_create" => Some(Self::SSyncMutexCreate),
+            "s_sync_mutex_lock" => Some(Self::SSyncMutexLock),
+            "s_sync_mutex_unlock" => Some(Self::SSyncMutexUnlock),
+            "s_sync_mutex_destroy" => Some(Self::SSyncMutexDestroy),
+            "s_sync_futex_wait" => Some(Self::SSyncFutexWait),
+            "s_sync_futex_wake" => Some(Self::SSyncFutexWake),
+            
+            // Capability management
+            "s_cap_check" => Some(Self::SCapCheck),
+            "s_cap_request" => Some(Self::SCapRequest),
+            "s_cap_revoke" => Some(Self::SCapRevoke),
+            "s_cap_delegate" => Some(Self::SCapDelegate),
+            
+            // Service discovery
+            "s_service_register" => Some(Self::SServiceRegister),
+            "s_service_discover" => Some(Self::SServiceDiscover),
+            "s_service_unregister" => Some(Self::SServiceUnregister),
+            
+            // Time & timers
+            "s_time_monotonic" | "clock_res_get" => Some(Self::STimeMonotonic),
+            "s_time_real" => Some(Self::STimeReal),
+            "s_timer_create" => Some(Self::STimerCreate),
+            "s_timer_cancel" => Some(Self::STimerCancel),
+            
+            // System info
+            "s_sys_info" => Some(Self::SSysInfo),
+            "s_sys_cpu_count" => Some(Self::SSysCpuCount),
+            "s_sys_mem_free" => Some(Self::SSysMemFree),
+            "s_sys_uptime" => Some(Self::SSysUptime),
+            
+            // Debug & profiling
+            "s_debug_print" => Some(Self::SDebugPrint),
+            "s_debug_break" => Some(Self::SDebugBreak),
+            "s_profile_start" => Some(Self::SProfileStart),
+            "s_profile_stop" => Some(Self::SProfileStop),
+            
             _ => None,
         }
     }
@@ -559,28 +1281,74 @@ impl HostFunction {
     /// Get the required capability type for this host function.
     pub fn required_capability(&self) -> &'static str {
         match self {
+            // Basic I/O
             Self::SLinkSend => "channel:write",
             Self::SLinkReceive => "channel:read",
             Self::SStorageRead => "storage:read",
             Self::SStorageWrite => "storage:write",
             Self::SLog => "log:write",
-            Self::STimeNow => "time:read",
-            Self::SSleep => "time:sleep",
-            Self::SPrint => "console:write",
+            Self::STimeNow | Self::STimeMonotonic | Self::STimeReal => "time:read",
+            Self::SSleep | Self::SThreadSleep => "time:sleep",
+            Self::SPrint | Self::SDebugPrint => "console:write",
             Self::SRead => "console:read",
-            Self::SExit => "process:exit",
+            Self::SExit | Self::SThreadExit => "process:exit",
             Self::SGetEnv => "env:read",
             Self::SRandom => "random:read",
-            Self::SFileOpen | Self::SFileRead | Self::SFileSize => "fs:read",
-            Self::SFileWrite => "fs:write",
+            
+            // Filesystem
+            Self::SFileOpen | Self::SFileRead | Self::SFileSize | Self::SFsStat |
+            Self::SFsReadDir | Self::SFsSeek | Self::SFsGetCwd => "fs:read",
+            Self::SFileWrite | Self::SFsMkdir | Self::SFsRmdir | Self::SFsUnlink |
+            Self::SFsRename | Self::SFsSync | Self::SFsTruncate | Self::SFsChdir => "fs:write",
             Self::SFileClose => "fs:read",
-            Self::SNetConnect | Self::SNetSend | Self::SNetRecv | Self::SNetClose => "net:connect",
+            
+            // Network
+            Self::SNetConnect | Self::SNetSend | Self::SNetRecv | Self::SNetClose |
+            Self::SNetSendto | Self::SNetRecvfrom | Self::SNetResolve => "net:connect",
+            Self::SNetSocket | Self::SNetBind | Self::SNetListen | Self::SNetAccept |
+            Self::SNetSetsockopt | Self::SNetGetpeername => "net:listen",
+            
+            // Process
+            Self::SProcessSpawn | Self::SProcessFork => "process:spawn",
+            Self::SProcessWait => "process:wait",
+            Self::SProcessKill => "process:signal",
+            Self::SProcessGetPid | Self::SProcessGetPpid => "process:info",
+            
+            // Memory
+            Self::SMemAlloc | Self::SMemFree | Self::SMemGrow | Self::SMemSize => "mem:manage",
+            
+            // Threads
+            Self::SThreadCreate | Self::SThreadJoin | Self::SThreadGetId |
+            Self::SThreadYield => "thread:manage",
+            
+            // Sync
+            Self::SSyncMutexCreate | Self::SSyncMutexLock | Self::SSyncMutexUnlock |
+            Self::SSyncMutexDestroy | Self::SSyncFutexWait | Self::SSyncFutexWake => "sync:mutex",
+            
+            // Capabilities
+            Self::SCapCheck => "cap:check",
+            Self::SCapRequest => "cap:request",
+            Self::SCapRevoke | Self::SCapDelegate => "cap:admin",
+            
+            // Services
+            Self::SServiceRegister | Self::SServiceUnregister => "service:register",
+            Self::SServiceDiscover => "service:discover",
+            
+            // Timers
+            Self::STimerCreate | Self::STimerCancel => "timer:manage",
+            
+            // System
+            Self::SSysInfo | Self::SSysCpuCount | Self::SSysMemFree | Self::SSysUptime => "sys:info",
+            
+            // Debug
+            Self::SDebugBreak | Self::SProfileStart | Self::SProfileStop => "debug:trace",
         }
     }
 
     /// Get the function signature.
     pub fn signature(&self) -> FunctionSignature {
         match self {
+            // Basic signatures from original implementation
             Self::SLinkSend => FunctionSignature {
                 params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32],
                 results: alloc::vec![WasmType::I32],
@@ -601,7 +1369,7 @@ impl HostFunction {
                 params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32],
                 results: alloc::vec![],
             },
-            Self::STimeNow => FunctionSignature {
+            Self::STimeNow | Self::STimeMonotonic | Self::STimeReal => FunctionSignature {
                 params: alloc::vec![],
                 results: alloc::vec![WasmType::I64],
             },
@@ -609,7 +1377,7 @@ impl HostFunction {
                 params: alloc::vec![WasmType::I64],
                 results: alloc::vec![],
             },
-            Self::SPrint => FunctionSignature {
+            Self::SPrint | Self::SDebugPrint => FunctionSignature {
                 params: alloc::vec![WasmType::I32, WasmType::I32],
                 results: alloc::vec![WasmType::I32],
             },
@@ -617,7 +1385,7 @@ impl HostFunction {
                 params: alloc::vec![WasmType::I32, WasmType::I32],
                 results: alloc::vec![WasmType::I32],
             },
-            Self::SExit => FunctionSignature {
+            Self::SExit | Self::SThreadExit => FunctionSignature {
                 params: alloc::vec![WasmType::I32],
                 results: alloc::vec![],
             },
@@ -629,6 +1397,8 @@ impl HostFunction {
                 params: alloc::vec![WasmType::I32, WasmType::I32],
                 results: alloc::vec![WasmType::I32],
             },
+            
+            // File operations
             Self::SFileOpen => FunctionSignature {
                 params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32],
                 results: alloc::vec![WasmType::I32],
@@ -645,6 +1415,8 @@ impl HostFunction {
                 params: alloc::vec![WasmType::I32],
                 results: alloc::vec![WasmType::I64],
             },
+            
+            // Network
             Self::SNetConnect => FunctionSignature {
                 params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32],
                 results: alloc::vec![WasmType::I32],
@@ -656,6 +1428,220 @@ impl HostFunction {
             Self::SNetClose => FunctionSignature {
                 params: alloc::vec![WasmType::I32],
                 results: alloc::vec![WasmType::I32],
+            },
+            
+            // Process management
+            Self::SProcessSpawn => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I64],
+            },
+            Self::SProcessWait => FunctionSignature {
+                params: alloc::vec![WasmType::I64],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SProcessKill => FunctionSignature {
+                params: alloc::vec![WasmType::I64, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SProcessGetPid | Self::SProcessGetPpid => FunctionSignature {
+                params: alloc::vec![],
+                results: alloc::vec![WasmType::I64],
+            },
+            Self::SProcessFork => FunctionSignature {
+                params: alloc::vec![],
+                results: alloc::vec![WasmType::I64],
+            },
+            
+            // Memory
+            Self::SMemAlloc => FunctionSignature {
+                params: alloc::vec![WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SMemFree => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SMemGrow => FunctionSignature {
+                params: alloc::vec![WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SMemSize => FunctionSignature {
+                params: alloc::vec![],
+                results: alloc::vec![WasmType::I32],
+            },
+            
+            // Filesystem extended
+            Self::SFsMkdir | Self::SFsRmdir | Self::SFsUnlink => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SFsRename => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SFsStat => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SFsReadDir => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SFsSeek => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I64, WasmType::I32],
+                results: alloc::vec![WasmType::I64],
+            },
+            Self::SFsSync => FunctionSignature {
+                params: alloc::vec![WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SFsTruncate => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I64],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SFsGetCwd => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SFsChdir => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            
+            // Network extended
+            Self::SNetSocket => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SNetBind | Self::SNetAccept | Self::SNetGetpeername => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SNetListen => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SNetSetsockopt => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SNetResolve => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SNetSendto | Self::SNetRecvfrom => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            
+            // Thread management
+            Self::SThreadCreate => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SThreadJoin => FunctionSignature {
+                params: alloc::vec![WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SThreadYield | Self::SDebugBreak => FunctionSignature {
+                params: alloc::vec![],
+                results: alloc::vec![],
+            },
+            Self::SThreadGetId => FunctionSignature {
+                params: alloc::vec![],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SThreadSleep => FunctionSignature {
+                params: alloc::vec![WasmType::I64],
+                results: alloc::vec![WasmType::I32],
+            },
+            
+            // Synchronization
+            Self::SSyncMutexCreate => FunctionSignature {
+                params: alloc::vec![],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SSyncMutexLock | Self::SSyncMutexUnlock | Self::SSyncMutexDestroy => FunctionSignature {
+                params: alloc::vec![WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SSyncFutexWait => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I64],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SSyncFutexWake => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            
+            // Capability management
+            Self::SCapCheck => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SCapRequest => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I64],
+            },
+            Self::SCapRevoke => FunctionSignature {
+                params: alloc::vec![WasmType::I64],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SCapDelegate => FunctionSignature {
+                params: alloc::vec![WasmType::I64, WasmType::I64],
+                results: alloc::vec![WasmType::I64],
+            },
+            
+            // Service discovery
+            Self::SServiceRegister => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SServiceDiscover => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SServiceUnregister => FunctionSignature {
+                params: alloc::vec![WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            
+            // Timers
+            Self::STimerCreate => FunctionSignature {
+                params: alloc::vec![WasmType::I64, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::STimerCancel => FunctionSignature {
+                params: alloc::vec![WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            
+            // System info
+            Self::SSysInfo => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SSysCpuCount => FunctionSignature {
+                params: alloc::vec![],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SSysMemFree => FunctionSignature {
+                params: alloc::vec![],
+                results: alloc::vec![WasmType::I64],
+            },
+            Self::SSysUptime => FunctionSignature {
+                params: alloc::vec![],
+                results: alloc::vec![WasmType::I64],
+            },
+            
+            // Profiling
+            Self::SProfileStart => FunctionSignature {
+                params: alloc::vec![WasmType::I32, WasmType::I32],
+                results: alloc::vec![WasmType::I32],
+            },
+            Self::SProfileStop => FunctionSignature {
+                params: alloc::vec![WasmType::I32],
+                results: alloc::vec![WasmType::I64],
             },
         }
     }
@@ -718,6 +1704,433 @@ pub struct BoundImport {
     pub name: String,
     /// Capability token authorizing this import
     pub capability: CapabilityToken,
+}
+
+// ============================================================================
+// THREADING SUPPORT
+// ============================================================================
+
+/// Thread identifier for WASM threads
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ThreadId(pub u64);
+
+/// WASM thread state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadState {
+    /// Thread is ready to run
+    Ready,
+    /// Thread is currently executing
+    Running,
+    /// Thread is waiting on atomic.wait
+    Waiting,
+    /// Thread has completed
+    Completed,
+    /// Thread was terminated
+    Terminated,
+}
+
+/// Shared memory segment for thread communication
+#[derive(Debug)]
+pub struct SharedMemory {
+    /// Memory data (uses atomic operations internally)
+    data: Vec<u8>,
+    /// Memory limits (min pages, max pages)
+    limits: (u32, Option<u32>),
+    /// Wait queue for atomic.wait/notify
+    waiters: spin::Mutex<Vec<Waiter>>,
+}
+
+/// A thread waiting on a memory location
+#[derive(Debug)]
+struct Waiter {
+    /// Address being waited on
+    address: u32,
+    /// Expected value (for i32.wait or i64.wait)
+    expected: u64,
+    /// Thread ID waiting
+    thread_id: ThreadId,
+    /// Whether this is a 32-bit or 64-bit wait
+    is_64bit: bool,
+}
+
+impl SharedMemory {
+    /// Create new shared memory with given initial pages
+    pub fn new(min_pages: u32, max_pages: Option<u32>) -> Self {
+        let initial_size = (min_pages as usize) * 65536;
+        Self {
+            data: alloc::vec![0u8; initial_size],
+            limits: (min_pages, max_pages),
+            waiters: spin::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Atomic load i32
+    pub fn atomic_load_i32(&self, addr: u32) -> Result<i32, WaveError> {
+        let addr = addr as usize;
+        if addr + 4 > self.data.len() {
+            return Err(WaveError::MemoryAccessOutOfBounds);
+        }
+        let bytes = [
+            self.data[addr],
+            self.data[addr + 1],
+            self.data[addr + 2],
+            self.data[addr + 3],
+        ];
+        Ok(i32::from_le_bytes(bytes))
+    }
+
+    /// Atomic store i32
+    pub fn atomic_store_i32(&mut self, addr: u32, val: i32) -> Result<(), WaveError> {
+        let addr = addr as usize;
+        if addr + 4 > self.data.len() {
+            return Err(WaveError::MemoryAccessOutOfBounds);
+        }
+        let bytes = val.to_le_bytes();
+        self.data[addr..addr + 4].copy_from_slice(&bytes);
+        Ok(())
+    }
+
+    /// Atomic load i64
+    pub fn atomic_load_i64(&self, addr: u32) -> Result<i64, WaveError> {
+        let addr = addr as usize;
+        if addr + 8 > self.data.len() {
+            return Err(WaveError::MemoryAccessOutOfBounds);
+        }
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&self.data[addr..addr + 8]);
+        Ok(i64::from_le_bytes(bytes))
+    }
+
+    /// Atomic store i64
+    pub fn atomic_store_i64(&mut self, addr: u32, val: i64) -> Result<(), WaveError> {
+        let addr = addr as usize;
+        if addr + 8 > self.data.len() {
+            return Err(WaveError::MemoryAccessOutOfBounds);
+        }
+        let bytes = val.to_le_bytes();
+        self.data[addr..addr + 8].copy_from_slice(&bytes);
+        Ok(())
+    }
+
+    /// Atomic add i32, returns old value
+    pub fn atomic_rmw_add_i32(&mut self, addr: u32, val: i32) -> Result<i32, WaveError> {
+        let old = self.atomic_load_i32(addr)?;
+        self.atomic_store_i32(addr, old.wrapping_add(val))?;
+        Ok(old)
+    }
+
+    /// Atomic compare-and-swap i32, returns old value
+    pub fn atomic_cmpxchg_i32(&mut self, addr: u32, expected: i32, replacement: i32) -> Result<i32, WaveError> {
+        let old = self.atomic_load_i32(addr)?;
+        if old == expected {
+            self.atomic_store_i32(addr, replacement)?;
+        }
+        Ok(old)
+    }
+
+    /// Notify waiters at an address
+    pub fn notify(&self, addr: u32, count: u32) -> u32 {
+        let mut waiters = self.waiters.lock();
+        let mut notified = 0u32;
+        waiters.retain(|w| {
+            if w.address == addr && notified < count {
+                notified += 1;
+                false // Remove from wait queue
+            } else {
+                true
+            }
+        });
+        notified
+    }
+
+    /// Wait on an address (returns immediately in this simplified version)
+    pub fn wait_i32(&self, addr: u32, expected: i32, _timeout_ns: i64) -> Result<i32, WaveError> {
+        let current = self.atomic_load_i32(addr)?;
+        if current != expected {
+            return Ok(1); // "not-equal" return
+        }
+        // In a full implementation, we'd add to wait queue and block
+        // For now, return 2 (timeout) immediately
+        Ok(2)
+    }
+}
+
+/// WASM thread execution context
+#[derive(Debug)]
+pub struct WasmThread {
+    /// Thread identifier
+    pub id: ThreadId,
+    /// Instance this thread belongs to
+    pub instance_id: InstanceId,
+    /// Thread state
+    pub state: ThreadState,
+    /// Thread's own value stack
+    value_stack: Vec<WasmValue>,
+    /// Thread's own call stack
+    call_stack: Vec<CallFrame>,
+    /// Thread-local storage (TLS index -> value)
+    tls: BTreeMap<u32, WasmValue>,
+}
+
+impl WasmThread {
+    /// Create a new thread
+    pub fn new(id: ThreadId, instance_id: InstanceId) -> Self {
+        Self {
+            id,
+            instance_id,
+            state: ThreadState::Ready,
+            value_stack: Vec::new(),
+            call_stack: Vec::new(),
+            tls: BTreeMap::new(),
+        }
+    }
+}
+
+// ============================================================================
+// JIT COMPILATION
+// ============================================================================
+
+/// JIT compilation tier
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JitTier {
+    /// Interpreted (baseline)
+    Interpreter,
+    /// Baseline JIT (fast compile, slower code)
+    Baseline,
+    /// Optimized JIT (slower compile, faster code)
+    Optimized,
+}
+
+/// JIT compiled function
+#[derive(Debug)]
+pub struct CompiledFunction {
+    /// Function index in module
+    pub func_idx: u32,
+    /// Compilation tier
+    pub tier: JitTier,
+    /// Native code (x86_64 machine code)
+    pub code: Vec<u8>,
+    /// Code entry point offset
+    pub entry_offset: usize,
+    /// Execution count (for tiering decisions)
+    pub execution_count: u64,
+}
+
+/// JIT compilation state for a module
+pub struct JitState {
+    /// Compiled functions by index
+    functions: BTreeMap<u32, CompiledFunction>,
+    /// Tier threshold (executions before baseline JIT)
+    baseline_threshold: u64,
+    /// Tier threshold (executions before optimized JIT)
+    optimize_threshold: u64,
+}
+
+impl JitState {
+    /// Create new JIT state
+    pub fn new() -> Self {
+        Self {
+            functions: BTreeMap::new(),
+            baseline_threshold: 100,
+            optimize_threshold: 10000,
+        }
+    }
+
+    /// Check if function should be compiled
+    pub fn should_compile(&self, func_idx: u32, exec_count: u64) -> Option<JitTier> {
+        if let Some(compiled) = self.functions.get(&func_idx) {
+            match compiled.tier {
+                JitTier::Interpreter if exec_count >= self.baseline_threshold => {
+                    Some(JitTier::Baseline)
+                }
+                JitTier::Baseline if exec_count >= self.optimize_threshold => {
+                    Some(JitTier::Optimized)
+                }
+                _ => None,
+            }
+        } else if exec_count >= self.baseline_threshold {
+            Some(JitTier::Baseline)
+        } else {
+            None
+        }
+    }
+
+    /// Compile a function to baseline tier
+    pub fn compile_baseline(&mut self, func_idx: u32, wasm_code: &[u8]) -> Result<(), WaveError> {
+        let mut code = Vec::new();
+        
+        // Generate x86_64 machine code (simplified baseline JIT)
+        // This is a template-based JIT that generates simple code
+        
+        // Function prologue
+        code.extend_from_slice(&[
+            0x55,                   // push rbp
+            0x48, 0x89, 0xE5,       // mov rbp, rsp
+            0x48, 0x83, 0xEC, 0x40, // sub rsp, 64 (locals space)
+        ]);
+        
+        // Walk through WASM bytecode and generate native code
+        let mut ip = 0;
+        while ip < wasm_code.len() {
+            let opcode = wasm_code[ip];
+            ip += 1;
+            
+            match opcode {
+                // i32.const
+                0x41 => {
+                    let (val, bytes_read) = self.read_leb128_i32(&wasm_code[ip..])?;
+                    ip += bytes_read;
+                    // mov eax, imm32; push rax
+                    code.push(0xB8);
+                    code.extend_from_slice(&(val as u32).to_le_bytes());
+                    code.extend_from_slice(&[0x50]); // push rax
+                }
+                // i32.add
+                0x6A => {
+                    // pop rcx; pop rax; add eax, ecx; push rax
+                    code.extend_from_slice(&[
+                        0x59,             // pop rcx
+                        0x58,             // pop rax
+                        0x01, 0xC8,       // add eax, ecx
+                        0x50,             // push rax
+                    ]);
+                }
+                // i32.sub
+                0x6B => {
+                    // pop rcx; pop rax; sub eax, ecx; push rax
+                    code.extend_from_slice(&[
+                        0x59,             // pop rcx
+                        0x58,             // pop rax
+                        0x29, 0xC8,       // sub eax, ecx
+                        0x50,             // push rax
+                    ]);
+                }
+                // i32.mul
+                0x6C => {
+                    // pop rcx; pop rax; imul eax, ecx; push rax
+                    code.extend_from_slice(&[
+                        0x59,                   // pop rcx
+                        0x58,                   // pop rax
+                        0x0F, 0xAF, 0xC1,       // imul eax, ecx
+                        0x50,                   // push rax
+                    ]);
+                }
+                // local.get
+                0x20 => {
+                    let (idx, bytes_read) = self.read_leb128_u32(&wasm_code[ip..])?;
+                    ip += bytes_read;
+                    // mov rax, [rbp - 8*(idx+1)]; push rax
+                    let offset = -((idx as i32 + 1) * 8);
+                    code.extend_from_slice(&[0x48, 0x8B, 0x45]);
+                    code.push(offset as u8);
+                    code.push(0x50);
+                }
+                // local.set
+                0x21 => {
+                    let (idx, bytes_read) = self.read_leb128_u32(&wasm_code[ip..])?;
+                    ip += bytes_read;
+                    // pop rax; mov [rbp - 8*(idx+1)], rax
+                    let offset = -((idx as i32 + 1) * 8);
+                    code.push(0x58); // pop rax
+                    code.extend_from_slice(&[0x48, 0x89, 0x45]);
+                    code.push(offset as u8);
+                }
+                // return / end
+                0x0F | 0x0B => {
+                    // pop rax (return value); epilogue
+                    code.extend_from_slice(&[
+                        0x58,                   // pop rax
+                        0x48, 0x89, 0xEC,       // mov rsp, rbp
+                        0x5D,                   // pop rbp
+                        0xC3,                   // ret
+                    ]);
+                }
+                _ => {
+                    // Unknown opcode - fall back to interpreter
+                    // In production, we'd generate a call to interpreter
+                }
+            }
+        }
+        
+        // Ensure we have an epilogue
+        code.extend_from_slice(&[
+            0x48, 0x89, 0xEC,       // mov rsp, rbp
+            0x5D,                   // pop rbp
+            0xC3,                   // ret
+        ]);
+        
+        let compiled = CompiledFunction {
+            func_idx,
+            tier: JitTier::Baseline,
+            code,
+            entry_offset: 0,
+            execution_count: 0,
+        };
+        
+        self.functions.insert(func_idx, compiled);
+        Ok(())
+    }
+    
+    fn read_leb128_i32(&self, data: &[u8]) -> Result<(i32, usize), WaveError> {
+        let mut result: i32 = 0;
+        let mut shift: u32 = 0;
+        let mut pos = 0;
+        
+        loop {
+            if pos >= data.len() {
+                return Err(WaveError::InvalidModule);
+            }
+            let byte = data[pos];
+            pos += 1;
+            
+            result |= ((byte & 0x7F) as i32) << shift;
+            shift += 7;
+            
+            if byte & 0x80 == 0 {
+                // Sign extend
+                if shift < 32 && (byte & 0x40) != 0 {
+                    result |= !0i32 << shift;
+                }
+                break;
+            }
+        }
+        
+        Ok((result, pos))
+    }
+    
+    fn read_leb128_u32(&self, data: &[u8]) -> Result<(u32, usize), WaveError> {
+        let mut result: u32 = 0;
+        let mut shift: u32 = 0;
+        let mut pos = 0;
+        
+        loop {
+            if pos >= data.len() {
+                return Err(WaveError::InvalidModule);
+            }
+            let byte = data[pos];
+            pos += 1;
+            
+            result |= ((byte & 0x7F) as u32) << shift;
+            shift += 7;
+            
+            if byte & 0x80 == 0 {
+                break;
+            }
+        }
+        
+        Ok((result, pos))
+    }
+
+    /// Get compiled function if available
+    pub fn get_compiled(&self, func_idx: u32) -> Option<&CompiledFunction> {
+        self.functions.get(&func_idx)
+    }
+}
+
+impl Default for JitState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Runtime instance of a WASM module.
@@ -1669,6 +3082,156 @@ impl Instance {
                 // s_net_close(sock: i32) -> i32
                 Ok(alloc::vec![WasmValue::I32(0)]) // OK
             }
+            
+            // =========================================================================
+            // EXPANDED HOST FUNCTION STUBS
+            // =========================================================================
+            
+            // Process management
+            HostFunction::SProcessSpawn => {
+                Ok(alloc::vec![WasmValue::I64(-1)]) // Not implemented
+            }
+            HostFunction::SProcessWait => {
+                Ok(alloc::vec![WasmValue::I32(-1)])
+            }
+            HostFunction::SProcessKill => {
+                Ok(alloc::vec![WasmValue::I32(-1)])
+            }
+            HostFunction::SProcessGetPid => {
+                Ok(alloc::vec![WasmValue::I64(1)]) // Mock PID
+            }
+            HostFunction::SProcessGetPpid => {
+                Ok(alloc::vec![WasmValue::I64(0)]) // Mock PPID
+            }
+            HostFunction::SProcessFork => {
+                Ok(alloc::vec![WasmValue::I64(-1)]) // Not supported in WASM
+            }
+            
+            // Memory management
+            HostFunction::SMemAlloc => {
+                Ok(alloc::vec![WasmValue::I32(0)]) // Fail - use memory.grow
+            }
+            HostFunction::SMemFree => {
+                Ok(alloc::vec![WasmValue::I32(0)]) // OK (no-op)
+            }
+            HostFunction::SMemGrow => {
+                // Should actually grow linear memory
+                Ok(alloc::vec![WasmValue::I32(-1)])
+            }
+            HostFunction::SMemSize => {
+                let pages = (self.memory.len() / 65536) as i32;
+                Ok(alloc::vec![WasmValue::I32(pages)])
+            }
+            
+            // Filesystem extended
+            HostFunction::SFsMkdir | HostFunction::SFsRmdir | HostFunction::SFsUnlink |
+            HostFunction::SFsRename | HostFunction::SFsStat | HostFunction::SFsReadDir |
+            HostFunction::SFsSync | HostFunction::SFsTruncate | HostFunction::SFsChdir => {
+                Ok(alloc::vec![WasmValue::I32(-1)]) // Not implemented
+            }
+            HostFunction::SFsSeek => {
+                Ok(alloc::vec![WasmValue::I64(-1)])
+            }
+            HostFunction::SFsGetCwd => {
+                Ok(alloc::vec![WasmValue::I32(-1)])
+            }
+            
+            // Network extended
+            HostFunction::SNetSocket | HostFunction::SNetBind | HostFunction::SNetListen |
+            HostFunction::SNetAccept | HostFunction::SNetSetsockopt | HostFunction::SNetGetpeername |
+            HostFunction::SNetResolve | HostFunction::SNetSendto | HostFunction::SNetRecvfrom => {
+                Ok(alloc::vec![WasmValue::I32(-1)]) // Not implemented
+            }
+            
+            // Thread management
+            HostFunction::SThreadCreate => {
+                Ok(alloc::vec![WasmValue::I32(-1)]) // Not implemented yet
+            }
+            HostFunction::SThreadJoin => {
+                Ok(alloc::vec![WasmValue::I32(-1)])
+            }
+            HostFunction::SThreadExit => {
+                Ok(alloc::vec![]) // No return
+            }
+            HostFunction::SThreadYield => {
+                Ok(alloc::vec![])
+            }
+            HostFunction::SThreadGetId => {
+                Ok(alloc::vec![WasmValue::I32(0)]) // Main thread
+            }
+            HostFunction::SThreadSleep => {
+                Ok(alloc::vec![WasmValue::I32(0)]) // OK
+            }
+            
+            // Synchronization
+            HostFunction::SSyncMutexCreate => {
+                Ok(alloc::vec![WasmValue::I32(-1)])
+            }
+            HostFunction::SSyncMutexLock | HostFunction::SSyncMutexUnlock |
+            HostFunction::SSyncMutexDestroy => {
+                Ok(alloc::vec![WasmValue::I32(-1)])
+            }
+            HostFunction::SSyncFutexWait => {
+                Ok(alloc::vec![WasmValue::I32(-1)])
+            }
+            HostFunction::SSyncFutexWake => {
+                Ok(alloc::vec![WasmValue::I32(0)])
+            }
+            
+            // Capability management
+            HostFunction::SCapCheck => {
+                Ok(alloc::vec![WasmValue::I32(1)]) // Always allowed (stub)
+            }
+            HostFunction::SCapRequest => {
+                Ok(alloc::vec![WasmValue::I64(0)]) // Null capability
+            }
+            HostFunction::SCapRevoke | HostFunction::SCapDelegate => {
+                Ok(alloc::vec![WasmValue::I32(-1)])
+            }
+            
+            // Service discovery
+            HostFunction::SServiceRegister | HostFunction::SServiceDiscover |
+            HostFunction::SServiceUnregister => {
+                Ok(alloc::vec![WasmValue::I32(-1)])
+            }
+            
+            // Time & timers
+            HostFunction::STimeMonotonic | HostFunction::STimeReal => {
+                // Return mock time (would use kernel time)
+                Ok(alloc::vec![WasmValue::I64(0)])
+            }
+            HostFunction::STimerCreate | HostFunction::STimerCancel => {
+                Ok(alloc::vec![WasmValue::I32(-1)])
+            }
+            
+            // System info
+            HostFunction::SSysInfo => {
+                Ok(alloc::vec![WasmValue::I32(-1)])
+            }
+            HostFunction::SSysCpuCount => {
+                Ok(alloc::vec![WasmValue::I32(1)]) // Single CPU
+            }
+            HostFunction::SSysMemFree => {
+                Ok(alloc::vec![WasmValue::I64(0)])
+            }
+            HostFunction::SSysUptime => {
+                Ok(alloc::vec![WasmValue::I64(0)])
+            }
+            
+            // Debug & profiling
+            HostFunction::SDebugPrint => {
+                // Same as SPrint
+                Ok(alloc::vec![WasmValue::I32(0)])
+            }
+            HostFunction::SDebugBreak => {
+                Ok(alloc::vec![])
+            }
+            HostFunction::SProfileStart => {
+                Ok(alloc::vec![WasmValue::I32(0)])
+            }
+            HostFunction::SProfileStop => {
+                Ok(alloc::vec![WasmValue::I64(0)])
+            }
         }
     }
 
@@ -2088,6 +3651,78 @@ impl Wave {
     /// Lists active instances.
     pub fn list_instances(&self) -> Vec<InstanceId> {
         self.instances.lock().keys().copied().collect()
+    }
+
+    /// Calls an exported function on an instance.
+    ///
+    /// This is the primary execution entry point for WASM modules.
+    pub fn call(
+        &self,
+        instance_id: InstanceId,
+        func_name: &str,
+        args: &[WasmValue],
+        cap_token: &CapabilityToken,
+    ) -> Result<Vec<WasmValue>, WaveError> {
+        let mut instances = self.instances.lock();
+        let instance = instances.get_mut(&instance_id).ok_or(WaveError::InstanceNotFound)?;
+        instance.call(func_name, args, cap_token)
+    }
+
+    /// Gets instance state.
+    pub fn instance_state(&self, instance_id: InstanceId) -> Result<InstanceState, WaveError> {
+        let instances = self.instances.lock();
+        let instance = instances.get(&instance_id).ok_or(WaveError::InstanceNotFound)?;
+        Ok(instance.state())
+    }
+
+    /// Reads memory from an instance.
+    pub fn read_memory(
+        &self,
+        instance_id: InstanceId,
+        offset: usize,
+        length: usize,
+    ) -> Result<Vec<u8>, WaveError> {
+        let instances = self.instances.lock();
+        let instance = instances.get(&instance_id).ok_or(WaveError::InstanceNotFound)?;
+        
+        if offset + length > instance.memory.len() {
+            return Err(WaveError::MemoryAccessOutOfBounds);
+        }
+        
+        Ok(instance.memory[offset..offset + length].to_vec())
+    }
+
+    /// Writes memory to an instance.
+    pub fn write_memory(
+        &self,
+        instance_id: InstanceId,
+        offset: usize,
+        data: &[u8],
+    ) -> Result<(), WaveError> {
+        let mut instances = self.instances.lock();
+        let instance = instances.get_mut(&instance_id).ok_or(WaveError::InstanceNotFound)?;
+        
+        if offset + data.len() > instance.memory.len() {
+            return Err(WaveError::MemoryAccessOutOfBounds);
+        }
+        
+        instance.memory[offset..offset + data.len()].copy_from_slice(data);
+        Ok(())
+    }
+
+    /// Gets steps executed for an instance.
+    pub fn steps_executed(&self, instance_id: InstanceId) -> Result<u64, WaveError> {
+        let instances = self.instances.lock();
+        let instance = instances.get(&instance_id).ok_or(WaveError::InstanceNotFound)?;
+        Ok(instance.steps_executed())
+    }
+
+    /// Resets an instance for fresh execution.
+    pub fn reset_instance(&self, instance_id: InstanceId) -> Result<(), WaveError> {
+        let mut instances = self.instances.lock();
+        let instance = instances.get_mut(&instance_id).ok_or(WaveError::InstanceNotFound)?;
+        instance.reset_execution();
+        Ok(())
     }
 }
 

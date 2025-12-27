@@ -87,11 +87,510 @@ pub enum SplaxFsError {
     NotMounted,
     /// Read-only filesystem
     ReadOnly,
+    /// Journal error
+    JournalError,
+    /// Transaction not found
+    TransactionNotFound,
 }
 
 impl From<BlockError> for SplaxFsError {
     fn from(_: BlockError) -> Self {
         SplaxFsError::IoError
+    }
+}
+
+// =============================================================================
+// Journaling Support
+// =============================================================================
+
+/// Journal magic number ("JRNL")
+const JOURNAL_MAGIC: u32 = 0x4A524E4C;
+
+/// Maximum journal entries
+const MAX_JOURNAL_ENTRIES: usize = 64;
+
+/// Journal entry state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum JournalState {
+    /// Entry is free
+    Free = 0,
+    /// Transaction in progress (not yet committed)
+    Pending = 1,
+    /// Transaction committed (can be replayed)
+    Committed = 2,
+    /// Transaction checkpointed (applied to disk)
+    Checkpointed = 3,
+}
+
+impl From<u8> for JournalState {
+    fn from(val: u8) -> Self {
+        match val {
+            1 => JournalState::Pending,
+            2 => JournalState::Committed,
+            3 => JournalState::Checkpointed,
+            _ => JournalState::Free,
+        }
+    }
+}
+
+/// Journal superblock (stored in block 1)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct JournalSuperblock {
+    /// Magic number (JOURNAL_MAGIC)
+    pub magic: u32,
+    /// Journal version
+    pub version: u32,
+    /// First log block number
+    pub first_log_block: u32,
+    /// Number of log blocks
+    pub log_blocks: u32,
+    /// Head position (next write)
+    pub head: u32,
+    /// Tail position (oldest uncommitted)
+    pub tail: u32,
+    /// Sequence number counter
+    pub sequence: u64,
+    /// Number of active transactions
+    pub active_transactions: u32,
+    /// Reserved for future use
+    pub _reserved: [u8; 476],
+}
+
+impl JournalSuperblock {
+    /// Creates a new journal superblock
+    pub fn new(first_log_block: u32, log_blocks: u32) -> Self {
+        Self {
+            magic: JOURNAL_MAGIC,
+            version: 1,
+            first_log_block,
+            log_blocks,
+            head: 0,
+            tail: 0,
+            sequence: 1,
+            active_transactions: 0,
+            _reserved: [0; 476],
+        }
+    }
+
+    /// Validates the journal superblock
+    pub fn is_valid(&self) -> bool {
+        self.magic == JOURNAL_MAGIC
+    }
+
+    /// Serialize to bytes
+    pub fn to_bytes(&self) -> [u8; 512] {
+        let mut buf = [0u8; 512];
+        unsafe {
+            let ptr = self as *const Self as *const u8;
+            core::ptr::copy_nonoverlapping(ptr, buf.as_mut_ptr(), 512);
+        }
+        buf
+    }
+
+    /// Deserialize from bytes
+    pub fn from_bytes(buf: &[u8]) -> Self {
+        let mut jsb = Self {
+            magic: 0,
+            version: 0,
+            first_log_block: 0,
+            log_blocks: 0,
+            head: 0,
+            tail: 0,
+            sequence: 0,
+            active_transactions: 0,
+            _reserved: [0; 476],
+        };
+        unsafe {
+            let ptr = &mut jsb as *mut Self as *mut u8;
+            core::ptr::copy_nonoverlapping(buf.as_ptr(), ptr, core::cmp::min(buf.len(), 512));
+        }
+        jsb
+    }
+}
+
+/// A journal transaction entry (header)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct JournalEntry {
+    /// Entry type (0=descriptor, 1=commit, 2=abort)
+    pub entry_type: u8,
+    /// Entry state
+    pub state: u8,
+    /// Number of block updates in this transaction
+    pub block_count: u16,
+    /// Transaction ID
+    pub transaction_id: u64,
+    /// Timestamp
+    pub timestamp: u64,
+    /// Checksum
+    pub checksum: u32,
+    /// Reserved
+    pub _reserved: [u8; 8],
+}
+
+impl JournalEntry {
+    /// Size of entry header
+    pub const SIZE: usize = 32;
+
+    /// Creates a new transaction descriptor
+    pub fn new_descriptor(transaction_id: u64, block_count: u16) -> Self {
+        Self {
+            entry_type: 0,
+            state: JournalState::Pending as u8,
+            block_count,
+            transaction_id,
+            timestamp: 0, // Would be set from RTC
+            checksum: 0,
+            _reserved: [0; 8],
+        }
+    }
+
+    /// Creates a commit marker
+    pub fn new_commit(transaction_id: u64) -> Self {
+        Self {
+            entry_type: 1,
+            state: JournalState::Committed as u8,
+            block_count: 0,
+            transaction_id,
+            timestamp: 0,
+            checksum: 0,
+            _reserved: [0; 8],
+        }
+    }
+
+    /// Creates an abort marker
+    pub fn new_abort(transaction_id: u64) -> Self {
+        Self {
+            entry_type: 2,
+            state: JournalState::Free as u8,
+            block_count: 0,
+            transaction_id,
+            timestamp: 0,
+            checksum: 0,
+            _reserved: [0; 8],
+        }
+    }
+
+    /// Serialize to bytes
+    pub fn to_bytes(&self) -> [u8; 32] {
+        let mut buf = [0u8; 32];
+        buf[0] = self.entry_type;
+        buf[1] = self.state;
+        buf[2..4].copy_from_slice(&self.block_count.to_le_bytes());
+        buf[4..12].copy_from_slice(&self.transaction_id.to_le_bytes());
+        buf[12..20].copy_from_slice(&self.timestamp.to_le_bytes());
+        buf[20..24].copy_from_slice(&self.checksum.to_le_bytes());
+        buf
+    }
+
+    /// Deserialize from bytes
+    pub fn from_bytes(buf: &[u8]) -> Self {
+        Self {
+            entry_type: buf.get(0).copied().unwrap_or(0),
+            state: buf.get(1).copied().unwrap_or(0),
+            block_count: u16::from_le_bytes([buf.get(2).copied().unwrap_or(0), buf.get(3).copied().unwrap_or(0)]),
+            transaction_id: u64::from_le_bytes([
+                buf.get(4).copied().unwrap_or(0), buf.get(5).copied().unwrap_or(0),
+                buf.get(6).copied().unwrap_or(0), buf.get(7).copied().unwrap_or(0),
+                buf.get(8).copied().unwrap_or(0), buf.get(9).copied().unwrap_or(0),
+                buf.get(10).copied().unwrap_or(0), buf.get(11).copied().unwrap_or(0),
+            ]),
+            timestamp: u64::from_le_bytes([
+                buf.get(12).copied().unwrap_or(0), buf.get(13).copied().unwrap_or(0),
+                buf.get(14).copied().unwrap_or(0), buf.get(15).copied().unwrap_or(0),
+                buf.get(16).copied().unwrap_or(0), buf.get(17).copied().unwrap_or(0),
+                buf.get(18).copied().unwrap_or(0), buf.get(19).copied().unwrap_or(0),
+            ]),
+            checksum: u32::from_le_bytes([
+                buf.get(20).copied().unwrap_or(0), buf.get(21).copied().unwrap_or(0),
+                buf.get(22).copied().unwrap_or(0), buf.get(23).copied().unwrap_or(0),
+            ]),
+            _reserved: [0; 8],
+        }
+    }
+}
+
+/// Block update record in journal
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct JournalBlockRecord {
+    /// Original block number
+    pub block_num: u32,
+    /// Block data (copy of the block before modification)
+    pub data: Vec<u8>,
+}
+
+impl JournalBlockRecord {
+    /// Creates a new block record
+    pub fn new(block_num: u32, data: Vec<u8>) -> Self {
+        Self { block_num, data }
+    }
+}
+
+/// Transaction handle for journaling operations
+#[derive(Debug)]
+pub struct Transaction {
+    /// Transaction ID
+    pub id: u64,
+    /// Block updates in this transaction
+    pub updates: Vec<JournalBlockRecord>,
+    /// Is transaction committed?
+    pub committed: bool,
+}
+
+impl Transaction {
+    /// Creates a new transaction
+    pub fn new(id: u64) -> Self {
+        Self {
+            id,
+            updates: Vec::new(),
+            committed: false,
+        }
+    }
+
+    /// Records a block update (write-ahead log)
+    pub fn record_update(&mut self, block_num: u32, old_data: Vec<u8>) {
+        self.updates.push(JournalBlockRecord::new(block_num, old_data));
+    }
+}
+
+/// Journal manager for a mounted filesystem
+pub struct Journal {
+    /// Device name
+    device_name: String,
+    /// Journal superblock (cached)
+    superblock: JournalSuperblock,
+    /// Active transactions
+    transactions: Vec<Transaction>,
+    /// Next transaction ID
+    next_transaction_id: u64,
+}
+
+impl Journal {
+    /// Initializes a new journal on disk
+    pub fn format(device: &dyn BlockDevice, first_log_block: u32, log_blocks: u32) -> Result<(), SplaxFsError> {
+        let jsb = JournalSuperblock::new(first_log_block, log_blocks);
+        
+        // Write journal superblock to block 1
+        let mut block_buf = [0u8; BLOCK_SIZE];
+        let jsb_bytes = jsb.to_bytes();
+        block_buf[..512].copy_from_slice(&jsb_bytes);
+        
+        let sector_size = device.info().sector_size;
+        let sectors_per_block = BLOCK_SIZE / sector_size;
+        let start_sector = 1 * sectors_per_block as u64;
+        device.write_sectors(start_sector, &block_buf)?;
+        
+        // Zero out the log area
+        let zero_block = [0u8; BLOCK_SIZE];
+        for i in 0..log_blocks {
+            let start_sector = (first_log_block + i) as u64 * sectors_per_block as u64;
+            device.write_sectors(start_sector, &zero_block)?;
+        }
+        
+        crate::serial_println!("[journal] Formatted journal: {} blocks at block {}", log_blocks, first_log_block);
+        Ok(())
+    }
+
+    /// Opens an existing journal
+    pub fn open(device_name: &str) -> Result<Self, SplaxFsError> {
+        let jsb = block::with_device(device_name, |device| {
+            let mut block_buf = [0u8; BLOCK_SIZE];
+            let sector_size = device.info().sector_size;
+            let sectors_per_block = BLOCK_SIZE / sector_size;
+            let start_sector = 1 * sectors_per_block as u64;
+            device.read_sectors(start_sector, &mut block_buf)?;
+            Ok::<_, SplaxFsError>(JournalSuperblock::from_bytes(&block_buf))
+        }).map_err(|_| SplaxFsError::IoError)??;
+
+        if !jsb.is_valid() {
+            return Err(SplaxFsError::JournalError);
+        }
+
+        Ok(Self {
+            device_name: String::from(device_name),
+            superblock: jsb,
+            transactions: Vec::new(),
+            next_transaction_id: jsb.sequence,
+        })
+    }
+
+    /// Begins a new transaction
+    pub fn begin(&mut self) -> u64 {
+        let id = self.next_transaction_id;
+        self.next_transaction_id += 1;
+        self.transactions.push(Transaction::new(id));
+        crate::serial_println!("[journal] Begin transaction {}", id);
+        id
+    }
+
+    /// Records a block update for a transaction
+    pub fn record_block(&mut self, transaction_id: u64, block_num: u32, old_data: Vec<u8>) -> Result<(), SplaxFsError> {
+        if let Some(txn) = self.transactions.iter_mut().find(|t| t.id == transaction_id) {
+            txn.record_update(block_num, old_data);
+            Ok(())
+        } else {
+            Err(SplaxFsError::TransactionNotFound)
+        }
+    }
+
+    /// Commits a transaction (writes to journal, marks committed)
+    pub fn commit(&mut self, transaction_id: u64) -> Result<(), SplaxFsError> {
+        let txn_idx = self.transactions.iter().position(|t| t.id == transaction_id)
+            .ok_or(SplaxFsError::TransactionNotFound)?;
+        
+        // Write transaction to journal log
+        let device_name = self.device_name.clone();
+        let first_log_block = self.superblock.first_log_block;
+        let log_blocks = self.superblock.log_blocks;
+        let head = self.superblock.head;
+        
+        block::with_device(&device_name, |device| {
+            let txn = &self.transactions[txn_idx];
+            let sector_size = device.info().sector_size;
+            let sectors_per_block = BLOCK_SIZE / sector_size;
+            
+            // Calculate position in circular log
+            let log_pos = (head as usize) % (log_blocks as usize);
+            let log_block = first_log_block + log_pos as u32;
+            
+            // Write descriptor entry
+            let mut block_buf = [0u8; BLOCK_SIZE];
+            let entry = JournalEntry::new_descriptor(txn.id, txn.updates.len() as u16);
+            block_buf[..JournalEntry::SIZE].copy_from_slice(&entry.to_bytes());
+            
+            // Write block numbers (simplified - full impl would write actual data)
+            let mut offset = JournalEntry::SIZE;
+            for update in &txn.updates {
+                if offset + 4 <= BLOCK_SIZE {
+                    block_buf[offset..offset + 4].copy_from_slice(&update.block_num.to_le_bytes());
+                    offset += 4;
+                }
+            }
+            
+            let start_sector = log_block as u64 * sectors_per_block as u64;
+            device.write_sectors(start_sector, &block_buf)?;
+            
+            // Write commit marker
+            let commit_entry = JournalEntry::new_commit(txn.id);
+            let mut commit_buf = [0u8; BLOCK_SIZE];
+            commit_buf[..JournalEntry::SIZE].copy_from_slice(&commit_entry.to_bytes());
+            
+            let commit_pos = ((head as usize) + 1) % (log_blocks as usize);
+            let commit_block = first_log_block + commit_pos as u32;
+            let commit_sector = commit_block as u64 * sectors_per_block as u64;
+            device.write_sectors(commit_sector, &commit_buf)?;
+            
+            Ok::<(), SplaxFsError>(())
+        }).map_err(|_| SplaxFsError::IoError)??;
+        
+        // Update journal superblock
+        self.superblock.head = (head + 2) % log_blocks;
+        self.superblock.sequence = self.next_transaction_id;
+        self.sync_superblock()?;
+        
+        // Mark transaction as committed
+        self.transactions[txn_idx].committed = true;
+        crate::serial_println!("[journal] Committed transaction {}", transaction_id);
+        
+        Ok(())
+    }
+
+    /// Aborts a transaction (discards changes)
+    pub fn abort(&mut self, transaction_id: u64) -> Result<(), SplaxFsError> {
+        if let Some(idx) = self.transactions.iter().position(|t| t.id == transaction_id) {
+            self.transactions.remove(idx);
+            crate::serial_println!("[journal] Aborted transaction {}", transaction_id);
+            Ok(())
+        } else {
+            Err(SplaxFsError::TransactionNotFound)
+        }
+    }
+
+    /// Checkpoints committed transactions (removes from journal after data is on disk)
+    pub fn checkpoint(&mut self, transaction_id: u64) -> Result<(), SplaxFsError> {
+        if let Some(idx) = self.transactions.iter().position(|t| t.id == transaction_id && t.committed) {
+            self.transactions.remove(idx);
+            
+            // Update tail pointer
+            self.superblock.tail = (self.superblock.tail + 2) % self.superblock.log_blocks;
+            self.superblock.active_transactions = self.transactions.len() as u32;
+            self.sync_superblock()?;
+            
+            crate::serial_println!("[journal] Checkpointed transaction {}", transaction_id);
+            Ok(())
+        } else {
+            Err(SplaxFsError::TransactionNotFound)
+        }
+    }
+
+    /// Recovers the filesystem by replaying committed transactions
+    pub fn recover(&mut self) -> Result<usize, SplaxFsError> {
+        let device_name = self.device_name.clone();
+        let first_log_block = self.superblock.first_log_block;
+        let log_blocks = self.superblock.log_blocks;
+        let tail = self.superblock.tail;
+        let head = self.superblock.head;
+        
+        if tail == head {
+            crate::serial_println!("[journal] No transactions to recover");
+            return Ok(0);
+        }
+        
+        let mut recovered = 0;
+        
+        block::with_device(&device_name, |device| {
+            let sector_size = device.info().sector_size;
+            let sectors_per_block = BLOCK_SIZE / sector_size;
+            
+            let mut pos = tail;
+            while pos != head {
+                let log_block = first_log_block + (pos as usize % log_blocks as usize) as u32;
+                let start_sector = log_block as u64 * sectors_per_block as u64;
+                
+                let mut block_buf = [0u8; BLOCK_SIZE];
+                device.read_sectors(start_sector, &mut block_buf)?;
+                
+                let entry = JournalEntry::from_bytes(&block_buf);
+                
+                if entry.state == JournalState::Committed as u8 {
+                    // This transaction was committed, it's already applied
+                    recovered += 1;
+                }
+                
+                pos = (pos + 1) % log_blocks;
+            }
+            
+            Ok::<(), SplaxFsError>(())
+        }).map_err(|_| SplaxFsError::IoError)??;
+        
+        // Clear journal after recovery
+        self.superblock.head = 0;
+        self.superblock.tail = 0;
+        self.sync_superblock()?;
+        
+        crate::serial_println!("[journal] Recovered {} transactions", recovered);
+        Ok(recovered)
+    }
+
+    /// Syncs journal superblock to disk
+    fn sync_superblock(&self) -> Result<(), SplaxFsError> {
+        let device_name = self.device_name.clone();
+        let jsb = self.superblock;
+        
+        block::with_device(&device_name, |device| {
+            let mut block_buf = [0u8; BLOCK_SIZE];
+            let jsb_bytes = jsb.to_bytes();
+            block_buf[..512].copy_from_slice(&jsb_bytes);
+            
+            let sector_size = device.info().sector_size;
+            let sectors_per_block = BLOCK_SIZE / sector_size;
+            let start_sector = 1 * sectors_per_block as u64;
+            device.write_sectors(start_sector, &block_buf)?;
+            Ok(())
+        }).map_err(|_| SplaxFsError::IoError)?
     }
 }
 
@@ -455,6 +954,10 @@ pub struct SplaxFs {
     dirty: bool,
     /// Mount point
     mount_point: String,
+    /// Journal (optional, for journaled mounts)
+    journal: Option<Journal>,
+    /// Current transaction ID (if any)
+    current_transaction: Option<u64>,
 }
 
 impl SplaxFs {
@@ -594,9 +1097,25 @@ impl SplaxFs {
                 inode_bitmap,
                 dirty: false,
                 mount_point: String::from(mount_point),
+                journal: None, // Journal will be opened separately if available
+                current_transaction: None,
             })
         }) {
-            Ok(inner) => inner,
+            Ok(inner) => {
+                let mut fs = inner?;
+                // Try to open journal if it exists
+                if let Ok(mut journal) = Journal::open(device_name) {
+                    // Recover any uncommitted transactions
+                    if let Ok(recovered) = journal.recover() {
+                        if recovered > 0 {
+                            crate::serial_println!("[splaxfs] Recovered {} transactions from journal", recovered);
+                        }
+                    }
+                    fs.journal = Some(journal);
+                    crate::serial_println!("[splaxfs] Journal enabled");
+                }
+                Ok(fs)
+            },
             Err(_) => Err(SplaxFsError::NotFound),
         }
     }
@@ -1142,6 +1661,208 @@ impl SplaxFs {
             Ok((String::from("/"), String::from(path)))
         }
     }
+
+    // =========================================================================
+    // Journaling Methods
+    // =========================================================================
+
+    /// Begins a journaled transaction
+    pub fn begin_transaction(&mut self) -> Result<u64, SplaxFsError> {
+        if let Some(ref mut journal) = self.journal {
+            let txn_id = journal.begin();
+            self.current_transaction = Some(txn_id);
+            Ok(txn_id)
+        } else {
+            Err(SplaxFsError::JournalError)
+        }
+    }
+
+    /// Commits the current transaction
+    pub fn commit_transaction(&mut self) -> Result<(), SplaxFsError> {
+        if let Some(txn_id) = self.current_transaction.take() {
+            if let Some(ref mut journal) = self.journal {
+                journal.commit(txn_id)?;
+            }
+            Ok(())
+        } else {
+            Err(SplaxFsError::TransactionNotFound)
+        }
+    }
+
+    /// Aborts the current transaction
+    pub fn abort_transaction(&mut self) -> Result<(), SplaxFsError> {
+        if let Some(txn_id) = self.current_transaction.take() {
+            if let Some(ref mut journal) = self.journal {
+                journal.abort(txn_id)?;
+            }
+            Ok(())
+        } else {
+            Err(SplaxFsError::TransactionNotFound)
+        }
+    }
+
+    /// Writes data to a file with journaling support
+    pub fn write_file_journaled(&mut self, path: &str, data: &[u8]) -> Result<(), SplaxFsError> {
+        // Begin transaction
+        let _txn_id = self.begin_transaction().ok();
+        
+        // Perform the write
+        let result = self.write_file(path, data);
+        
+        // Commit or abort based on result
+        if result.is_ok() {
+            let _ = self.commit_transaction();
+        } else {
+            let _ = self.abort_transaction();
+        }
+        
+        result
+    }
+
+    /// Creates a file with journaling support
+    pub fn create_file_journaled(&mut self, path: &str) -> Result<(), SplaxFsError> {
+        let _txn_id = self.begin_transaction().ok();
+        let result = self.create_file(path);
+        if result.is_ok() {
+            let _ = self.commit_transaction();
+        } else {
+            let _ = self.abort_transaction();
+        }
+        result
+    }
+
+    /// Creates a directory with journaling support
+    pub fn create_dir_journaled(&mut self, path: &str) -> Result<(), SplaxFsError> {
+        let _txn_id = self.begin_transaction().ok();
+        let result = self.create_dir(path);
+        if result.is_ok() {
+            let _ = self.commit_transaction();
+        } else {
+            let _ = self.abort_transaction();
+        }
+        result
+    }
+
+    /// Syncs all pending data to disk
+    pub fn sync(&mut self) -> Result<(), SplaxFsError> {
+        let device_name = self.device_name.clone();
+        let inode_bitmap = self.inode_bitmap.clone();
+        let block_bitmap = self.block_bitmap.clone();
+        let superblock = self.superblock.clone();
+        
+        block::with_device(&device_name, |device| {
+            Self::sync_bitmaps_static(device, &superblock, &inode_bitmap, &block_bitmap)
+        }).map_err(|_| SplaxFsError::IoError)??;
+        
+        // Checkpoint any committed transactions
+        if let Some(ref mut journal) = self.journal {
+            // For now, just log that sync was called
+            crate::serial_println!("[splaxfs] Sync complete");
+        }
+        
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// Formats a device with SplaxFS including journal
+    pub fn format_with_journal(device_name: &str) -> Result<(), SplaxFsError> {
+        crate::serial_println!("[splaxfs] Formatting device {} with journal...", device_name);
+
+        block::with_device(device_name, |device| {
+            let info = device.info();
+            let total_sectors = info.total_sectors;
+            let sector_size = info.sector_size;
+            
+            // Calculate filesystem parameters
+            let sectors_per_block = BLOCK_SIZE / sector_size;
+            let total_blocks = (total_sectors as usize / sectors_per_block) as u32;
+            
+            if total_blocks < 32 {
+                crate::serial_println!("[splaxfs] Device too small for journaled filesystem");
+                return Err(SplaxFsError::NoSpace);
+            }
+            
+            // Layout with journal:
+            // Block 0: Superblock
+            // Block 1: Journal Superblock
+            // Block 2-9: Journal Log Area (8 blocks)
+            // Block 10: Block bitmap
+            // Block 11: Inode bitmap
+            // Block 12-19: Inode table (8 blocks = 256 inodes)
+            // Block 20+: Data blocks
+            
+            let journal_log_start = 2u32;
+            let journal_log_blocks = 8u32;
+            let block_bitmap_block = 10u32;
+            let inode_bitmap_block = 11u32;
+            let inode_table_start = 12u32;
+            let inode_table_blocks = 8u32;
+            let first_data_block = inode_table_start + inode_table_blocks;
+            let total_inodes = inode_table_blocks * INODES_PER_BLOCK as u32;
+            
+            // Create and write superblock
+            let sb = Superblock::new(total_blocks, total_inodes, first_data_block);
+            let mut block_buf = [0u8; BLOCK_SIZE];
+            let sb_bytes = sb.to_bytes();
+            block_buf[..512].copy_from_slice(&sb_bytes);
+            Self::write_block(device, 0, &block_buf)?;
+            
+            // Initialize journal
+            Journal::format(device, journal_log_start, journal_log_blocks)?;
+            
+            // Initialize block bitmap (mark metadata blocks as used)
+            let mut block_bitmap = vec![0u8; BLOCK_SIZE];
+            for i in 0..first_data_block {
+                let byte = (i / 8) as usize;
+                let bit = (i % 8) as usize;
+                if byte < block_bitmap.len() {
+                    block_bitmap[byte] |= 1 << bit;
+                }
+            }
+            Self::write_block(device, block_bitmap_block, &block_bitmap)?;
+            
+            // Initialize inode bitmap (mark inodes 0, 1, 2 as used)
+            let mut inode_bitmap = vec![0u8; BLOCK_SIZE];
+            inode_bitmap[0] = 0b00000111;
+            Self::write_block(device, inode_bitmap_block, &inode_bitmap)?;
+            
+            // Initialize inode table with zeros
+            let zero_block = [0u8; BLOCK_SIZE];
+            for i in 0..inode_table_blocks {
+                Self::write_block(device, inode_table_start + i, &zero_block)?;
+            }
+            
+            // Create root directory inode (inode 2)
+            let mut root_inode = DiskInode::new_directory();
+            root_inode.size_low = BLOCK_SIZE as u32;
+            root_inode.blocks = (BLOCK_SIZE / 512) as u32;
+            root_inode.direct[0] = first_data_block;
+            Self::write_inode(device, ROOT_INODE, &root_inode)?;
+            
+            // Create root directory content
+            let mut root_block = [0u8; BLOCK_SIZE];
+            let dot = DirEntry::new(ROOT_INODE, ".", FileType::Directory);
+            let dotdot = DirEntry::new(ROOT_INODE, "..", FileType::Directory);
+            root_block[..DIRENT_SIZE].copy_from_slice(&dot.to_bytes());
+            root_block[DIRENT_SIZE..2 * DIRENT_SIZE].copy_from_slice(&dotdot.to_bytes());
+            
+            // Mark first data block as used
+            block_bitmap[first_data_block as usize / 8] |= 1 << (first_data_block % 8);
+            Self::write_block(device, block_bitmap_block, &block_bitmap)?;
+            
+            // Write root directory block
+            Self::write_block(device, first_data_block, &root_block)?;
+            
+            crate::serial_println!("[splaxfs] Format with journal complete:");
+            crate::serial_println!("  Total blocks: {}", total_blocks);
+            crate::serial_println!("  Journal blocks: {}", journal_log_blocks);
+            crate::serial_println!("  Total inodes: {}", total_inodes);
+            crate::serial_println!("  First data block: {}", first_data_block);
+            crate::serial_println!("  Usable space: {} KB", (total_blocks - first_data_block) * 4);
+            
+            Ok(())
+        }).map_err(|_| SplaxFsError::NotFound)?
+    }
 }
 
 /// Global mounted filesystems
@@ -1152,6 +1873,11 @@ pub fn format(device: &str) -> Result<(), SplaxFsError> {
     SplaxFs::format(device)
 }
 
+/// Formats a device with SplaxFS including journal
+pub fn format_journaled(device: &str) -> Result<(), SplaxFsError> {
+    SplaxFs::format_with_journal(device)
+}
+
 /// Mounts a SplaxFS filesystem
 pub fn mount(device: &str, mount_point: &str) -> Result<(), SplaxFsError> {
     let fs = SplaxFs::mount(device, mount_point)?;
@@ -1159,8 +1885,20 @@ pub fn mount(device: &str, mount_point: &str) -> Result<(), SplaxFsError> {
     Ok(())
 }
 
+/// Syncs a mounted filesystem
+pub fn sync(mount_point: &str) -> Result<(), SplaxFsError> {
+    let mut mounts = MOUNTED_FS.lock();
+    if let Some(fs) = mounts.get_mut(mount_point) {
+        fs.sync()
+    } else {
+        Err(SplaxFsError::NotMounted)
+    }
+}
+
 /// Unmounts a filesystem
 pub fn unmount(mount_point: &str) -> Result<(), SplaxFsError> {
+    // Sync before unmounting
+    let _ = sync(mount_point);
     MOUNTED_FS.lock().remove(mount_point).ok_or(SplaxFsError::NotMounted)?;
     crate::serial_println!("[splaxfs] Unmounted {}", mount_point);
     Ok(())

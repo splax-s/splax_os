@@ -901,6 +901,10 @@ fn execute_shell_command(cmd: &str) {
             crate::vga_println!("  clock         - Live clock display");
             crate::vga_println!("  shutdown      - Power off system");
             crate::vga_println!("  reboot        - Reboot system");
+            crate::vga_println!();
+            crate::vga_println!("USB:");
+            crate::vga_println!("  lsusb         - List USB devices");
+            crate::vga_println!("  usb <cmd>     - USB subsystem (info/tree/init)");
         }
         "sconf" => {
             use super::vga::Color;
@@ -2678,6 +2682,88 @@ fn execute_shell_command(cmd: &str) {
             super::vga::set_color(Color::LightGray, Color::Black);
             power::reboot();
         }
+        "lsusb" => {
+            use super::vga::Color;
+            super::vga::set_color(Color::Yellow, Color::Black);
+            crate::vga_println!("USB Devices:");
+            super::vga::set_color(Color::LightGray, Color::Black);
+            
+            let subsystem = crate::usb::subsystem();
+            if let Some(ref usb) = *subsystem {
+                if usb.device_count() == 0 {
+                    crate::vga_println!("  (no USB devices detected)");
+                } else {
+                    for device in usb.devices() {
+                        super::vga::set_color(Color::LightGreen, Color::Black);
+                        crate::vga_print!("  Bus {:03} Device {:03}", 0, device.address);
+                        super::vga::set_color(Color::LightGray, Color::Black);
+                        crate::vga_print!(": ID {:04x}:{:04x} ", device.vendor_id, device.product_id);
+                        crate::vga_println!("{}", device.class_name());
+                        
+                        if let Some(ref mfr) = device.manufacturer {
+                            crate::vga_println!("    Manufacturer: {}", mfr);
+                        }
+                        if let Some(ref prod) = device.product {
+                            crate::vga_println!("    Product: {}", prod);
+                        }
+                        crate::vga_println!("    Speed: {}", device.speed.as_str());
+                    }
+                }
+            } else {
+                super::vga::set_color(Color::LightRed, Color::Black);
+                crate::vga_println!("  USB subsystem not initialized");
+            }
+            super::vga::set_color(Color::LightGray, Color::Black);
+        }
+        "usb" => {
+            use super::vga::Color;
+            let subcmd = parts[1];
+            
+            match subcmd {
+                "info" | "status" => {
+                    super::vga::set_color(Color::Yellow, Color::Black);
+                    crate::vga_println!("USB Subsystem Status:");
+                    super::vga::set_color(Color::LightGray, Color::Black);
+                    
+                    let subsystem = crate::usb::subsystem();
+                    if let Some(ref usb) = *subsystem {
+                        crate::vga_println!("  Status: Initialized");
+                        crate::vga_println!("  Devices: {}", usb.device_count());
+                        
+                        // Show HID keyboards
+                        let kbd_count = crate::usb::hid::keyboard_count();
+                        crate::vga_println!("  Keyboards: {}", kbd_count);
+                    } else {
+                        crate::vga_println!("  Status: Not initialized");
+                    }
+                }
+                "tree" => {
+                    crate::usb::print_device_tree();
+                }
+                "init" => {
+                    match crate::usb::init() {
+                        Ok(()) => {
+                            super::vga::set_color(Color::LightGreen, Color::Black);
+                            crate::vga_println!("USB subsystem initialized");
+                        }
+                        Err(e) => {
+                            super::vga::set_color(Color::LightRed, Color::Black);
+                            crate::vga_println!("USB init failed: {}", e);
+                        }
+                    }
+                    super::vga::set_color(Color::LightGray, Color::Black);
+                }
+                _ => {
+                    super::vga::set_color(Color::LightCyan, Color::Black);
+                    crate::vga_println!("USB Commands:");
+                    super::vga::set_color(Color::LightGray, Color::Black);
+                    crate::vga_println!("  usb info   - USB subsystem status");
+                    crate::vga_println!("  usb tree   - USB device tree");
+                    crate::vga_println!("  usb init   - Initialize USB subsystem");
+                    crate::vga_println!("  lsusb      - List USB devices");
+                }
+            }
+        }
         "" => {}
         _ => {
             use super::vga::Color;
@@ -2778,6 +2864,10 @@ fn execute_serial_command(cmd: &str) {
             serial_println!("  version       - Version info");
             serial_println!("  clear         - Clear screen");
             serial_println!("  reboot        - Halt system");
+            serial_println!();
+            serial_println!("USB:");
+            serial_println!("  lsusb         - List USB devices");
+            serial_println!("  usb <cmd>     - USB subsystem (info/tree/init)");
             serial_println!();
             serial_println!("Runtime:");
             serial_println!("  wasm <cmd>    - S-WAVE WASM runtime (use 'wasm help')");
@@ -3754,6 +3844,71 @@ fn execute_serial_command(cmd: &str) {
             serial_println!("System is going down for reboot NOW!");
             serial_println!();
             power::reboot();
+        }
+        "lsusb" => {
+            serial_println!("USB Devices:");
+            
+            let subsystem = crate::usb::subsystem();
+            if let Some(ref usb) = *subsystem {
+                if usb.device_count() == 0 {
+                    serial_println!("  (no USB devices detected)");
+                } else {
+                    for device in usb.devices() {
+                        serial_println!("  Bus {:03} Device {:03}: ID {:04x}:{:04x} {}",
+                            0, device.address, device.vendor_id, device.product_id,
+                            device.class_name());
+                        if let Some(ref mfr) = device.manufacturer {
+                            serial_println!("    Manufacturer: {}", mfr);
+                        }
+                        if let Some(ref prod) = device.product {
+                            serial_println!("    Product: {}", prod);
+                        }
+                        serial_println!("    Speed: {}", device.speed.as_str());
+                    }
+                }
+            } else {
+                serial_println!("  USB subsystem not initialized");
+            }
+        }
+        "usb" => {
+            let subcmd = parts[1];
+            
+            match subcmd {
+                "info" | "status" => {
+                    serial_println!("USB Subsystem Status:");
+                    
+                    let subsystem = crate::usb::subsystem();
+                    if let Some(ref usb) = *subsystem {
+                        serial_println!("  Status: Initialized");
+                        serial_println!("  Devices: {}", usb.device_count());
+                        
+                        let kbd_count = crate::usb::hid::keyboard_count();
+                        serial_println!("  Keyboards: {}", kbd_count);
+                    } else {
+                        serial_println!("  Status: Not initialized");
+                    }
+                }
+                "tree" => {
+                    crate::usb::print_device_tree();
+                }
+                "init" => {
+                    match crate::usb::init() {
+                        Ok(()) => {
+                            serial_println!("USB subsystem initialized");
+                        }
+                        Err(e) => {
+                            serial_println!("USB init failed: {}", e);
+                        }
+                    }
+                }
+                _ => {
+                    serial_println!("USB Commands:");
+                    serial_println!("  usb info   - USB subsystem status");
+                    serial_println!("  usb tree   - USB device tree");
+                    serial_println!("  usb init   - Initialize USB subsystem");
+                    serial_println!("  lsusb      - List USB devices");
+                }
+            }
         }
         "" => {}
         _ => {

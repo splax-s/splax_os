@@ -23,6 +23,7 @@
 //! layer. S-LINK adds service discovery and routing on top.
 
 use alloc::collections::BTreeMap;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use spin::Mutex;

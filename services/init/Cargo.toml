@@ -1,0 +1,14 @@
+[package]
+name = "splax_init"
+version = "0.1.0"
+edition = "2021"
+authors = ["Splax"]
+description = "S-INIT: First userspace process and service manager for SplaxOS"
+license = "MIT"
+
+[lib]
+name = "splax_init"
+path = "src/lib.rs"
+
+[dependencies]
+spin = "0.9"

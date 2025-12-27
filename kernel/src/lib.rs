@@ -45,6 +45,7 @@ pub mod net;
 pub mod process;
 pub mod sched;
 pub mod smp;
+pub mod usb;
 pub mod wasm;
 
 use core::sync::atomic::{AtomicBool, Ordering};

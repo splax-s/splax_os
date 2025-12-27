@@ -422,7 +422,7 @@ pub fn exec_from_memory(
     env: &[&str],
     _name: &str,
 ) -> Result<u64, ExecError> {
-    let (_elf_info, _ctx, _stack_data) = prepare_exec(elf_data, args, env)?;
+    let (_elf_info, ctx, _stack_data) = prepare_exec(elf_data, args, env)?;
 
     // TODO: Create actual process with these parameters:
     // 1. Allocate page table for new process
@@ -439,7 +439,187 @@ pub fn exec_from_memory(
     // crate::sched::SCHEDULER.add(process);
     // Ok(process.pid)
     
+    // Store context for later use
+    let _ = &ctx;
+    
     Ok(1) // Mock PID
+}
+
+// =============================================================================
+// RING 3 USERSPACE TRANSITION
+// =============================================================================
+
+/// User mode selectors (Ring 3)
+pub mod user_selectors {
+    /// User data segment selector (Ring 3)
+    pub const USER_DATA: u16 = 0x18 | 3;
+    /// User code segment selector (Ring 3)
+    pub const USER_CODE: u16 = 0x20 | 3;
+}
+
+/// Jump to userspace (Ring 3) with given entry point and stack
+///
+/// This function never returns - it performs a privilege level transition
+/// from Ring 0 to Ring 3 using IRETQ.
+///
+/// # Arguments
+///
+/// * `entry_point` - The userspace entry point address (RIP)
+/// * `user_stack` - The userspace stack pointer (RSP)
+/// * `argc` - Argument count (passed in RDI)
+/// * `argv` - Argument vector pointer (passed in RSI)
+///
+/// # Safety
+///
+/// This function is unsafe because:
+/// - It transitions to Ring 3 and never returns
+/// - The entry_point must be valid user code
+/// - The user_stack must be a valid stack in user memory
+/// - Page tables must be set up correctly for userspace
+#[inline(never)]
+pub unsafe fn jump_to_userspace(
+    entry_point: u64,
+    user_stack: u64,
+    argc: u64,
+    argv: u64,
+) -> ! {
+    // IRETQ expects the following stack layout (pushed in reverse order):
+    // - SS (user stack segment)
+    // - RSP (user stack pointer)
+    // - RFLAGS (with IF set for interrupts)
+    // - CS (user code segment)
+    // - RIP (entry point)
+    
+    // RFLAGS: Enable interrupts (IF=1), clear other flags
+    const RFLAGS_IF: u64 = 1 << 9;  // Interrupt enable flag
+    
+    unsafe {
+        core::arch::asm!(
+            // Set up the IRETQ frame
+            "push {user_data}",      // SS
+            "push {user_rsp}",       // RSP
+            "push {rflags}",         // RFLAGS
+            "push {user_code}",      // CS
+            "push {entry}",          // RIP
+            
+            // Set up arguments for _start (System V ABI)
+            "mov rdi, {argc}",       // First arg: argc
+            "mov rsi, {argv}",       // Second arg: argv pointer
+            
+            // Clear other registers for security
+            "xor rdx, rdx",
+            "xor rcx, rcx",
+            "xor r8, r8",
+            "xor r9, r9",
+            "xor r10, r10",
+            "xor r11, r11",
+            "xor rbx, rbx",
+            "xor rbp, rbp",
+            "xor r12, r12",
+            "xor r13, r13",
+            "xor r14, r14",
+            "xor r15, r15",
+            
+            // Clear data segment registers to user data
+            "mov ax, {user_data_val:x}",
+            "mov ds, ax",
+            "mov es, ax",
+            "mov fs, ax",
+            "mov gs, ax",
+            
+            // Clear rax last
+            "xor eax, eax",
+            
+            // IRETQ to Ring 3!
+            "iretq",
+            
+            user_data = in(reg) user_selectors::USER_DATA as u64,
+            user_rsp = in(reg) user_stack,
+            rflags = in(reg) RFLAGS_IF,
+            user_code = in(reg) user_selectors::USER_CODE as u64,
+            entry = in(reg) entry_point,
+            argc = in(reg) argc,
+            argv = in(reg) argv,
+            user_data_val = in(reg) user_selectors::USER_DATA,
+            options(noreturn)
+        );
+    }
+}
+
+/// Alternative Ring 3 transition using SYSRET (faster than IRETQ)
+///
+/// SYSRET requires SYSCALL/SYSRET to be enabled via MSRs.
+/// Note: SYSRET has known security issues on Intel CPUs when returning
+/// to non-canonical addresses. Use IRETQ for better security.
+///
+/// # Safety
+///
+/// Same requirements as jump_to_userspace, plus:
+/// - SYSCALL/SYSRET MSRs must be configured
+/// - Entry point must be in canonical address space
+#[inline(never)]
+pub unsafe fn sysret_to_userspace(
+    entry_point: u64,
+    user_stack: u64,
+) -> ! {
+    // SYSRET expects:
+    // - RCX = RIP for user mode
+    // - R11 = RFLAGS for user mode
+    
+    const RFLAGS_IF: u64 = 1 << 9;
+    
+    unsafe {
+        core::arch::asm!(
+            // Set up for SYSRET
+            "mov rcx, {entry}",      // RCX = return RIP
+            "mov r11, {rflags}",     // R11 = return RFLAGS
+            "mov rsp, {user_rsp}",   // Set user stack
+            
+            // Clear registers
+            "xor rax, rax",
+            "xor rdx, rdx",
+            "xor rsi, rsi",
+            "xor rdi, rdi",
+            "xor r8, r8",
+            "xor r9, r9",
+            "xor r10, r10",
+            "xor rbx, rbx",
+            "xor rbp, rbp",
+            "xor r12, r12",
+            "xor r13, r13",
+            "xor r14, r14",
+            "xor r15, r15",
+            
+            // SYSRET to Ring 3 (64-bit mode)
+            "sysretq",
+            
+            entry = in(reg) entry_point,
+            rflags = in(reg) RFLAGS_IF,
+            user_rsp = in(reg) user_stack,
+            options(noreturn)
+        );
+    }
+}
+
+/// Execute a process in Ring 3
+///
+/// This sets up the execution context and performs the transition to userspace.
+pub fn exec_user_process(ctx: &ExecContext) -> ! {
+    // Calculate argv pointer from stack layout
+    // Stack layout: [argc][argv[0]][argv[1]]...
+    // argv pointer is right after argc (which is at stack_ptr)
+    let argv_ptr = ctx.stack_ptr + 8; // Skip argc (8 bytes)
+    
+    // Perform the Ring 3 transition
+    // SAFETY: We've set up the execution context with valid addresses
+    unsafe {
+        jump_to_userspace(
+            ctx.entry,
+            ctx.stack_ptr,
+            ctx.argc as u64,
+            argv_ptr,
+        )
+    }
 }
 
 /// Execute a binary from the filesystem

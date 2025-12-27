@@ -3,6 +3,7 @@ members = [
     "bootloader",
     "kernel",
     "services/atlas",
+    "services/init",
     "services/link",
     "services/gate",
     "services/storage",

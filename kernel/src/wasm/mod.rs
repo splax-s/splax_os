@@ -196,13 +196,9 @@ pub fn call(
     let mut runtime_guard = WAVE_RUNTIME.lock();
     let runtime = runtime_guard.as_mut().ok_or(WasmError::NotInitialized)?;
 
-    // Get the instance (we need to access it directly)
-    // For now, we return an error since we need mutable access
-    // This will be improved with proper instance management
-    drop(runtime_guard);
-
-    // For now, return a placeholder - actual execution requires instance access
-    Err(WasmError::ExecutionError)
+    // Call the function through the Wave runtime
+    let result = runtime.call(instance_id, func_name, args, &kernel_cap())?;
+    Ok(result)
 }
 
 /// Run a WASM file directly (load, instantiate, call _start)
@@ -214,11 +210,25 @@ pub fn run_file(path: &str) -> Result<Vec<WasmValue>, WasmError> {
     crate::serial_println!("[wasm] Module loaded: {:?}", module_id);
 
     // Instantiate it
-    let _instance_id = instantiate(module_id)?;
-    crate::serial_println!("[wasm] Instance created");
+    let instance_id = instantiate(module_id)?;
+    crate::serial_println!("[wasm] Instance created: {:?}", instance_id);
 
-    // For now, return success - actual execution needs more work
-    Ok(Vec::new())
+    // Try to call _start, main, or run in that order
+    let result = if let Ok(r) = call(instance_id, "_start", &[]) {
+        crate::serial_println!("[wasm] Called _start, returned {} values", r.len());
+        r
+    } else if let Ok(r) = call(instance_id, "main", &[]) {
+        crate::serial_println!("[wasm] Called main, returned {} values", r.len());
+        r
+    } else if let Ok(r) = call(instance_id, "run", &[]) {
+        crate::serial_println!("[wasm] Called run, returned {} values", r.len());
+        r
+    } else {
+        crate::serial_println!("[wasm] No entry point found (_start, main, or run)");
+        Vec::new()
+    };
+
+    Ok(result)
 }
 
 /// Validate a WASM file without loading it
@@ -376,6 +386,61 @@ pub struct WasmStats {
     pub modules_loaded: usize,
     pub total_wasm_size: usize,
     pub runtime_initialized: bool,
+}
+
+/// Read memory from an instance
+pub fn read_memory(
+    instance_id: InstanceId,
+    offset: usize,
+    length: usize,
+) -> Result<Vec<u8>, WasmError> {
+    let runtime_guard = WAVE_RUNTIME.lock();
+    let runtime = runtime_guard.as_ref().ok_or(WasmError::NotInitialized)?;
+    Ok(runtime.read_memory(instance_id, offset, length)?)
+}
+
+/// Write memory to an instance
+pub fn write_memory(
+    instance_id: InstanceId,
+    offset: usize,
+    data: &[u8],
+) -> Result<(), WasmError> {
+    let runtime_guard = WAVE_RUNTIME.lock();
+    let runtime = runtime_guard.as_ref().ok_or(WasmError::NotInitialized)?;
+    runtime.write_memory(instance_id, offset, data)?;
+    Ok(())
+}
+
+/// Get instance execution state
+pub fn instance_state(instance_id: InstanceId) -> Result<InstanceState, WasmError> {
+    let runtime_guard = WAVE_RUNTIME.lock();
+    let runtime = runtime_guard.as_ref().ok_or(WasmError::NotInitialized)?;
+    Ok(runtime.instance_state(instance_id)?)
+}
+
+/// Get steps executed for an instance
+pub fn steps_executed(instance_id: InstanceId) -> Result<u64, WasmError> {
+    let runtime_guard = WAVE_RUNTIME.lock();
+    let runtime = runtime_guard.as_ref().ok_or(WasmError::NotInitialized)?;
+    Ok(runtime.steps_executed(instance_id)?)
+}
+
+/// Reset an instance for fresh execution
+pub fn reset_instance(instance_id: InstanceId) -> Result<(), WasmError> {
+    let runtime_guard = WAVE_RUNTIME.lock();
+    let runtime = runtime_guard.as_ref().ok_or(WasmError::NotInitialized)?;
+    runtime.reset_instance(instance_id)?;
+    Ok(())
+}
+
+/// List all active instances
+pub fn list_instances() -> Vec<InstanceId> {
+    let runtime_guard = WAVE_RUNTIME.lock();
+    if let Some(runtime) = runtime_guard.as_ref() {
+        runtime.list_instances()
+    } else {
+        Vec::new()
+    }
 }
 
 /// Execute WASM bytecode directly (for testing)

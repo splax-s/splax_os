@@ -22,13 +22,15 @@
 //! │  - Device abstraction                   │
 //! ├─────────────────────────────────────────┤
 //! │         Block Device Drivers            │
-//! │  - VirtIO-blk                          │
-//! │  - NVMe (planned)                      │
-//! │  - AHCI (planned)                      │
+//! │  - VirtIO-blk                           │
+//! │  - NVMe                                 │
+//! │  - AHCI                                 │
 //! └─────────────────────────────────────────┘
 //! ```
 
 pub mod virtio_blk;
+pub mod nvme;
+pub mod ahci;
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -248,10 +250,18 @@ pub fn next_virtio_name() -> String {
 
 /// Initializes the block subsystem
 pub fn init() {
-    crate::serial_println!("[BLOCK] Block subsystem initialized");
+    crate::serial_println!("[BLOCK] Initializing block subsystem...");
     
-    // Probe for VirtIO block devices
+    // Probe for VirtIO block devices (virtual machines)
     virtio_blk::probe_devices();
+    
+    // Probe for NVMe devices (modern SSDs)
+    nvme::probe_devices();
+    
+    // Probe for AHCI/SATA devices (HDDs and legacy SSDs)
+    ahci::probe_devices();
+    
+    crate::serial_println!("[BLOCK] Block subsystem initialized");
 }
 
 /// Block device statistics

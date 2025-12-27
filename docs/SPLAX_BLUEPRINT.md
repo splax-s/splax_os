@@ -76,16 +76,16 @@ We're taking the best architectural patterns from the Linux kernel (35+ years of
 
 | Component | Linux Path | Splax Path | Status |
 |-----------|------------|------------|--------|
-| Driver Core | `drivers/base/` | `drivers/mod.rs` | � Basic |
+| Driver Core | `drivers/base/` | `drivers/mod.rs` | 🔄 Basic |
 | VirtIO Net | `drivers/virtio/` | `net/virtio.rs` | ✅ Done |
 | VirtIO Block | `drivers/block/virtio_blk.c` | `block/virtio_blk.rs` | ✅ Done |
 | E1000 | `drivers/net/e1000/` | `net/e1000.rs` | ✅ Done |
 | RTL8139 | `drivers/net/rtl8139.c` | `net/rtl8139.rs` | ✅ Done |
 | WiFi | `drivers/net/wireless/` | `net/wifi.rs` | 🔄 Framework |
-| NVMe | `drivers/nvme/` | `drivers/nvme.rs` | 📋 Planned |
-| AHCI/SATA | `drivers/ata/` | `drivers/ahci.rs` | 📋 Planned |
-| USB Core | `drivers/usb/core/` | `drivers/usb/mod.rs` | 📋 Planned |
-| USB HID | `drivers/hid/` | `drivers/usb/hid.rs` | 📋 Planned |
+| NVMe | `drivers/nvme/` | `block/nvme.rs` | ✅ Done |
+| AHCI/SATA | `drivers/ata/` | `block/ahci.rs` | ✅ Done |
+| USB Core | `drivers/usb/core/` | `usb/mod.rs` | ✅ Done |
+| USB HID | `drivers/hid/` | `usb/hid.rs` | ✅ Done |
 | PCI | `drivers/pci/` | `drivers/pci.rs` | 📋 Planned |
 
 #### 2.3 Block Layer (Linux `block/`)
@@ -263,12 +263,12 @@ pub struct ServiceDefinition {
 |----------|----------|----------|
 | Serial | 16550 UART, PL011 | ✅ Done |
 | Display | VGA text, framebuffer | ✅ Done |
-| Keyboard | PS/2, USB HID | ✅ Done (PS/2) |
-| Network | VirtIO, e1000, RTL8139 | ✅ Done (VirtIO) |
-| Storage | VirtIO-blk, AHCI, NVMe | 📋 Planned |
+| Keyboard | PS/2, USB HID | ✅ Done |
+| Network | VirtIO, e1000, RTL8139 | ✅ Done |
+| Storage | VirtIO-blk, AHCI, NVMe | ✅ Done |
 | Graphics | Simple FB, VirtIO-GPU | 📋 Phase 4 |
 | Audio | HDA, VirtIO-snd | 📋 Phase 4 |
-| USB | xHCI, EHCI | 📋 Phase 3 |
+| USB | xHCI | ✅ Done |
 
 #### 6.3 ACPI & Power Management (Linux `drivers/acpi/`)
 
@@ -904,24 +904,30 @@ pub struct SLinkChannel {
 - [x] ELF loader (basic)
 - [x] Process management with signals
 - [x] S-WAVE WASM runtime with bytecode interpreter
-- [x] 20+ host functions for WASM
-- [x] WASM shell commands (status, hostfn, caps, etc.)
-- [x] S-WAVE VFS integration (load .wasm from filesystem)
-- [x] WASM validation from files
-- [x] Test WASM modules in /bin/
+- [x] S-WAVE: SIMD, threads, atomics, JIT (WASM 2.0+)
+- [x] S-WAVE: VFS integration (load .wasm from filesystem)
+- [x] S-WAVE: WASM validation from files
+- [x] S-WAVE: Test WASM modules in /bin/
+- [x] S-WAVE: 60+ host functions (process, memory, fs, net, thread, sync, cap, service, time, sys, debug)
+- [x] Userspace process execution (Ring 3 transition, full ELF exec)
+- [x] S-INIT service manager (PID 1, service/dependency/restart logic)
+- [x] USB subsystem (core types, descriptors, xHCI driver)
+- [x] USB HID keyboard driver (scancode translation, LED support)
+- [x] S-WAVE: full function execution in kernel (Wave::call() integration)
+- [x] SplaxFS journaling and recovery (write-ahead log, transactions)
+- [x] NVMe storage driver (queue management, namespace support)
+- [x] AHCI/SATA storage driver (FIS, port management, DMA)
 
 ### In Progress 🔄
-- [ ] Full ELF execution (userspace transition)
-- [ ] S-WAVE full function execution in kernel
-- [ ] SplaxFS journaling and recovery
-- [ ] USB subsystem
+- [ ] S-INSTALL installer system
+- [ ] Graphics/framebuffer subsystem
+- [ ] Audio subsystem (basic)
 
 ### Next Milestones 📋
-1. **Week 1-2**: Userspace process execution (ring 3)
-2. **Week 3-4**: S-INIT service manager
-3. **Week 5-6**: USB core + keyboard driver
-4. **Week 7-8**: NVMe/AHCI storage drivers
-5. **Week 9-10**: S-INSTALL installer system
+1. **Week 1-2**: NVMe/AHCI storage drivers
+2. **Week 3-4**: S-INSTALL installer system
+3. **Week 5-6**: Graphics/framebuffer basics
+4. **Week 7-8**: Audio subsystem (basic)
 
 ---
 
