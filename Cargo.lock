@@ -77,6 +77,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "splax_install"
+version = "0.1.0"
+dependencies = [
+ "spin",
+]
+
+[[package]]
 name = "splax_kernel"
 version = "0.1.0"
 dependencies = [

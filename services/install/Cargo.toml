@@ -1,0 +1,16 @@
+[package]
+name = "splax_install"
+version = "0.1.0"
+edition = "2024"
+authors = ["Splax OS Team"]
+description = "S-INSTALL: Splax OS Installation System"
+
+[lib]
+name = "splax_install"
+path = "src/lib.rs"
+
+[dependencies]
+spin = "0.9"
+
+[features]
+default = []

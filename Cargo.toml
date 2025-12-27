@@ -4,6 +4,7 @@ members = [
     "kernel",
     "services/atlas",
     "services/init",
+    "services/install",
     "services/link",
     "services/gate",
     "services/storage",

@@ -39,12 +39,14 @@ pub mod arch;
 pub mod block;
 pub mod cap;
 pub mod fs;
+pub mod gpu;
 pub mod ipc;
 pub mod mm;
 pub mod net;
 pub mod process;
 pub mod sched;
 pub mod smp;
+pub mod sound;
 pub mod usb;
 pub mod wasm;
 
