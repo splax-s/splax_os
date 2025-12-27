@@ -807,58 +807,95 @@ pub struct GatewayConfig {
 
 ---
 
-## 🏗️ MICROKERNEL ARCHITECTURE: WHY IT MATTERS
+## 🏗️ ARCHITECTURE: CURRENT STATE VS TARGET
 
-### Linux Monolithic vs Splax Microkernel
+### ⚠️ ARCHITECTURAL HONESTY
+
+**Current Reality**: Splax is currently a **monolithic kernel** with all subsystems (filesystems, networking, drivers) compiled into the kernel. This is similar to Linux's architecture.
+
+**Target Goal**: Evolve toward a **hybrid microkernel** architecture where only core primitives run in kernel space, and higher-level services run in userspace.
+
+### Current Architecture (Monolithic)
 
 ```
-LINUX (Monolithic)                    SPLAX (Microkernel)
-┌─────────────────────┐               ┌─────────────────────┐
-│    Applications     │               │    Applications     │
-├─────────────────────┤               ├─────────────────────┤
-│                     │               │   System Services   │
-│                     │               │ ┌─────┬─────┬─────┐ │
-│      Kernel         │               │ │FS   │Net  │Drv  │ │
-│  (Everything here)  │               │ └─────┴─────┴─────┘ │
-│  - Filesystems      │               ├─────────────────────┤
-│  - Network Stack    │               │     S-CORE Kernel   │
-│  - Drivers          │               │  - Scheduling       │
-│  - Security         │               │  - Memory           │
-│  - IPC              │               │  - IPC (S-LINK)     │
-│  - Scheduling       │               │  - Capabilities     │
-│                     │               │  (NOTHING ELSE!)    │
-└─────────────────────┘               └─────────────────────┘
+CURRENT SPLAX ARCHITECTURE
+┌─────────────────────────────────────────────┐
+│              Applications                    │
+├─────────────────────────────────────────────┤
+│                                             │
+│           Monolithic Kernel                 │
+│  ┌────────────────────────────────────────┐ │
+│  │ kernel/src/                            │ │
+│  │  - fs/ (VFS, SplaxFS, RamFS, etc.)    │ │
+│  │  - net/ (TCP/IP, Socket API, WiFi)    │ │
+│  │  - block/ (NVMe, AHCI, VirtIO)        │ │
+│  │  - sound/ (HDA, AC97, USB Audio)      │ │
+│  │  - usb/ (xHCI, HID)                   │ │
+│  │  - gpu/ (Framebuffer, Console)        │ │
+│  │  - sched/ (Scheduler)                 │ │
+│  │  - mm/ (Memory Manager)               │ │
+│  │  - cap/ (Capabilities)                │ │
+│  │  - ipc/ (S-LINK)                      │ │
+│  └────────────────────────────────────────┘ │
+│                                             │
+└─────────────────────────────────────────────┘
 ```
 
-### What Lives WHERE
+### Target Architecture (Hybrid Microkernel)
 
-| Component | Linux (in kernel) | Splax Location |
-|-----------|-------------------|----------------|
-| Scheduler | ✅ Kernel | ✅ S-CORE (kernel) |
-| Memory Manager | ✅ Kernel | ✅ S-CORE (kernel) |
-| IPC | ✅ Kernel | ✅ S-CORE (kernel) |
-| Capabilities | ❌ LSM module | ✅ S-CORE (kernel) |
-| Filesystem | ✅ Kernel (VFS) | 📦 S-STORAGE (userspace) |
-| Network Stack | ✅ Kernel | 📦 S-NET (userspace) |
-| Device Drivers | ✅ Kernel modules | 📦 S-DEV (userspace) |
-| TCP/IP | ✅ Kernel | 📦 S-NET service |
-| Graphics | ✅ DRM/KMS | 📦 S-GPU service |
+```
+TARGET SPLAX ARCHITECTURE (FUTURE)
+┌─────────────────────────────────────────────┐
+│              Applications                    │
+├─────────────────────────────────────────────┤
+│           Userspace Services                │
+│  ┌─────────┬─────────┬─────────┬─────────┐ │
+│  │ S-STORE │ S-NET   │ S-DEV   │ S-GPU   │ │
+│  │ (fs)    │ (net)   │ (drivers)│(graphics)│ │
+│  └─────────┴─────────┴─────────┴─────────┘ │
+├─────────────────────────────────────────────┤
+│           S-CORE Microkernel                │
+│  ┌────────────────────────────────────────┐ │
+│  │ - Scheduling (sched/)                  │ │
+│  │ - Memory Management (mm/)              │ │
+│  │ - IPC (S-LINK channels)               │ │
+│  │ - Capabilities (cap/)                  │ │
+│  │ - Interrupt Dispatch                   │ │
+│  │ - Minimal hardware abstraction        │ │
+│  └────────────────────────────────────────┘ │
+└─────────────────────────────────────────────┘
+```
 
-### Why Microkernel?
+### Migration Path
 
-1. **Fault Isolation**: Network driver crashes? Only S-NET restarts, not the whole system.
-2. **Security**: Drivers can't access kernel memory (capability-gated).
-3. **Updatability**: Update filesystem service without rebooting.
-4. **Simplicity**: S-CORE is ~10K lines, Linux kernel is 30M+ lines.
-5. **Verification**: Small kernel can be formally verified.
+The current monolithic design allows faster development and debugging. Future phases will:
 
-### IPC Performance (The Classic Concern)
+1. **Phase A**: Extract filesystem to S-STORAGE userspace service
+2. **Phase B**: Move network stack to S-NET service  
+3. **Phase C**: Move device drivers to S-DEV service
+4. **Phase D**: Minimize kernel to true microkernel (sched, mm, ipc, cap only)
 
-"But microkernels are slow because of IPC!"
+### Known Architectural Inconsistencies
+
+| Issue | Current | Target |
+|-------|---------|--------|
+| `net/socket.rs` | BSD socket API in kernel | S-LINK channels to S-NET service |
+| `fs/vfs.rs` | VFS in kernel | VFS as S-STORAGE service |
+| Block drivers | In `kernel/src/block/` | Userspace S-DEV drivers |
+| TCP/IP stack | In `kernel/src/net/` | S-NET service |
+
+### Why Start Monolithic?
+
+1. **Faster iteration**: No IPC overhead during development
+2. **Easier debugging**: Single address space, simple stack traces
+3. **Proven path**: Linux started monolithic, added modules later
+4. **Rust safety**: Memory safety reduces microkernel's main benefit
+
+### IPC Design (For Future Migration)
 
 ```rust
 // S-LINK uses zero-copy shared memory with capability tokens
-// Measured latency: <2µs for cross-service calls
+// This IPC mechanism enables future service extraction
 
 pub struct SLinkChannel {
     shared_buffer: SharedMemory,  // Zero-copy
@@ -866,10 +903,7 @@ pub struct SLinkChannel {
     ring_buffer: RingBuffer,      // Lock-free
 }
 
-// Benchmark: S-LINK vs Linux pipe
-// S-LINK:    1.8µs average
-// Linux pipe: 3.2µs average
-// We're FASTER because: no syscall overhead, no copy
+// Target: <2µs cross-service calls when migrated
 ```
 
 ---
@@ -919,7 +953,7 @@ pub struct SLinkChannel {
 - [x] AHCI/SATA storage driver (FIS, port management, DMA)
 - [x] S-INSTALL installer system (hardware detection, partitioning, encryption)
 - [x] Graphics/framebuffer subsystem (color, console, font, primitives)
-- [x] Audio subsystem (HDA, VirtIO-snd, PCM streams)
+- [x] Audio subsystem (HDA, VirtIO-snd, AC97, USB Audio, PCM streams)
 
 ### In Progress 🔄
 - [ ] IPv6 support
@@ -972,7 +1006,7 @@ pub struct SLinkChannel {
 
 ### Core Principles (Non-Negotiable)
 
-1. **Microkernel Architecture**: S-CORE handles only scheduling, memory, IPC, and capabilities. Everything else runs as userspace services.
+1. **Hybrid Architecture Goal**: Target a microkernel where S-CORE handles only scheduling, memory, IPC, and capabilities. *Currently* building as monolithic for faster development (see Architecture section above).
 
 2. **Services, Not Ports**: Applications don't bind to port numbers. They register named services with S-GATE. No more port conflicts, no more port scanning, no more firewall rule nightmares.
 
@@ -983,5 +1017,96 @@ pub struct SLinkChannel {
 5. **Installable OS**: S-INSTALL makes Splax a real OS you can install on bare metal, not just a research project.
 
 We are not here to be compatible with Linux. We are here to make something better.
+
+---
+
+## 📝 KNOWN TODOS IN CODEBASE
+
+**Last updated**: Auto-generated from codebase scan
+
+### Critical (Kernel Core)
+
+| Location | Description | Priority |
+|----------|-------------|----------|
+| `kernel/src/mm/mod.rs:168` | Actual frame allocation from free list | 🔴 HIGH |
+| `kernel/src/mm/mod.rs:186` | Return memory to free list | 🔴 HIGH |
+| `kernel/src/sched/mod.rs:273` | Actual context switch (save/restore registers) | 🔴 HIGH |
+| `kernel/src/sched/mod.rs:217` | Clean up process resources | 🔴 HIGH |
+| `kernel/src/lib.rs:197` | Parse boot_info to get actual configuration | 🟡 MED |
+
+### Process Management
+
+| Location | Description | Priority |
+|----------|-------------|----------|
+| `kernel/src/process/mod.rs:242,264` | Use proper memory allocation | 🔴 HIGH |
+| `kernel/src/process/mod.rs:371` | Notify parent, clean up resources on exit | 🟡 MED |
+| `kernel/src/process/exec.rs:427` | Create actual process with parsed ELF | 🔴 HIGH |
+| `kernel/src/process/exec.rs:629` | Read file from VFS for shebang scripts | 🟡 MED |
+| `kernel/src/process/signal.rs:535` | Wake up process if blocked on signal | 🟡 MED |
+| `kernel/src/process/wait.rs:296` | Wake up parent if waiting | 🟡 MED |
+| `kernel/src/process/wait.rs:354` | Implement process groups for waitpid(-pgid) | 🟢 LOW |
+| `kernel/src/process/wait.rs:379` | Block and wait for child | 🟡 MED |
+| `kernel/src/process/wait.rs:441-455` | Resource tracking, FD cleanup, memory free, zombie marking | 🟡 MED |
+
+### SMP / Multi-Core
+
+| Location | Description | Priority |
+|----------|-------------|----------|
+| `kernel/src/smp/mod.rs:294` | ACPI/MP table parsing for CPU discovery | 🟡 MED |
+| `kernel/src/smp/mod.rs:300` | DTB parsing for AArch64 CPU discovery | 🟡 MED |
+| `kernel/src/smp/mod.rs:345` | Write to Local APIC ICR for IPI | 🟡 MED |
+| `kernel/src/smp/mod.rs:396` | Execute pending function calls on remote CPUs | 🟡 MED |
+
+### Network
+
+| Location | Description | Priority |
+|----------|-------------|----------|
+| `kernel/src/net/virtio.rs:108` | Proper page table translation when paging enabled | 🟡 MED |
+| `kernel/src/net/wifi.rs:789` | Instantiate specific WiFi drivers by vendor/device ID | 🟢 LOW |
+| `kernel/src/net/wifi.rs:1164-1165` | WPA MIC verification, GTK decryption | 🟢 LOW |
+
+### Sound
+
+| Location | Description | Priority |
+|----------|-------------|----------|
+| `kernel/src/sound/hda.rs:437` | Full HDA codec initialization | 🟡 MED |
+| `kernel/src/sound/hda.rs:633` | PCI scanning for HDA devices | 🟡 MED |
+| `kernel/src/sound/virtio_snd.rs:238` | VirtIO sound device initialization | 🟡 MED |
+| `kernel/src/sound/virtio_snd.rs:438` | VirtIO device scanning | 🟡 MED |
+
+### Filesystem
+
+| Location | Description | Priority |
+|----------|-------------|----------|
+| `kernel/src/fs/procfs.rs:196` | Add NetworkStats to interface | 🟢 LOW |
+| `kernel/src/fs/sysfs.rs:307` | Add stats to NetworkInterface | 🟢 LOW |
+
+### AArch64 Architecture
+
+| Location | Description | Priority |
+|----------|-------------|----------|
+| `kernel/src/arch/aarch64/timer.rs:153` | Trigger scheduler tick from timer | 🔴 HIGH |
+| `kernel/src/arch/aarch64/exceptions.rs:194` | Implement syscall dispatch | 🔴 HIGH |
+| `kernel/src/arch/aarch64/exceptions.rs:207` | Handle page faults, demand paging | 🔴 HIGH |
+| `kernel/src/arch/aarch64/uart.rs:205` | Send input to shell buffer | 🟢 LOW |
+
+### Services & Runtime
+
+| Location | Description | Priority |
+|----------|-------------|----------|
+| `services/gate/src/http.rs:415` | Use actual S-LINK channel for IPC | 🟡 MED |
+| `runtime/wave/src/lib.rs:3265` | Check WASM table against maximum | 🟢 LOW |
+| `runtime/native/src/lib.rs:380` | Actually execute native code | 🟡 MED |
+
+### Tools
+
+| Location | Description | Priority |
+|----------|-------------|----------|
+| `tools/code/src/main.rs:260,275,286` | Full CRDT implementation | 🟢 LOW |
+| `bootloader/src/main.rs:105` | Phase 1 Week 1-2 implementation | 🟡 MED |
+
+**Total: 46 TODOs** - Run `grep -r "TODO" kernel/ services/ runtime/ tools/` to regenerate.
+
+---
 
 **Now, build.**

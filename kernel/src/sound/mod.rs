@@ -28,7 +28,9 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
+pub mod ac97;
 pub mod hda;
+pub mod usb_audio;
 pub mod virtio_snd;
 
 // =============================================================================
