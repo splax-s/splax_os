@@ -3,7 +3,9 @@
 > *"Where your laptop feels like a cloud region, nothing runs unless you ask, and security is built in, not bolted on."*
 
 [![Build Status](https://github.com/splax/splax_os/actions/workflows/ci.yml/badge.svg)](https://github.com/splax/splax_os/actions)
-[![License](https://img.shields.io/badge/license-Apache--2.0%2FMIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
+
+⚠️ **PROPRIETARY SOFTWARE** - All rights reserved. See [LICENSE](LICENSE) for terms.
 
 Splax OS is a **production-grade, capability-secure, distributed-first operating system** built from scratch in Rust. It reimagines operating system design with modern principles:
 

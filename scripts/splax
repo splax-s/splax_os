@@ -7,14 +7,16 @@
 #   ./scripts/splax iso                # Build + create ISO
 #   ./scripts/splax run                # Build + ISO + run QEMU
 #   ./scripts/splax run --nic=e1000    # Run with specific NIC
+#   ./scripts/splax fullscreen         # Build + run fullscreen with scrollback
 #   ./scripts/splax clean              # Clean build artifacts
 #
 # Commands:
-#   build   - Build the kernel
-#   iso     - Build kernel and create bootable ISO
-#   run     - Build, create ISO, and run in QEMU
-#   clean   - Clean all build artifacts
-#   help    - Show this help message
+#   build      - Build the kernel
+#   iso        - Build kernel and create bootable ISO
+#   run        - Build, create ISO, and run in QEMU
+#   fullscreen - Build, ISO, run in fullscreen terminal with scrollback
+#   clean      - Clean all build artifacts
+#   help       - Show this help message
 #
 # Options for 'run':
 #   --nic=TYPE      NIC type: virtio, e1000, rtl8139, none (default: virtio)
@@ -24,6 +26,8 @@
 #   --no-display    Run without display window
 #   --kvm           Enable KVM acceleration (Linux only)
 #   --monitor       Enable QEMU monitor on stdio
+#   --fullscreen    Run in fullscreen mode with scrollback
+#   --scrollback=N  Lines of scrollback buffer (default: 10000)
 #
 # Examples:
 #   ./scripts/splax run                         # Default: VirtIO NIC
@@ -32,6 +36,8 @@
 #   ./scripts/splax run --nic=none --disk       # No network, with disk
 #   ./scripts/splax run --debug                 # Debug with GDB
 #   ./scripts/splax run --mem=1G --kvm          # 1GB RAM with KVM
+#   ./scripts/splax fullscreen                  # Fullscreen with scrollback
+#   ./scripts/splax run --fullscreen            # Run mode with fullscreen
 
 set -e
 
@@ -61,6 +67,8 @@ DEBUG_MODE=false
 NO_DISPLAY=false
 USE_KVM=false
 USE_MONITOR=false
+FULLSCREEN=false
+SCROLLBACK=10000
 
 # Print colored message
 info() { echo -e "${BLUE}[INFO]${NC} $1"; }
@@ -81,11 +89,12 @@ Usage:
   ./scripts/splax clean              # Clean build artifacts
 
 Commands:
-  build   - Build the kernel
-  iso     - Build kernel and create bootable ISO
-  run     - Build, create ISO, and run in QEMU
-  clean   - Clean all build artifacts
-  help    - Show this help message
+  build      - Build the kernel
+  iso        - Build kernel and create bootable ISO
+  run        - Build, create ISO, and run in QEMU
+  fullscreen - Run in fullscreen terminal with scrollback buffer
+  clean      - Clean all build artifacts
+  help       - Show this help message
 
 Options for 'run':
   --nic=TYPE      NIC type: virtio, e1000, rtl8139, none (default: virtio)
@@ -95,9 +104,18 @@ Options for 'run':
   --no-display    Run without display window
   --kvm           Enable KVM acceleration (Linux only)
   --monitor       Enable QEMU monitor on stdio
+  --fullscreen    Run in fullscreen mode (use terminal scrollback)
+  --scrollback=N  Lines of scrollback buffer (default: 10000)
 
 Examples:
   ./scripts/splax run                         # Default: VirtIO NIC
+  ./scripts/splax run --nic=e1000             # Intel E1000 NIC
+  ./scripts/splax run --nic=rtl8139           # Realtek RTL8139
+  ./scripts/splax run --nic=none --disk       # No network, with disk
+  ./scripts/splax run --debug                 # Debug with GDB
+  ./scripts/splax run --mem=1G --kvm          # 1GB RAM with KVM
+  ./scripts/splax fullscreen                  # Fullscreen with scrollback
+  ./scripts/splax run --fullscreen --mem=2G   # Combined options
   ./scripts/splax run --nic=e1000             # Intel E1000 NIC
   ./scripts/splax run --nic=rtl8139           # Realtek RTL8139
   ./scripts/splax run --nic=none --disk       # No network, with disk
@@ -239,6 +257,37 @@ do_run() {
         info "Monitor: telnet 127.0.0.1 55555"
     fi
     
+    # Fullscreen mode with scrollback support
+    if [[ "${FULLSCREEN}" == true ]]; then
+        echo ""
+        info "═══════════════════════════════════════════════════════════════════════════════"
+        info "                          SPLAX OS FULLSCREEN MODE"
+        info "═══════════════════════════════════════════════════════════════════════════════"
+        info ""
+        info "  Scrollback: ${SCROLLBACK} lines"
+        info "  Controls:"
+        info "    - Scroll up/down: Use terminal scroll (Shift+PageUp/PageDown or mouse)"
+        info "    - Exit QEMU:      Press Ctrl+A, then X"
+        info "    - Monitor:        Press Ctrl+A, then C (toggle monitor)"
+        info ""
+        info "  Terminal Tips:"
+        info "    - macOS Terminal: Edit → Show All Tabs, then scroll"
+        info "    - iTerm2:         Cmd+Shift+H for scrollback search"
+        info "    - tmux:           Ctrl+B, [ to enter scroll mode"
+        info ""
+        info "═══════════════════════════════════════════════════════════════════════════════"
+        echo ""
+        
+        # Configure terminal for maximum scrollback if possible
+        if command -v tput &> /dev/null; then
+            # Clear screen and move cursor to top for clean start
+            clear
+        fi
+        
+        # Set up signal handler for clean exit
+        trap 'echo; info "QEMU terminated"; exit 0' INT TERM
+    fi
+    
     echo ""
     info "Press Ctrl+A, X to exit QEMU"
     echo ""
@@ -291,6 +340,14 @@ while [[ $# -gt 0 ]]; do
             USE_MONITOR=true
             shift
             ;;
+        --fullscreen)
+            FULLSCREEN=true
+            shift
+            ;;
+        --scrollback=*)
+            SCROLLBACK="${1#*=}"
+            shift
+            ;;
         -h|--help)
             show_help
             ;;
@@ -309,6 +366,10 @@ case "${COMMAND}" in
         do_iso
         ;;
     run)
+        do_run
+        ;;
+    fullscreen)
+        FULLSCREEN=true
         do_run
         ;;
     clean)

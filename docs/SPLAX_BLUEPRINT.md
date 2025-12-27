@@ -866,14 +866,249 @@ TARGET SPLAX ARCHITECTURE (FUTURE)
 └─────────────────────────────────────────────┘
 ```
 
-### Migration Path
+### Migration Path: HYBRID KERNEL ARCHITECTURE 🔄
 
-The current monolithic design allows faster development and debugging. Future phases will:
+The current monolithic design allowed faster initial development. **NOW ACTIVE**: Migration to hybrid microkernel.
 
-1. **Phase A**: Extract filesystem to S-STORAGE userspace service
-2. **Phase B**: Move network stack to S-NET service  
-3. **Phase C**: Move device drivers to S-DEV service
-4. **Phase D**: Minimize kernel to true microkernel (sched, mm, ipc, cap only)
+---
+
+## 🔄 PHASE 11: HYBRID KERNEL MIGRATION (NEXT MILESTONE)
+
+**Goal**: Transform from monolithic to hybrid microkernel architecture  
+**Priority**: 🔴 HIGH - Active Development Focus
+
+### 11.1 Migration Overview
+
+```
+MIGRATION PHASES
+================
+
+Phase A: Filesystem Extraction (Weeks 1-4)
+├── Extract VFS to S-STORAGE userspace service
+├── Implement filesystem RPC protocol
+├── Migrate SplaxFS, RamFS, ext4, FAT32 to service
+└── Keep block layer in kernel for now
+
+Phase B: Network Stack Extraction (Weeks 5-8)
+├── Extract TCP/IP stack to S-NET service
+├── Implement network socket RPC
+├── Migrate drivers to hybrid model (DMA stays in kernel)
+└── Implement netfilter as S-FIREWALL service
+
+Phase C: Device Driver Extraction (Weeks 9-12)
+├── Create S-DEV driver framework
+├── Migrate USB, Sound, GPU to userspace
+├── Implement interrupt forwarding
+└── Keep PCI/ACPI discovery in kernel
+
+Phase D: Kernel Minimization (Weeks 13-16)
+├── Remove non-essential kernel code
+├── Optimize IPC hot paths
+├── Implement zero-copy message passing
+└── Target: <50KB kernel binary
+```
+
+### 11.2 Phase A: Filesystem to S-STORAGE
+
+**Current State**: VFS, SplaxFS, RamFS, ext4, FAT32 all in `kernel/src/fs/`
+
+**Target State**: Thin VFS stub in kernel, filesystem logic in S-STORAGE service
+
+```rust
+// KERNEL SIDE: Minimal VFS stub (after migration)
+pub mod vfs_stub {
+    use crate::ipc::SLinkChannel;
+    
+    static STORAGE_CHANNEL: OnceCell<SLinkChannel> = OnceCell::new();
+    
+    pub fn init(channel: SLinkChannel) {
+        STORAGE_CHANNEL.set(channel).unwrap();
+    }
+    
+    // All VFS calls become IPC messages
+    pub fn read(path: &Path, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let msg = VfsRequest::Read { path, offset, len };
+        let channel = STORAGE_CHANNEL.get().unwrap();
+        channel.call(msg)  // IPC to S-STORAGE
+    }
+    
+    pub fn write(path: &Path, offset: u64, data: &[u8]) -> Result<usize> {
+        let msg = VfsRequest::Write { path, offset, data };
+        STORAGE_CHANNEL.get().unwrap().call(msg)
+    }
+}
+
+// USERSPACE SIDE: S-STORAGE service (new)
+// services/storage/src/vfs_server.rs
+pub struct VfsServer {
+    filesystems: HashMap<MountPoint, Box<dyn Filesystem>>,
+    channel: SLinkChannel,
+}
+
+impl VfsServer {
+    pub fn run(&mut self) {
+        loop {
+            let request = self.channel.receive();
+            let response = match request {
+                VfsRequest::Read { path, offset, len } => {
+                    self.handle_read(path, offset, len)
+                }
+                VfsRequest::Write { path, offset, data } => {
+                    self.handle_write(path, offset, data)
+                }
+                // ... other VFS operations
+            };
+            self.channel.reply(response);
+        }
+    }
+}
+```
+
+### 11.3 Phase B: Network to S-NET
+
+**Current State**: Full TCP/IP stack in `kernel/src/net/`
+
+**Target State**: Socket API stub in kernel, network processing in S-NET
+
+```rust
+// KERNEL SIDE: Socket stub (after migration)
+pub mod socket_stub {
+    pub fn tcp_connect(addr: SocketAddr) -> Result<SocketHandle> {
+        // Request S-NET to handle connection
+        let msg = NetRequest::TcpConnect { addr };
+        let handle = NET_CHANNEL.get().unwrap().call(msg)?;
+        Ok(SocketHandle::new(handle))
+    }
+    
+    pub fn tcp_send(handle: SocketHandle, data: &[u8]) -> Result<usize> {
+        // Zero-copy: pass shared memory reference
+        let shm = SharedMemory::from_slice(data);
+        let msg = NetRequest::TcpSend { handle, shm };
+        NET_CHANNEL.get().unwrap().call(msg)
+    }
+}
+
+// USERSPACE SIDE: S-NET service
+pub struct NetServer {
+    tcp_stack: TcpStack,      // Moved from kernel/src/net/tcp.rs
+    udp_stack: UdpStack,      // Moved from kernel/src/net/udp.rs
+    arp_cache: ArpCache,      // Moved from kernel/src/net/arp.rs
+    routing_table: RoutingTable,
+}
+```
+
+### 11.4 Phase C: Drivers to S-DEV
+
+**Current State**: Drivers in kernel (usb/, sound/, gpu/, net/)
+
+**Target State**: Driver logic in userspace, only DMA/interrupt handling in kernel
+
+```rust
+// KERNEL SIDE: Minimal driver support
+pub mod driver_stub {
+    // Only these stay in kernel:
+    // - Interrupt handler registration
+    // - DMA buffer allocation
+    // - MMIO mapping
+    // - PCI config space access
+    
+    pub fn register_interrupt(irq: u8, handler: DriverId) -> Result<()>;
+    pub fn alloc_dma_buffer(size: usize) -> Result<DmaBuffer>;
+    pub fn map_mmio(phys: PhysAddr, size: usize) -> Result<VirtAddr>;
+}
+
+// USERSPACE SIDE: S-DEV driver manager
+pub struct DriverManager {
+    drivers: HashMap<DriverId, Box<dyn Driver>>,
+}
+
+// Example: USB driver in userspace
+pub struct UsbDriver {
+    xhci: XhciController,  // Moved from kernel/src/usb/xhci.rs
+    devices: Vec<UsbDevice>,
+}
+
+impl Driver for UsbDriver {
+    fn handle_interrupt(&mut self, irq: u8) {
+        // Process interrupt via IPC notification
+    }
+}
+```
+
+### 11.5 Phase D: Kernel Minimization
+
+**Target Kernel After Migration**:
+
+```rust
+// kernel/src/lib.rs (after full migration)
+#![no_std]
+#![no_main]
+
+pub mod arch;      // ~5KB: CPU init, interrupts, paging
+pub mod mm;        // ~3KB: Frame allocator, page tables
+pub mod sched;     // ~2KB: Scheduler, context switch
+pub mod cap;       // ~2KB: Capability checking
+pub mod ipc;       // ~3KB: S-LINK channels
+pub mod syscall;   // ~2KB: Syscall dispatch
+
+// TOTAL: ~17KB kernel binary (target: <50KB)
+
+// Everything else is now in userspace services:
+// - S-STORAGE: Filesystems (ext4, FAT32, SplaxFS, RamFS)
+// - S-NET: Networking (TCP/IP, sockets, firewall)
+// - S-DEV: Drivers (USB, sound, GPU)
+// - S-INIT: Init system
+// - S-GATE: External gateway
+```
+
+### 11.6 IPC Performance Targets
+
+| Metric | Current (Monolithic) | Target (Hybrid) |
+|--------|---------------------|-----------------|
+| Syscall latency | ~100ns | ~100ns (no change) |
+| VFS read latency | ~200ns | <2µs (via IPC) |
+| Socket send | ~150ns | <2µs (via IPC) |
+| Context switches | 2 (user→kernel→user) | 4 (adds service hop) |
+| Kernel binary size | ~500KB | <50KB |
+
+### 11.7 Migration Checklist
+
+**Phase A: Filesystem (Weeks 1-4)** 🟡 IN PROGRESS
+- [ ] Create `services/storage/src/vfs_server.rs`
+- [ ] Define VFS RPC protocol in `kernel/src/fs/vfs_rpc.rs`
+- [ ] Implement kernel VFS stub that calls S-STORAGE
+- [ ] Move SplaxFS to `services/storage/src/splaxfs.rs`
+- [ ] Move RamFS to `services/storage/src/ramfs.rs`
+- [ ] Move ext4 to `services/storage/src/ext4.rs`
+- [ ] Move FAT32 to `services/storage/src/fat32.rs`
+- [ ] Update S-INIT to start S-STORAGE before other services
+- [ ] Benchmark: VFS operations <2µs
+
+**Phase B: Network (Weeks 5-8)** 📋 PLANNED
+- [ ] Create `services/net/` for S-NET service
+- [ ] Define socket RPC protocol
+- [ ] Move TCP/UDP/ICMP to S-NET
+- [ ] Move firewall to S-FIREWALL
+- [ ] Keep packet DMA in kernel
+- [ ] Implement zero-copy socket buffers
+- [ ] Benchmark: TCP throughput >800Mbps
+
+**Phase C: Drivers (Weeks 9-12)** 📋 PLANNED
+- [ ] Create `services/dev/` for S-DEV
+- [ ] Implement interrupt forwarding IPC
+- [ ] Move USB subsystem to userspace
+- [ ] Move sound subsystem to userspace
+- [ ] Move GPU/framebuffer to userspace
+- [ ] Keep MMIO/DMA primitives in kernel
+
+**Phase D: Finalization (Weeks 13-16)** 📋 PLANNED
+- [ ] Remove dead kernel code
+- [ ] Optimize hot IPC paths
+- [ ] Profile and tune scheduler for IPC workloads
+- [ ] Target: kernel binary <50KB
+- [ ] Write migration documentation
+
+---
 
 ### Known Architectural Inconsistencies
 
@@ -1014,7 +1249,7 @@ These are **now implemented**:
 
 ### Core Principles (Non-Negotiable)
 
-1. **Hybrid Architecture Goal**: Target a microkernel where S-CORE handles only scheduling, memory, IPC, and capabilities. *Currently* building as monolithic for faster development (see Architecture section above).
+1. **Hybrid Microkernel Architecture** 🔄: S-CORE handles only scheduling, memory, IPC, and capabilities. All filesystems, networking, and drivers run as userspace services. **See Phase 11 for active migration plan.**
 
 2. **Services, Not Ports**: Applications don't bind to port numbers. They register named services with S-GATE. No more port conflicts, no more port scanning, no more firewall rule nightmares.
 
@@ -1121,12 +1356,14 @@ All major features have been implemented:
 | Filesystem | ext4 read-only support | ✅ DONE |
 | Filesystem | FAT32 support | ✅ DONE |
 | Drivers | More WiFi chipset drivers | 🟢 PLANNED |
+| **Architecture** | **Hybrid Kernel Migration** | 🔴 **NEXT MILESTONE** |
 
 **Total TODOs: 0** - All original TODOs have been implemented!
 **Total Future Enhancements: 6/7** - Nearly complete!
+**Next Focus: Phase 11 - Hybrid Kernel Migration** 🔄
 
 Run `grep -r "TODO" kernel/ services/ runtime/ tools/` to verify.
 
 ---
 
-**The OS boots and runs. All major features are implemented.**
+**The OS boots and runs. All major features are implemented. Next: Hybrid Kernel Migration.**
