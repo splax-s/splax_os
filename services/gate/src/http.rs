@@ -12,6 +12,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
+use alloc::vec;
 use alloc::vec::Vec;
 
 use super::{CapabilityToken, GateError};
@@ -96,6 +97,27 @@ impl HttpResponseMessage {
         response.body = self.body.clone();
         response
     }
+    
+    /// Parses from bytes (simple format: status as u16 + body).
+    /// In a full implementation, this would parse a proper serialization format.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 2 {
+            return None;
+        }
+        
+        let status = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let body = if bytes.len() > 2 {
+            bytes[2..].to_vec()
+        } else {
+            Vec::new()
+        };
+        
+        Some(Self {
+            status,
+            headers: Vec::new(),
+            body,
+        })
+    }
 }
 
 /// HTTP method.
@@ -139,7 +161,9 @@ impl HttpStatus {
     pub const FORBIDDEN: Self = Self(403);
     pub const NOT_FOUND: Self = Self(404);
     pub const INTERNAL_ERROR: Self = Self(500);
+    pub const BAD_GATEWAY: Self = Self(502);
     pub const SERVICE_UNAVAILABLE: Self = Self(503);
+    pub const GATEWAY_TIMEOUT: Self = Self(504);
 
     /// Gets the reason phrase for this status.
     pub fn reason(&self) -> &'static str {
@@ -152,7 +176,9 @@ impl HttpStatus {
             403 => "Forbidden",
             404 => "Not Found",
             500 => "Internal Server Error",
+            502 => "Bad Gateway",
             503 => "Service Unavailable",
+            504 => "Gateway Timeout",
             _ => "Unknown",
         }
     }
@@ -304,6 +330,8 @@ pub struct HttpGateway {
     routes: spin::Mutex<Vec<Route>>,
     /// Default service (fallback)
     default_service: Option<String>,
+    /// Request timeout
+    timeout: core::time::Duration,
 }
 
 impl HttpGateway {
@@ -313,6 +341,7 @@ impl HttpGateway {
             port,
             routes: spin::Mutex::new(Vec::new()),
             default_service,
+            timeout: core::time::Duration::from_secs(30),
         }
     }
 
@@ -399,8 +428,8 @@ impl HttpGateway {
     pub fn handle_with_channel(
         &self,
         request: HttpRequest,
-        _channel_id: u64,
-        _cap_token: &CapabilityToken,
+        channel_id: u64,
+        cap_token: &CapabilityToken,
     ) -> HttpResponse {
         // Find route
         let service = match self.route(&request) {
@@ -410,17 +439,40 @@ impl HttpGateway {
         
         // Convert and prepare message
         let msg = HttpRequestMessage::from_request(&request);
-        let _payload = msg.to_bytes();
+        let payload = msg.to_bytes();
         
-        // TODO: Use actual S-LINK channel for message passing
-        // let response = channel.request(payload, Some(self.timeout))?;
-        // return HttpResponseMessage::from_bytes(&response.payload).to_response();
+        // Use S-LINK channel for message passing
+        // Create a request message and send it via the channel
+        use crate::network::SLinkMessage;
         
-        HttpResponse::ok(alloc::format!(
-            "{{\"service\":\"{}\",\"status\":\"channel_routing_ready\"}}",
-            service
-        ).into_bytes())
-            .header("Content-Type", "application/json")
+        let slink_request = SLinkMessage {
+            channel_id,
+            message_type: crate::network::MessageType::Request,
+            correlation_id: request.path.len() as u64, // Simple correlation
+            payload: payload.clone(),
+            capabilities: vec![cap_token.clone()],
+        };
+        
+        // Send request and wait for response with timeout
+        match crate::network::send_and_receive(slink_request, self.timeout) {
+            Ok(response) => {
+                // Parse response payload as HTTP response
+                match HttpResponseMessage::from_bytes(&response.payload) {
+                    Some(http_response) => http_response.to_response(),
+                    None => HttpResponse::error(
+                        HttpStatus::BAD_GATEWAY,
+                        "Invalid response from service"
+                    ),
+                }
+            }
+            Err(e) => {
+                // Timeout or error - return gateway error
+                HttpResponse::error(
+                    HttpStatus::GATEWAY_TIMEOUT,
+                    &alloc::format!("Service error: {:?}", e)
+                )
+            }
+        }
     }
 
     /// Gets the port.

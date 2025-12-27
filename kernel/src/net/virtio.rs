@@ -105,10 +105,28 @@ const fn align_up(value: usize, align: usize) -> usize {
 
 /// Converts a virtual address to physical address.
 /// In identity-mapped mode (early boot), virt == phys.
-/// TODO: Use proper page table translation when paging is fully enabled.
-#[inline]
-fn virt_to_phys(virt: u64) -> u64 {
-    // For now, we assume identity mapping
+/// Converts a virtual address to physical address.
+/// Uses identity mapping for now - when full paging is enabled,
+/// this should walk the page tables to translate addresses.
+pub fn virt_to_phys(virt: u64) -> u64 {
+    // For kernel addresses in identity-mapped region, virtual == physical
+    // When full paging is enabled, this would:
+    // 1. Walk the 4-level page table (PML4 -> PDPT -> PD -> PT)
+    // 2. Handle large pages (2MB, 1GB)
+    // 3. Return the physical address from the PTE
+    
+    // Check if address is in kernel identity-mapped region
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Kernel addresses typically start at 0xFFFF_8000_0000_0000
+        // and are identity-mapped to physical memory
+        const KERNEL_PHYS_OFFSET: u64 = 0xFFFF_8000_0000_0000;
+        if virt >= KERNEL_PHYS_OFFSET {
+            return virt - KERNEL_PHYS_OFFSET;
+        }
+    }
+    
+    // For low addresses or AArch64, assume identity mapping
     virt
 }
 

@@ -293,7 +293,12 @@ impl WaitManager {
         };
         let _ = SIGNAL_MANAGER.send(parent, SIGCHLD, info);
 
-        // TODO: Wake up parent if waiting
+        // Wake up parent if it's waiting for children
+        let waiters = self.waiters.lock();
+        if waiters.contains_key(&parent) {
+            drop(waiters);
+            let _ = crate::sched::scheduler().wake(parent);
+        }
     }
 
     /// Process was killed by signal
@@ -350,9 +355,12 @@ impl WaitManager {
                     .filter(|z| z.parent == parent)
                     .map(|_| pid)
             }
-            WaitTarget::ProcessGroup(_pgid) => {
-                // TODO: Implement process groups
-                None
+            WaitTarget::ProcessGroup(pgid) => {
+                // Find any zombie in the process group
+                // For now, treat process group as just the leader process
+                zombies.get(&pgid)
+                    .filter(|z| z.parent == parent)
+                    .map(|_| pgid)
             }
         };
 
@@ -376,9 +384,20 @@ impl WaitManager {
             return Ok(None);
         }
 
-        // TODO: Block and wait for child
-        // For now, just return WouldBlock
-        Err(WaitError::WouldBlock)
+        // Register as waiter and block
+        let wait_request = WaitRequest {
+            target: target.clone(),
+            options,
+        };
+        self.waiters.lock().insert(parent, wait_request);
+        
+        // Block the parent process - it will be woken when a child exits
+        let _ = crate::sched::scheduler().block(parent);
+        
+        // After wakeup, try again (non-blocking this time)
+        drop(zombies);
+        let new_options = WaitOptions { nohang: true, ..WaitOptions::default() };
+        self.wait(parent, target, new_options)
     }
 
     /// waitpid() implementation
@@ -438,7 +457,10 @@ pub fn exit(pid: ProcessId, exit_code: i32) -> Result<(), ExitError> {
     let parent = WAIT_MANAGER.get_parent(pid)
         .unwrap_or(ProcessId::new(1)); // Orphan goes to init
 
-    // Get resource usage (TODO: track this properly)
+    // Get resource usage
+    // Note: Full resource tracking (CPU time, memory, I/O) requires
+    // integration with scheduler and memory manager statistics.
+    // Currently returns zeroed usage; proper tracking is a future enhancement.
     let rusage = ResourceUsage::default();
 
     // Create zombie
@@ -450,9 +472,14 @@ pub fn exit(pid: ProcessId, exit_code: i32) -> Result<(), ExitError> {
     // Clean up signal state
     crate::process::signal::SIGNAL_MANAGER.cleanup_process(pid);
 
-    // TODO: Close file descriptors
-    // TODO: Free memory
-    // TODO: Mark process as Zombie in scheduler
+    // Close file descriptors (handled by VFS if implemented)
+    // For now, just log that we would close FDs
+    #[cfg(feature = "vfs")]
+    crate::fs::vfs::close_all_fds(pid);
+
+    // Free process memory via scheduler termination
+    // The scheduler's terminate() handles memory cleanup
+    let _ = crate::sched::scheduler().terminate(pid);
 
     Ok(())
 }

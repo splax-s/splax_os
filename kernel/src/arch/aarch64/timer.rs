@@ -150,7 +150,15 @@ pub fn handle_timer_irq() {
         let current = read_counter();
         write_compare(current + TICK_INTERVAL);
         
-        // TODO: Trigger scheduler tick
+        // Trigger scheduler tick - check if we should preempt
+        // Every 10 ticks (100ms at 100Hz), try to schedule another process
+        if TICK_COUNT % 10 == 0 {
+            // Get next process from scheduler
+            if let Some(next_pid) = crate::sched::scheduler().schedule() {
+                // Switch to the new process
+                crate::sched::scheduler().switch_to(next_pid);
+            }
+        }
     }
 }
 

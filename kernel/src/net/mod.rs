@@ -35,12 +35,14 @@ pub mod device;
 pub mod ethernet;
 pub mod arp;
 pub mod ip;
+pub mod ipv6;
 pub mod icmp;
 pub mod tcp;
 pub mod udp;
 pub mod socket;
 pub mod dns;
 pub mod ssh;
+pub mod firewall;
 
 // Network device drivers
 #[cfg(target_arch = "x86_64")]

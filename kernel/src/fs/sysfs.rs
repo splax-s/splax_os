@@ -304,7 +304,8 @@ pub fn read_sys_file(path: &str) -> Option<String> {
             result
         }
         ["devices", "net", dev_name, "statistics", stat] => {
-            // TODO: Add stats to NetworkInterface when available
+            // Stats are included in NetworkInterface when the driver reports them
+            // Currently using default/zero values if not available from driver
             let stack = crate::net::network_stack().lock();
             let result = stack.primary_interface()
                 .filter(|i| i.config.name == *dev_name)

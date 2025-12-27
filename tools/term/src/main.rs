@@ -880,7 +880,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[cfg(test)]
 mod tests {
-
+    use alloc::vec;
     use super::*;
 
     #[test]

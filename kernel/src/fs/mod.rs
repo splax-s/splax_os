@@ -34,6 +34,8 @@ pub mod splaxfs;
 pub mod procfs;
 pub mod devfs;
 pub mod sysfs;
+pub mod ext4;
+pub mod fat32;
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;

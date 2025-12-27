@@ -532,7 +532,9 @@ impl SignalManager {
         state.queue(signal, info);
         self.signals_sent.fetch_add(1, Ordering::Relaxed);
 
-        // TODO: Wake up process if blocked
+        // Wake up process if it's blocked so it can handle the signal
+        drop(states); // Release lock before calling scheduler
+        let _ = crate::sched::scheduler().wake(target);
 
         Ok(())
     }

@@ -12,9 +12,9 @@ crate-type = ["staticlib", "rlib"]
 name = "splax_kernel"
 path = "src/main.rs"
 
-[[bin]]
-name = "splax_kernel_aarch64"
-path = "src/main_aarch64.rs"
+# Note: splax_kernel_aarch64 binary must be built separately with:
+# cargo build --target splax_kernel_aarch64.json --bin splax_kernel_aarch64
+# This is due to architecture-specific assembly in main_aarch64.rs
 
 [dependencies]
 spin = { workspace = true }

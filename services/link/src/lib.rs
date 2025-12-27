@@ -221,22 +221,87 @@ impl Channel {
 
         let message = self.create_message(MessageType::Request, payload, None);
         let msg_id = message.id;
-        let timeout = timeout.unwrap_or(self.config.default_timeout);
+        let timeout_cycles = timeout.unwrap_or(self.config.default_timeout);
+
+        // Get current timestamp for timeout tracking
+        let start_time = Self::get_timestamp();
 
         // Track pending request
         self.pending_requests.lock().insert(
             msg_id,
             PendingRequest {
-                sent_at: 0, // Would use real timestamp
-                timeout,
+                sent_at: start_time,
+                timeout: timeout_cycles,
             },
         );
 
         self.outbound.lock().push(message);
 
-        // In a real implementation, this would block/poll for response
-        // For now, return a placeholder error
-        Err(LinkError::Timeout)
+        // Poll for response until timeout
+        loop {
+            // Check for response in inbound queue
+            {
+                let mut inbound = self.inbound.lock();
+                // Find response matching our request ID
+                let response_idx = inbound.iter().position(|m| {
+                    m.message_type == MessageType::Response && m.correlation_id == Some(msg_id)
+                });
+                
+                if let Some(idx) = response_idx {
+                    // Found our response - remove from pending and return
+                    self.pending_requests.lock().remove(&msg_id);
+                    return Ok(inbound.remove(idx));
+                }
+            }
+
+            // Check for timeout
+            let elapsed = Self::get_timestamp().saturating_sub(start_time);
+            if elapsed >= timeout_cycles {
+                self.pending_requests.lock().remove(&msg_id);
+                return Err(LinkError::Timeout);
+            }
+
+            // Brief pause before next poll (avoid busy-spin)
+            Self::pause_hint();
+        }
+    }
+
+    /// Get current timestamp (CPU cycles).
+    #[cfg(target_arch = "x86_64")]
+    fn get_timestamp() -> u64 {
+        unsafe { core::arch::x86_64::_rdtsc() }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn get_timestamp() -> u64 {
+        let cnt: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) cnt, options(nostack, nomem));
+        }
+        cnt
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    fn get_timestamp() -> u64 {
+        0 // Fallback - would need external time source
+    }
+
+    /// CPU pause hint for spin-wait loops.
+    #[cfg(target_arch = "x86_64")]
+    fn pause_hint() {
+        unsafe { core::arch::x86_64::_mm_pause() }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn pause_hint() {
+        unsafe {
+            core::arch::asm!("yield", options(nostack, nomem));
+        }
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    fn pause_hint() {
+        // No-op on other architectures
     }
 
     /// Receives the next inbound message.
@@ -297,7 +362,7 @@ impl Channel {
             message_type,
             payload,
             correlation_id,
-            timestamp: 0, // Would use real timestamp
+            timestamp: Self::get_timestamp(),
         }
     }
 }

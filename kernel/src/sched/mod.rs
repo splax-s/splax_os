@@ -109,6 +109,9 @@ pub struct ProcessInfo {
     pub cpu_time: u64,
     /// Number of times scheduled
     pub schedule_count: u64,
+    /// CPU context for context switching (x86_64 only)
+    #[cfg(target_arch = "x86_64")]
+    pub context: crate::arch::x86_64::context::Context,
 }
 
 /// The deterministic scheduler.
@@ -178,6 +181,8 @@ impl Scheduler {
             state: ProcessState::Ready,
             cpu_time: 0,
             schedule_count: 0,
+            #[cfg(target_arch = "x86_64")]
+            context: crate::arch::x86_64::context::Context::default(),
         };
 
         self.processes.lock().insert(pid, info);
@@ -214,7 +219,19 @@ impl Scheduler {
         let process = processes.get_mut(&pid).ok_or(SchedulerError::ProcessNotFound)?;
 
         process.state = ProcessState::Terminated;
-        // TODO: Clean up resources
+        
+        // Clean up: remove from ready queues
+        let mut queues = self.ready_queues.lock();
+        queues.realtime.retain(|&p| p != pid);
+        queues.interactive.retain(|&p| p != pid);
+        queues.background.retain(|&p| p != pid);
+        
+        // Clear current if this was the running process
+        let mut current = self.current.lock();
+        if *current == Some(pid) {
+            *current = None;
+        }
+        
         Ok(())
     }
 
@@ -251,9 +268,12 @@ impl Scheduler {
     pub fn switch_to(&self, pid: ProcessId) {
         let mut current = self.current.lock();
         let mut processes = self.processes.lock();
+        
+        // Save previous PID before we modify current
+        let prev_pid_opt = *current;
 
         // Mark previous process as ready (if any)
-        if let Some(prev_pid) = *current {
+        if let Some(prev_pid) = prev_pid_opt {
             if let Some(prev) = processes.get_mut(&prev_pid) {
                 if prev.state == ProcessState::Running {
                     prev.state = ProcessState::Ready;
@@ -270,7 +290,43 @@ impl Scheduler {
 
         *current = Some(pid);
 
-        // TODO: Actual context switch (save/restore registers)
+        // Get contexts for context switch
+        #[cfg(target_arch = "x86_64")]
+        {
+            // Get old and new process contexts
+            let old_ctx = if let Some(prev_pid) = prev_pid_opt {
+                processes.get(&prev_pid).map(|p| &p.context as *const _ as *mut crate::arch::x86_64::context::Context)
+            } else {
+                None
+            };
+            
+            let new_ctx = processes.get(&pid).map(|p| &p.context as *const crate::arch::x86_64::context::Context);
+            
+            // Drop locks before context switch (switch may not return to this point)
+            drop(processes);
+            drop(current);
+            
+            if let (Some(old), Some(new)) = (old_ctx, new_ctx) {
+                // Perform actual context switch
+                unsafe {
+                    crate::arch::x86_64::context::switch_context(old, new);
+                }
+            } else if let Some(new) = new_ctx {
+                // First switch - just load the new context
+                unsafe {
+                    crate::arch::x86_64::context::init_context(new);
+                }
+            }
+        }
+        
+        #[cfg(target_arch = "aarch64")]
+        {
+            // On AArch64: context is saved/restored via exception return (eret)
+            // Memory barrier to ensure visibility
+            unsafe {
+                core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
+            }
+        }
     }
 
     /// Enqueues a process in the appropriate ready queue.

@@ -238,9 +238,12 @@ impl ProcessManager {
         let pid = self.alloc_pid();
         let parent = self.current_pid().unwrap_or(ProcessId::KERNEL);
         
-        // Allocate kernel stack
-        // TODO: Use proper memory allocation
-        let kernel_stack = 0x0000_0001_0000_0000 + (pid.0 * KERNEL_STACK_SIZE as u64);
+        // Allocate kernel stack using frame allocator
+        let stack_frames = KERNEL_STACK_SIZE / crate::mm::PAGE_SIZE;
+        let kernel_stack = crate::mm::FRAME_ALLOCATOR
+            .allocate_contiguous(stack_frames)
+            .map_err(|_| ProcessError::OutOfMemory)?
+            .address() + KERNEL_STACK_SIZE as u64;
         
         let process = Process::new_kernel(pid, name, parent, entry, kernel_stack, cap_token);
         
@@ -260,9 +263,12 @@ impl ProcessManager {
         let pid = self.alloc_pid();
         let parent = self.current_pid().unwrap_or(ProcessId::KERNEL);
         
-        // Allocate stacks
-        // TODO: Use proper memory allocation
-        let kernel_stack = 0x0000_0001_0000_0000 + (pid.0 * KERNEL_STACK_SIZE as u64);
+        // Allocate kernel stack using frame allocator
+        let stack_frames = KERNEL_STACK_SIZE / crate::mm::PAGE_SIZE;
+        let kernel_stack = crate::mm::FRAME_ALLOCATOR
+            .allocate_contiguous(stack_frames)
+            .map_err(|_| ProcessError::OutOfMemory)?
+            .address() + KERNEL_STACK_SIZE as u64;
         let user_stack = USER_STACK_TOP;
         
         let process = Process::new_user(
@@ -368,7 +374,26 @@ impl ProcessManager {
         process.state = ProcessState::Terminated;
         process.exit_code = Some(exit_code);
         
-        // TODO: Notify parent, clean up resources
+        // Get parent for notification
+        let parent = process.parent;
+        
+        // Free kernel stack memory
+        // kernel_stack points to top of stack, subtract size to get base
+        let kernel_stack_base = process.kernel_stack.saturating_sub(KERNEL_STACK_SIZE as u64);
+        if kernel_stack_base > 0 {
+            let stack_frames = KERNEL_STACK_SIZE / crate::mm::PAGE_SIZE;
+            let frame = crate::mm::FrameNumber::from_address(kernel_stack_base);
+            crate::mm::FRAME_ALLOCATOR.free_contiguous(frame, stack_frames);
+        }
+        
+        // Notify parent via wait subsystem
+        drop(processes); // Release lock before calling wait manager
+        crate::process::wait::WAIT_MANAGER.do_exit(
+            pid, 
+            parent, 
+            exit_code, 
+            crate::process::wait::ResourceUsage::default()
+        );
         
         Ok(())
     }

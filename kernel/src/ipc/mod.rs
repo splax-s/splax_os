@@ -413,6 +413,52 @@ pub enum IpcError {
     InvalidCapability,
 }
 
+// =============================================================================
+// Global IPC Manager
+// =============================================================================
+
+use spin::Lazy;
+
+/// Global IPC manager instance.
+pub static IPC_MANAGER: Lazy<IpcManager> = Lazy::new(|| {
+    IpcManager::new(IpcConfig::default())
+});
+
+/// Initialize IPC subsystem.
+pub fn init() {
+    // Force lazy initialization
+    let _ = &*IPC_MANAGER;
+}
+
+/// Quick send function for kernel use.
+pub fn send(
+    channel_id: ChannelId,
+    sender: ProcessId,
+    data: Vec<u8>,
+    cap_token: &CapabilityToken,
+) -> Result<(), IpcError> {
+    let msg = Message::inline(sender, data);
+    IPC_MANAGER.send(channel_id, sender, msg, cap_token)
+}
+
+/// Quick receive function for kernel use.
+pub fn receive(
+    channel_id: ChannelId,
+    receiver: ProcessId,
+    cap_token: &CapabilityToken,
+) -> Result<Message, IpcError> {
+    IPC_MANAGER.receive(channel_id, receiver, cap_token)
+}
+
+/// Create a channel between two processes.
+pub fn create_channel(
+    sender: ProcessId,
+    receiver: ProcessId,
+    cap_token: &CapabilityToken,
+) -> Result<ChannelId, IpcError> {
+    IPC_MANAGER.create_channel(sender, receiver, cap_token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

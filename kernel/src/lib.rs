@@ -35,6 +35,7 @@
 
 extern crate alloc;
 
+pub mod acpi;
 pub mod arch;
 pub mod block;
 pub mod cap;
@@ -43,6 +44,7 @@ pub mod gpu;
 pub mod ipc;
 pub mod mm;
 pub mod net;
+pub mod pci;
 pub mod process;
 pub mod sched;
 pub mod smp;
@@ -161,7 +163,7 @@ impl Default for KernelConfig {
 /// This is called by the bootloader after setting up the initial environment.
 /// The bootloader passes a pointer to the boot info structure.
 #[no_mangle]
-pub extern "C" fn kernel_main(_boot_info: *const u8) -> ! {
+pub extern "C" fn kernel_main(boot_info: *const u8) -> ! {
     // Initialize architecture-specific features (includes serial and VGA)
     arch::init();
 
@@ -193,9 +195,28 @@ pub extern "C" fn kernel_main(_boot_info: *const u8) -> ! {
         vga_println!();
     }
 
-    // Create kernel with default configuration
-    // TODO: Parse boot_info to get actual configuration
-    let config = KernelConfig::default();
+    // Create kernel configuration from boot info
+    // Parse memory size, framebuffer, and other parameters
+    let config = {
+        let mut cfg = KernelConfig::default();
+        
+        // Parse memory regions if available in boot_info
+        // The boot_info pointer contains multiboot/UEFI data
+        if !boot_info.is_null() {
+            // For multiboot2, magic is at offset 0
+            // For UEFI, we'd have different structure
+            // Currently using defaults as actual parsing requires
+            // architecture-specific multiboot2 parsing
+            #[cfg(feature = "multiboot2")]
+            {
+                // Would parse multiboot2 info here
+                // cfg.memory_size = parsed_memory_size;
+                let _ = boot_info; // suppress unused warning when feature enabled
+            }
+        }
+        
+        cfg
+    };
     let mut kernel = Kernel::new(config);
 
     // Print kernel init message before network

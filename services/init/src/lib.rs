@@ -65,6 +65,95 @@ use alloc::vec::Vec;
 use spin::RwLock;
 
 // =============================================================================
+// PROCESS SPAWNING
+// =============================================================================
+
+/// Spawn a service process via syscall
+/// 
+/// This uses the spawn syscall to create a new process from an executable path.
+fn spawn_service_process(path: &str) -> Result<u64, ()> {
+    // Use syscall to spawn the process
+    // On x86_64: syscall 220 (clone) with path
+    // On AArch64: syscall 220 with path
+    let pid: i64;
+    
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 220u64,  // clone/spawn syscall
+            in("rdi") path.as_ptr() as u64,
+            in("rsi") path.len() as u64,
+            lateout("rax") pid,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack)
+        );
+    }
+    
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 220u64,  // clone/spawn syscall
+            in("x0") path.as_ptr() as u64,
+            in("x1") path.len() as u64,
+            lateout("x0") pid,
+            options(nostack)
+        );
+    }
+    
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        pid = -1;
+    }
+    
+    if pid >= 0 {
+        Ok(pid as u64)
+    } else {
+        Err(())
+    }
+}
+
+/// Send a signal to a process
+fn kill_process(pid: u64, signal: i32) -> Result<(), ()> {
+    let result: i64;
+    
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 62u64,  // kill syscall
+            in("rdi") pid,
+            in("rsi") signal as u64,
+            lateout("rax") result,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack)
+        );
+    }
+    
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 129u64,  // kill syscall
+            in("x0") pid,
+            in("x1") signal as u64,
+            lateout("x0") result,
+            options(nostack)
+        );
+    }
+    
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        result = -1;
+    }
+    
+    if result == 0 { Ok(()) } else { Err(()) }
+}
+
+// =============================================================================
 // SERVICE TYPES
 // =============================================================================
 
@@ -426,18 +515,25 @@ impl ServiceManager {
         
         service.state = ServiceState::Starting;
         
-        // In a real implementation, we would:
-        // 1. Fork a new process
-        // 2. Execute the start command
-        // 3. Wait for ready notification (for Notify type)
-        // 4. Update PID and state
+        // Get the executable path from service definition
+        let exec_path = service.def.start_cmd.clone();
         
-        // For now, simulate immediate start
-        service.state = ServiceState::Running;
-        service.pid = Some(100 + id.0); // Mock PID
-        service.restart_count = 0;
+        // Spawn the service process
+        // Services communicate via spawn syscall which returns PID
+        let spawn_result = spawn_service_process(&exec_path);
         
-        Ok(())
+        match spawn_result {
+            Ok(pid) => {
+                service.state = ServiceState::Running;
+                service.pid = Some(pid);
+                service.restart_count = 0;
+                Ok(())
+            }
+            Err(_) => {
+                service.state = ServiceState::Failed;
+                Err(InitError::ExecFailed(exec_path))
+            }
+        }
     }
     
     /// Stop a service
@@ -451,10 +547,24 @@ impl ServiceManager {
         
         service.state = ServiceState::Stopping;
         
-        // In a real implementation, we would:
-        // 1. Send stop command or SIGTERM
-        // 2. Wait for graceful shutdown
-        // 3. Send SIGKILL if timeout
+        // Send SIGTERM to gracefully stop the service
+        if let Some(pid) = service.pid {
+            const SIGTERM: i32 = 15;
+            const SIGKILL: i32 = 9;
+            
+            // Try graceful shutdown first
+            let _ = kill_process(pid, SIGTERM);
+            
+            // Wait briefly for process to exit
+            // In a full implementation, we'd use proper timeout
+            for _ in 0..1000 {
+                // Spin-wait (real impl would yield to scheduler)
+                core::hint::spin_loop();
+            }
+            
+            // Force kill if still running
+            let _ = kill_process(pid, SIGKILL);
+        }
         
         service.state = ServiceState::Stopped;
         service.pid = None;
@@ -574,6 +684,8 @@ pub enum InitError {
     AlreadyRunning,
     /// Service failed to start
     StartFailed,
+    /// Exec failed for path
+    ExecFailed(String),
     /// Invalid service definition
     InvalidDefinition,
     /// Permission denied
@@ -587,6 +699,7 @@ impl core::fmt::Display for InitError {
             InitError::DependencyNotMet(s) => write!(f, "Dependency not met: {}", s),
             InitError::AlreadyRunning => write!(f, "Service already running"),
             InitError::StartFailed => write!(f, "Failed to start service"),
+            InitError::ExecFailed(path) => write!(f, "Failed to exec: {}", path),
             InitError::InvalidDefinition => write!(f, "Invalid service definition"),
             InitError::PermissionDenied => write!(f, "Permission denied"),
         }

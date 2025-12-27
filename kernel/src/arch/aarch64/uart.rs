@@ -185,6 +185,59 @@ impl Write for Uart {
 /// Global UART instance.
 pub static UART: Mutex<Uart> = Mutex::new(unsafe { Uart::new(Uart::UART0_BASE) });
 
+/// Input buffer for received characters
+static INPUT_BUFFER: Mutex<InputBuffer> = Mutex::new(InputBuffer::new());
+
+/// Ring buffer for UART input
+struct InputBuffer {
+    buffer: [u8; 256],
+    head: usize,
+    tail: usize,
+}
+
+impl InputBuffer {
+    const fn new() -> Self {
+        Self {
+            buffer: [0; 256],
+            head: 0,
+            tail: 0,
+        }
+    }
+    
+    fn push(&mut self, c: u8) {
+        let next_head = (self.head + 1) % self.buffer.len();
+        if next_head != self.tail {
+            self.buffer[self.head] = c;
+            self.head = next_head;
+        }
+        // Drop character if buffer is full
+    }
+    
+    fn pop(&mut self) -> Option<u8> {
+        if self.head == self.tail {
+            None
+        } else {
+            let c = self.buffer[self.tail];
+            self.tail = (self.tail + 1) % self.buffer.len();
+            Some(c)
+        }
+    }
+    
+    fn is_empty(&self) -> bool {
+        self.head == self.tail
+    }
+}
+
+/// Get a character from the input buffer (for shell use)
+pub fn getc() -> Option<u8> {
+    INPUT_BUFFER.lock().pop()
+}
+
+/// Check if input is available
+pub fn has_input() -> bool {
+    !INPUT_BUFFER.lock().is_empty()
+}
+
 /// Initialize the UART.
 pub fn init() {
     UART.lock().init();
@@ -202,11 +255,26 @@ pub fn handle_uart_irq() {
         }
         uart.putc(c);
         
-        // TODO: Send to input buffer for shell
+        // Add to input buffer for shell/syscall reads
+        drop(uart); // Release UART lock before accessing input buffer
+        let mut input = INPUT_BUFFER.lock();
+        if c == b'\r' {
+            input.push(b'\n');
+        } else {
+            input.push(c);
+        }
+        drop(input);
+        
+        // Re-acquire UART lock for next iteration
+        let uart = UART.lock();
+        if uart.is_rx_ready() {
+            continue;
+        }
+        break;
     }
     
     // Clear interrupts
-    uart.clear_interrupts();
+    UART.lock().clear_interrupts();
 }
 
 /// Print macro for aarch64.

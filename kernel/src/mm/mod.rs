@@ -24,7 +24,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use spin::Mutex;
 
-pub use frame::{FrameAllocator, FrameNumber, FRAME_ALLOCATOR};
+pub use frame::{FrameAllocator, FrameNumber, FRAME_ALLOCATOR, PAGE_SIZE};
 
 /// Kernel heap size: 1 MB (enough for virtio buffers and data structures)
 const KERNEL_HEAP_SIZE: usize = 1024 * 1024;
@@ -165,11 +165,14 @@ impl MemoryManager {
             return Err(MemoryError::OutOfMemory);
         }
 
-        // TODO: Actual allocation from free list
+        // Allocate frames from the global frame allocator
+        let num_frames = aligned_size / PAGE_SIZE;
+        let frame = FRAME_ALLOCATOR.allocate_contiguous(num_frames)
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        
         self.used_memory += aligned_size;
 
-        // Placeholder: return a dummy address
-        Ok(0x1000_0000)
+        Ok(frame.address())
     }
 
     /// Frees a previously allocated memory block.
@@ -177,13 +180,29 @@ impl MemoryManager {
     /// # Arguments
     ///
     /// * `addr` - Physical address returned from `allocate`
+    /// * `size` - Size of the allocation in bytes
     /// * `cap_token` - Capability token authorizing this deallocation
     pub fn free(
         &mut self,
         addr: u64,
+        size: usize,
         _cap_token: &crate::cap::CapabilityToken,
     ) -> Result<(), MemoryError> {
-        // TODO: Return memory to free list
+        if addr == 0 {
+            return Err(MemoryError::InvalidAddress);
+        }
+        
+        // Calculate number of frames to free
+        let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let num_frames = aligned_size / PAGE_SIZE;
+        let frame = FrameNumber::from_address(addr);
+        
+        // Return frames to the allocator
+        FRAME_ALLOCATOR.free_contiguous(frame, num_frames);
+        
+        // Update accounting
+        self.used_memory = self.used_memory.saturating_sub(aligned_size);
+        
         Ok(())
     }
 

@@ -191,9 +191,127 @@ fn handle_syscall(ctx: &mut ExceptionContext, syscall_num: u64) {
         ctx.gpr[3], ctx.gpr[4], ctx.gpr[5],
     ];
     
-    // TODO: Implement syscall dispatch
-    // For now, return -ENOSYS
-    ctx.gpr[0] = (-38i64) as u64; // -ENOSYS
+    // Dispatch syscall based on number
+    // Using Linux-compatible syscall numbers for AArch64
+    ctx.gpr[0] = match syscall_num {
+        // exit (93)
+        93 => {
+            let exit_code = args[0] as i32;
+            let pid = crate::sched::scheduler().current_process()
+                .unwrap_or(crate::sched::ProcessId::KERNEL);
+            let _ = crate::process::wait::exit(pid, exit_code);
+            0
+        }
+        // write (64)
+        64 => {
+            let fd = args[0];
+            let buf = args[1] as *const u8;
+            let count = args[2] as usize;
+            if fd == 1 || fd == 2 {
+                // stdout/stderr - write to UART
+                for i in 0..count {
+                    let c = unsafe { *buf.add(i) };
+                    super::uart::putc(c);
+                }
+                count as u64
+            } else {
+                (-9i64) as u64 // -EBADF
+            }
+        }
+        // read (63)
+        63 => {
+            let fd = args[0];
+            if fd == 0 {
+                // stdin - read from UART
+                match super::uart::getc() {
+                    Some(c) => {
+                        let buf = args[1] as *mut u8;
+                        unsafe { *buf = c; }
+                        1
+                    }
+                    None => 0,
+                }
+            } else {
+                (-9i64) as u64 // -EBADF
+            }
+        }
+        // brk (214)
+        214 => {
+            let new_brk = args[0];
+            let pid = crate::sched::scheduler().current_process()
+                .unwrap_or(crate::sched::ProcessId::KERNEL);
+            match crate::process::PROCESS_MANAGER.set_brk(pid, new_brk) {
+                Ok(old_brk) => old_brk,
+                Err(_) => (-12i64) as u64, // -ENOMEM
+            }
+        }
+        // getpid (172)
+        172 => {
+            crate::sched::scheduler().current_process()
+                .map(|p| p.0)
+                .unwrap_or(0)
+        }
+        // clone (220) - simplified spawn (Linux clone3 is 435)
+        220 => {
+            // args[0] = path pointer, args[1] = path length
+            let path_ptr = args[0] as *const u8;
+            let path_len = args[1] as usize;
+            if path_ptr.is_null() || path_len > 256 {
+                (-22i64) as u64 // -EINVAL
+            } else {
+                // Read path from userspace
+                let path_slice = unsafe { core::slice::from_raw_parts(path_ptr, path_len) };
+                if let Ok(path) = core::str::from_utf8(path_slice) {
+                    // Spawn the process
+                    match crate::process::exec::spawn(path) {
+                        Ok(pid) => pid.0,
+                        Err(_) => (-2i64) as u64, // -ENOENT
+                    }
+                } else {
+                    (-22i64) as u64 // -EINVAL
+                }
+            }
+        }
+        // waitpid (260)
+        260 => {
+            let pid = args[0] as i64;
+            let status_ptr = args[1] as *mut i32;
+            let options = args[2] as i32;
+            let target = if pid < 0 {
+                crate::process::wait::WaitTarget::AnyChild
+            } else if pid == 0 {
+                crate::process::wait::WaitTarget::AnyInGroup
+            } else {
+                crate::process::wait::WaitTarget::Specific(crate::sched::ProcessId::new(pid as u64))
+            };
+            let opts = crate::process::wait::WaitOptions::from_bits(options);
+            match crate::process::wait::waitpid(target, opts) {
+                Ok(result) => {
+                    if !status_ptr.is_null() {
+                        unsafe { *status_ptr = result.status.to_wait_status(); }
+                    }
+                    result.pid.0 as u64
+                }
+                Err(e) => match e {
+                    crate::process::wait::WaitError::NoChildren => (-10i64) as u64, // -ECHILD
+                    crate::process::wait::WaitError::WouldBlock => 0,
+                    _ => (-1i64) as u64,
+                }
+            }
+        }
+        // kill (129)
+        129 => {
+            let pid = crate::sched::ProcessId::new(args[0]);
+            let sig = args[1] as i32;
+            let signal = crate::process::signal::Signal::from_i32(sig);
+            match crate::process::signal::send_signal(pid, signal) {
+                Ok(()) => 0,
+                Err(_) => (-3i64) as u64, // -ESRCH
+            }
+        }
+        // Unknown syscall
+        _ => (-38i64) as u64, // -ENOSYS
+    };
     
     // Advance past SVC instruction
     ctx.elr += 4;
@@ -204,11 +322,49 @@ fn handle_data_abort(ctx: &mut ExceptionContext, fault_status: DataFaultStatus) 
     let is_write = (ctx.esr >> 6) & 1 != 0;
     let fault_addr = ctx.far;
     
-    // TODO: Handle page faults, demand paging
-    panic!(
-        "Data abort: {:?}, addr: {:#018x}, write: {}, ELR: {:#018x}",
-        fault_status, fault_addr, is_write, ctx.elr
-    );
+    // Check if this is a translation fault (page not mapped)
+    match fault_status {
+        DataFaultStatus::TranslationL0 |
+        DataFaultStatus::TranslationL1 |
+        DataFaultStatus::TranslationL2 |
+        DataFaultStatus::TranslationL3 => {
+            // Page fault - could implement demand paging here
+            // For now, check if it's in a valid range
+            let pid = crate::sched::scheduler().current_process();
+            
+            // Check if the fault address is in user space (below kernel start)
+            const KERNEL_START: u64 = 0xFFFF_0000_0000_0000;
+            if fault_addr < KERNEL_START {
+                // User-space fault - send SIGSEGV
+                if let Some(pid) = pid {
+                    let info = crate::process::signal::SignalInfo {
+                        signo: 11, // SIGSEGV
+                        errno: 0,
+                        code: crate::process::signal::SignalCode::SegmentFault,
+                        sender_pid: None,
+                        sender_uid: 0,
+                        value: 0,
+                        fault_addr: Some(fault_addr),
+                    };
+                    let _ = crate::process::signal::SIGNAL_MANAGER.send(pid, 11, info);
+                    return;
+                }
+            }
+            
+            // Kernel fault or no process - panic
+            panic!(
+                "Page fault: {:?}, addr: {:#018x}, write: {}, ELR: {:#018x}",
+                fault_status, fault_addr, is_write, ctx.elr
+            );
+        }
+        _ => {
+            // Other fault types - always panic
+            panic!(
+                "Data abort: {:?}, addr: {:#018x}, write: {}, ELR: {:#018x}",
+                fault_status, fault_addr, is_write, ctx.elr
+            );
+        }
+    }
 }
 
 /// Handle instruction abort.

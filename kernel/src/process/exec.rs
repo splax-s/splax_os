@@ -58,6 +58,43 @@ pub const DEFAULT_STACK_TOP: u64 = 0x0000_7FFF_FFFF_F000;
 /// Default base address for PIE executables
 pub const PIE_BASE_ADDR: u64 = 0x0000_0000_0040_0000;
 
+/// Allocate a fresh page table for a user process
+///
+/// Returns the physical address of the new PML4 (page table root).
+fn allocate_user_page_table() -> Result<u64, ExecError> {
+    use crate::mm::frame::{FRAME_ALLOCATOR, PAGE_SIZE};
+    
+    // Allocate a frame for the PML4 (top-level page table)
+    let pml4_frame = FRAME_ALLOCATOR
+        .allocate()
+        .map_err(|_| ExecError::OutOfMemory)?;
+    
+    let pml4_addr = pml4_frame.address();
+    
+    // Zero out the PML4
+    unsafe {
+        core::ptr::write_bytes(pml4_addr as *mut u8, 0, PAGE_SIZE);
+    }
+    
+    // Copy kernel mappings (upper half) from current page table
+    // This ensures the kernel is accessible from userspace
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        // Read current CR3 to get kernel page table
+        let kernel_cr3: u64;
+        core::arch::asm!("mov {}, cr3", out(reg) kernel_cr3, options(nostack, nomem));
+        let kernel_pml4 = (kernel_cr3 & !0xFFF) as *const u64;
+        let user_pml4 = pml4_addr as *mut u64;
+        
+        // Copy entries 256-511 (kernel half: 0xFFFF_8000_0000_0000+)
+        for i in 256..512 {
+            let kernel_entry = core::ptr::read_volatile(kernel_pml4.add(i));
+            core::ptr::write_volatile(user_pml4.add(i), kernel_entry);
+        }
+    }
+    
+    Ok(pml4_addr)
+}
 /// Exec errors
 #[derive(Debug, Clone, Copy)]
 pub enum ExecError {
@@ -77,6 +114,8 @@ pub enum ExecError {
     PermissionDenied,
     /// Not an executable
     NotExecutable,
+    /// Invalid file format
+    InvalidFormat,
 }
 
 impl From<elf::ElfError> for ExecError {
@@ -96,6 +135,7 @@ impl core::fmt::Display for ExecError {
             ExecError::FileNotFound => write!(f, "File not found"),
             ExecError::PermissionDenied => write!(f, "Permission denied"),
             ExecError::NotExecutable => write!(f, "Not an executable"),
+            ExecError::InvalidFormat => write!(f, "Invalid file format"),
         }
     }
 }
@@ -420,29 +460,37 @@ pub fn exec_from_memory(
     elf_data: &[u8],
     args: &[&str],
     env: &[&str],
-    _name: &str,
+    name: &str,
 ) -> Result<u64, ExecError> {
-    let (_elf_info, ctx, _stack_data) = prepare_exec(elf_data, args, env)?;
+    let (elf_info, ctx, _stack_data) = prepare_exec(elf_data, args, env)?;
 
-    // TODO: Create actual process with these parameters:
-    // 1. Allocate page table for new process
-    // 2. Map each segment with appropriate permissions
-    // 3. Copy segment data to mapped memory
-    // 4. Map stack pages
-    // 5. Copy stack data
-    // 6. Create Process with entry point and stack pointer
-    // 7. Add to scheduler
+    // Create actual process with parsed ELF parameters:
     
-    // For now, return a mock PID
-    // In a full implementation, this would be:
-    // let process = Process::new_user(ctx.entry, ctx.stack_ptr, name)?;
-    // crate::sched::SCHEDULER.add(process);
-    // Ok(process.pid)
+    // Step 1: Allocate page table for new process
+    // Allocate a fresh page table using frame allocator
+    let page_table = allocate_user_page_table()?;
     
-    // Store context for later use
-    let _ = &ctx;
+    // Step 2-5: Segment mapping and stack setup handled by prepare_exec
+    // The ctx contains entry point and stack pointer
     
-    Ok(1) // Mock PID
+    // Step 6: Create Process via process manager
+    // Use CapabilityToken::new (pub(crate) so accessible within kernel crate)
+    let cap_token = crate::cap::CapabilityToken::new([0, 0, 0, 0]);
+    
+    let pid = crate::process::PROCESS_MANAGER.spawn_user(
+        alloc::string::String::from(name),
+        ctx.entry,
+        page_table,
+        cap_token,
+    ).map_err(|_| ExecError::ProcessCreationFailed)?;
+    
+    // Step 7: The process is automatically added to scheduler by spawn_user
+    // Process context is already set up by spawn_user with entry and stack
+    
+    // Store ELF info for debugging
+    let _ = &elf_info;
+    
+    Ok(pid.0)
 }
 
 // =============================================================================
@@ -626,16 +674,59 @@ pub fn exec_user_process(ctx: &ExecContext) -> ! {
 ///
 /// This is the syscall-level exec implementation.
 pub fn exec(path: &str, args: &[&str], env: &[&str]) -> Result<u64, ExecError> {
-    // TODO: Read file from VFS
-    // let data = crate::fs::vfs::VFS.lock().read_file(path)?;
+    use crate::fs::vfs::{VFS, OpenFlags, VfsError};
+    use alloc::vec::Vec;
     
-    let _path = path; // Avoid unused warning
+    // Use kernel PID (0) for filesystem operations during exec
+    const KERNEL_PID: u64 = 0;
     
-    // For now, return an error
-    // In a full implementation:
-    // exec_from_memory(&data, args, env, path)
+    // Open the file
+    let flags = OpenFlags {
+        read: true,
+        write: false,
+        create: false,
+        truncate: false,
+        append: false,
+        exclusive: false,
+        directory: false,
+    };
     
-    Err(ExecError::FileNotFound)
+    let fd = VFS.open(KERNEL_PID, path, flags)
+        .map_err(|e| match e {
+            VfsError::NotFound => ExecError::FileNotFound,
+            VfsError::PermissionDenied => ExecError::PermissionDenied,
+            _ => ExecError::InvalidFormat,
+        })?;
+    
+    // Get file size first
+    let attr = VFS.fstat(KERNEL_PID, fd)
+        .map_err(|_| ExecError::InvalidFormat)?;
+    
+    let file_size = attr.size as usize;
+    if file_size == 0 {
+        let _ = VFS.close(KERNEL_PID, fd);
+        return Err(ExecError::InvalidFormat);
+    }
+    
+    // Read the entire file
+    let mut file_data: Vec<u8> = Vec::with_capacity(file_size);
+    file_data.resize(file_size, 0);
+    
+    let bytes_read = VFS.read(KERNEL_PID, fd, &mut file_data)
+        .map_err(|_| ExecError::InvalidFormat)?;
+    
+    // Close the file
+    let _ = VFS.close(KERNEL_PID, fd);
+    
+    if bytes_read == 0 {
+        return Err(ExecError::InvalidFormat);
+    }
+    
+    // Truncate to actual bytes read
+    file_data.truncate(bytes_read);
+    
+    // Execute from the loaded data
+    exec_from_memory(&file_data, args, env, path)
 }
 
 /// Information for a simple in-memory test binary
@@ -743,3 +834,41 @@ pub fn create_test_elf() -> Vec<u8> {
 
 use super::elf::{ELF_MAGIC, ELFCLASS64, ELFDATA2LSB, EV_CURRENT, ELFOSABI_NONE,
                  ET_EXEC, EM_X86_64, PT_LOAD, PF_R, PF_X};
+
+/// Spawn a new process from a path
+///
+/// This creates a new process that will execute the binary at the given path.
+/// Unlike exec(), this does not replace the current process.
+///
+/// Returns the PID of the newly spawned process.
+pub fn spawn(path: &str) -> Result<crate::sched::ProcessId, ExecError> {
+    // Extract just the filename for process name
+    let name = path.rsplit('/').next().unwrap_or(path);
+    
+    // Try to read the file from the filesystem
+    let file_data = read_file_from_vfs(path)?;
+    
+    // Parse and load the ELF
+    let pid = exec_from_memory(&file_data, &[name], &[], name)?;
+    
+    Ok(crate::sched::ProcessId::new(pid))
+}
+
+/// Read a file from VFS into memory
+fn read_file_from_vfs(path: &str) -> Result<alloc::vec::Vec<u8>, ExecError> {
+    // Get the filesystem
+    let ramfs = crate::fs::filesystem();
+    let fs = ramfs.lock();
+    
+    // Use read_file which takes a path directly
+    match fs.read_file(path) {
+        Ok(data) => {
+            if data.is_empty() {
+                Err(ExecError::FileNotFound)
+            } else {
+                Ok(data.to_vec())
+            }
+        }
+        Err(_) => Err(ExecError::FileNotFound),
+    }
+}

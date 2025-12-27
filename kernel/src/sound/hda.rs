@@ -349,6 +349,18 @@ pub struct HdaCodec {
     pub revision: u8,
 }
 
+impl HdaCodec {
+    /// Creates a new codec with default values (would be populated via verbs)
+    pub fn new(address: u8) -> Self {
+        Self {
+            address,
+            vendor_id: 0,   // Would read via GET_PARAMETER verb
+            device_id: 0,
+            revision: 0,
+        }
+    }
+}
+
 /// HDA Controller
 pub struct HdaController {
     /// Base address of MMIO registers
@@ -434,18 +446,53 @@ impl HdaController {
     
     /// Initializes the controller
     pub fn init(&mut self) -> Result<(), AudioError> {
-        // TODO: Implement full HDA initialization:
-        // 1. Reset controller
-        // 2. Read GCAP to get stream counts
-        // 3. Set up CORB/RIRB for codec communication
-        // 4. Enumerate codecs
-        // 5. Configure AFG (Audio Function Group)
-        // 6. Set up stream descriptors
+        // Step 1: Reset controller
+        // Write 0 to GCTL.CRST to enter reset
+        self.write32(regs::GCTL, 0);
         
-        // For now, just simulate initialization
-        self.num_output_streams = 4;
-        self.num_input_streams = 4;
-        self.num_bidir_streams = 0;
+        // Wait for reset to take effect (at least 100us)
+        for _ in 0..1000 {
+            if self.read32(regs::GCTL) & 0x01 == 0 {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        
+        // Write 1 to GCTL.CRST to exit reset
+        self.write32(regs::GCTL, 0x01);
+        
+        // Wait for controller to be ready
+        for _ in 0..1000 {
+            if self.read32(regs::GCTL) & 0x01 != 0 {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        
+        // Step 2: Read GCAP to get stream counts
+        let gcap = self.read16(regs::GCAP);
+        self.num_output_streams = ((gcap >> 12) & 0x0F) as u8;
+        self.num_input_streams = ((gcap >> 8) & 0x0F) as u8;
+        self.num_bidir_streams = ((gcap >> 3) & 0x1F) as u8;
+        
+        // Step 3: Set up CORB (Command Output Ring Buffer)
+        // For simplicity, use single-entry mode (polling)
+        self.write32(regs::CORBCTL, 0); // Stop CORB
+        self.write32(regs::RIRBCTL, 0); // Stop RIRB
+        
+        // Step 4: Enumerate codecs by checking STATESTS
+        let statests = self.read16(regs::STATESTS);
+        for codec_addr in 0..15u8 {
+            if statests & (1 << codec_addr) != 0 {
+                // Codec detected at this address
+                let codec = HdaCodec::new(codec_addr);
+                self.codecs.push(codec);
+            }
+        }
+        
+        // Step 5 & 6: Configure AFG and stream descriptors
+        // These require sending verbs to the codec via CORB/RIRB
+        // Full implementation would configure each codec's audio widgets
         
         Ok(())
     }
@@ -630,13 +677,40 @@ impl AudioDevice for HdaController {
 
 /// Probes for HDA controllers on PCI bus
 pub fn probe() -> Option<Box<dyn AudioDevice>> {
-    // TODO: Implement PCI scanning for HDA devices
-    // HDA devices have class code 0x0403 (Audio device, HD Audio)
-    // Common vendor/device IDs:
-    // - Intel: various
-    // - Realtek: 0x10EC:various
-    // - AMD: 0x1022:various
+    // PCI class code for HDA: 0x0403 (Audio device, HD Audio)
+    // We scan common HDA controller locations
     
-    // For now, return None (no hardware detected)
+    // Common HDA controller MMIO addresses (would be read from PCI BAR0)
+    // These are typical addresses for virtual machines and some real hardware
+    const HDA_KNOWN_ADDRESSES: &[usize] = &[
+        0xFEB0_0000,  // Common QEMU/KVM location
+        0xFE80_0000,  // Some Intel chipsets
+        0xFEBC_0000,  // Alternative location
+    ];
+    
+    for &base_addr in HDA_KNOWN_ADDRESSES {
+        // Try to detect HDA controller at this address
+        // Read GCAP register - valid HDA controller should have non-zero value
+        let gcap = unsafe {
+            core::ptr::read_volatile((base_addr + regs::GCAP as usize) as *const u16)
+        };
+        
+        // Check for valid HDA signature:
+        // - At least 1 output or input stream
+        // - Version should be 1.0 (bits 0-2)
+        let num_oss = (gcap >> 12) & 0x0F;
+        let num_iss = (gcap >> 8) & 0x0F;
+        let version = gcap & 0x07;
+        
+        if (num_oss > 0 || num_iss > 0) && version >= 1 {
+            // Found a valid HDA controller
+            let mut controller = HdaController::new(base_addr);
+            if controller.init().is_ok() {
+                return Some(Box::new(controller));
+            }
+        }
+    }
+    
+    // No hardware detected
     None
 }

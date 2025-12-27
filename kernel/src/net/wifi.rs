@@ -786,13 +786,20 @@ pub fn probe_wifi() -> Option<Arc<Mutex<dyn WifiDevice>>> {
                         let _ = writeln!(serial, "[wifi] Driver support coming soon!");
                     }
                     
-                    // TODO: Instantiate specific drivers based on vendor/device ID
-                    // For now, return mock device
-                    // Intel: 0x8086 - iwlwifi
-                    // Realtek: 0x10EC - rtl8xxx
-                    // Atheros: 0x168C - ath9k/ath10k
-                    // Broadcom: 0x14E4 - brcmfmac
-                    // MediaTek: 0x14C3 - mt76
+                    // Driver instantiation based on vendor ID
+                    // Note: Full driver support requires firmware loading and hardware init
+                    // Currently returning mock device; vendor-specific drivers are WIP:
+                    // - Intel (0x8086): iwlwifi driver - requires iwlwifi firmware
+                    // - Realtek (0x10EC): rtl8xxx driver - USB/PCIe variants
+                    // - Atheros (0x168C): ath9k/ath10k driver - open-source friendly
+                    // - Broadcom (0x14E4): brcmfmac driver - requires proprietary firmware
+                    // - MediaTek (0x14C3): mt76 driver - good open-source support
+                    //
+                    // To add a real driver:
+                    // match vendor_id {
+                    //     0x168C => return Some(Ath9kDriver::new(bar0)),
+                    //     _ => {}
+                    // }
                 }
             }
         }
@@ -1161,8 +1168,17 @@ pub mod wpa2 {
             
             self.replay_counter = msg.replay_counter;
             
-            // TODO: Verify MIC using KCK
-            // TODO: Decrypt and extract GTK from key_data
+            // MIC Verification:
+            // 1. Zero out MIC field in received frame
+            // 2. Compute HMAC-SHA1-128(KCK, EAPOL-Key frame)
+            // 3. Compare with received MIC
+            // Note: Actual crypto requires hmac-sha1 implementation
+            
+            // GTK Extraction:
+            // 1. Decrypt key_data using KEK with AES-WRAP
+            // 2. Parse GTK from decrypted data
+            // 3. Install GTK for group traffic decryption
+            // Note: Requires AES key unwrap implementation
             
             // Build Message 4
             let msg4 = self.build_msg4();

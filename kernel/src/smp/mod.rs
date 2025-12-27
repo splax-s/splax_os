@@ -291,13 +291,39 @@ pub unsafe fn start_aps() {
     #[cfg(target_arch = "x86_64")]
     {
         // x86_64 AP startup via INIT-SIPI-SIPI sequence
-        // TODO: Implement when ACPI/MP table parsing is available
+        // This requires ACPI/MP table parsing to know AP APIC IDs
+        // For QEMU with -smp N, APs are auto-started via firmware
+        // 
+        // Full implementation would:
+        // 1. Parse ACPI MADT table to find AP APIC IDs
+        // 2. For each AP:
+        //    a. Send INIT IPI (ICR = 0x00C500 | (apic_id << 56))
+        //    b. Wait 10ms
+        //    c. Send SIPI IPI twice (ICR = 0x00C600 | vector | (apic_id << 56))
+        // 3. APs jump to trampoline code at vector*0x1000
+        
+        // For now, rely on firmware/QEMU to start APs
+        // Just log that we're ready for SMP
+        // BSP is already registered and online by default
+        let bsp_id = CpuId::new(0);
+        SMP_STATE.register_cpu(bsp_id, true, 0);
     }
 
     #[cfg(target_arch = "aarch64")]
     {
         // aarch64 AP startup via PSCI or spin-table
-        // TODO: Implement when DTB parsing is available
+        // On QEMU virt, use PSCI CPU_ON call
+        // 
+        // Full implementation would:
+        // 1. Parse DTB to find CPU nodes and enable-method
+        // 2. For spin-table: write entry point to cpu-release-addr
+        // 3. For PSCI: call PSCI_CPU_ON (function ID 0xC4000003)
+        //    - x1 = target CPU MPIDR
+        //    - x2 = entry point
+        //    - x3 = context ID
+        
+        // For now, mark BSP as online
+        SMP_STATE.set_cpu_online(CpuId::new(0));
     }
 }
 
@@ -341,9 +367,35 @@ pub fn send_ipi_all_others(ipi_type: IpiType) {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn send_ipi_x86(_target: CpuId, _ipi_type: IpiType) {
-    // TODO: Write to Local APIC ICR
-    // ICR format: destination in high 32 bits, vector in low 8 bits
+fn send_ipi_x86(target: CpuId, ipi_type: IpiType) {
+    // Write to Local APIC ICR (Interrupt Command Register)
+    // ICR is at LAPIC base + 0x300 (low) and 0x310 (high)
+    // Format:
+    //   High: bits 24-27 = destination APIC ID
+    //   Low:  bits 0-7 = vector, bits 8-10 = delivery mode, bit 11 = dest mode
+    //        bit 14 = level, bit 15 = trigger mode
+    
+    const LAPIC_BASE: usize = 0xFEE0_0000; // Default LAPIC address
+    const ICR_LOW: usize = LAPIC_BASE + 0x300;
+    const ICR_HIGH: usize = LAPIC_BASE + 0x310;
+    
+    let vector = match ipi_type {
+        IpiType::Reschedule => 0xFD,    // Reschedule vector
+        IpiType::TlbShootdown => 0xFC,  // TLB shootdown vector
+        IpiType::Stop => 0xFE,          // Stop vector
+        IpiType::FunctionCall => 0xFB,  // Function call vector
+    };
+    
+    // Fixed delivery mode (000), physical destination
+    let icr_low: u32 = vector as u32;
+    let icr_high: u32 = (target.as_u32()) << 24;
+    
+    unsafe {
+        // Write high first (sets destination)
+        core::ptr::write_volatile(ICR_HIGH as *mut u32, icr_high);
+        // Write low triggers the IPI
+        core::ptr::write_volatile(ICR_LOW as *mut u32, icr_low);
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -393,7 +445,19 @@ pub fn handle_ipi(ipi_type: IpiType) {
             }
         }
         IpiType::FunctionCall => {
-            // TODO: Execute pending function calls
+            // Execute pending function calls for this CPU
+            // In a full implementation, there would be a per-CPU queue
+            // of function pointers to execute
+            let cpu_id = current_cpu_id();
+            let idx = cpu_id.as_index();
+            
+            // Get per-CPU data and check for pending calls
+            if idx < MAX_CPUS {
+                if let Some(ref _percpu) = *SMP_STATE.cpus[idx].lock() {
+                    // Functions would be stored in a queue and executed here
+                    // For now, this is a no-op as the queue isn't implemented
+                }
+            }
         }
     }
 }

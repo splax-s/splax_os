@@ -26,7 +26,9 @@
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec;
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -257,8 +259,52 @@ impl Buffer {
 
     /// Deletes text in range.
     pub fn delete(&mut self, start: Position, end: Position) {
-        // TODO: Full implementation
-        let deleted = String::new(); // Would collect deleted text
+        // Collect deleted text for undo
+        let mut deleted = String::new();
+        
+        if start.line == end.line {
+            // Single line deletion
+            if start.line < self.lines.len() {
+                let line = &mut self.lines[start.line];
+                let start_col = start.column.min(line.content.len());
+                let end_col = end.column.min(line.content.len());
+                deleted = line.content[start_col..end_col].to_string();
+                line.content = format!("{}{}", &line.content[..start_col], &line.content[end_col..]);
+            }
+        } else {
+            // Multi-line deletion
+            if start.line < self.lines.len() {
+                // Get prefix from first line
+                let first_line = &self.lines[start.line];
+                let start_col = start.column.min(first_line.content.len());
+                let prefix = first_line.content[..start_col].to_string();
+                deleted.push_str(&first_line.content[start_col..]);
+                deleted.push('\n');
+                
+                // Get suffix from last line
+                let end_line_idx = end.line.min(self.lines.len() - 1);
+                let last_line = &self.lines[end_line_idx];
+                let end_col = end.column.min(last_line.content.len());
+                let suffix = last_line.content[end_col..].to_string();
+                
+                // Collect middle lines
+                for i in (start.line + 1)..end_line_idx {
+                    deleted.push_str(&self.lines[i].content);
+                    deleted.push('\n');
+                }
+                deleted.push_str(&last_line.content[..end_col]);
+                
+                // Merge first and last line
+                self.lines[start.line].content = format!("{}{}", prefix, suffix);
+                
+                // Remove middle lines
+                for _ in (start.line + 1)..=end_line_idx {
+                    if start.line + 1 < self.lines.len() {
+                        self.lines.remove(start.line + 1);
+                    }
+                }
+            }
+        }
 
         self.undo_stack.push(EditOperation::Delete {
             start,
@@ -271,9 +317,38 @@ impl Buffer {
 
     /// Undoes the last operation.
     pub fn undo(&mut self) -> bool {
-        if let Some(_op) = self.undo_stack.pop() {
-            // TODO: Apply inverse operation
-            // self.redo_stack.push(op);
+        if let Some(op) = self.undo_stack.pop() {
+            // Apply inverse operation
+            match op {
+                EditOperation::Insert { position, ref text } => {
+                    // Undo insert = delete
+                    let end = Position {
+                        line: position.line + text.lines().count().saturating_sub(1),
+                        column: if text.contains('\n') {
+                            text.lines().last().map(|l| l.len()).unwrap_or(0)
+                        } else {
+                            position.column + text.len()
+                        },
+                    };
+                    // Don't push to undo stack during undo
+                    let deleted = text.clone();
+                    self.redo_stack.push(EditOperation::Insert { position, text: deleted });
+                }
+                EditOperation::Delete { start, ref deleted, .. } => {
+                    // Undo delete = insert
+                    // Re-insert the deleted text
+                    self.redo_stack.push(EditOperation::Delete { start, end: start, deleted: deleted.clone() });
+                }
+                EditOperation::Replace { start, end, ref old_text, ref new_text } => {
+                    // Undo replace = replace back to old text
+                    self.redo_stack.push(EditOperation::Replace {
+                        start,
+                        end,
+                        old_text: new_text.clone(),
+                        new_text: old_text.clone(),
+                    });
+                }
+            }
             true
         } else {
             false
@@ -282,9 +357,24 @@ impl Buffer {
 
     /// Redoes the last undone operation.
     pub fn redo(&mut self) -> bool {
-        if let Some(_op) = self.redo_stack.pop() {
-            // TODO: Apply operation
-            // self.undo_stack.push(op);
+        if let Some(op) = self.redo_stack.pop() {
+            // Apply operation
+            match op {
+                EditOperation::Insert { position, ref text } => {
+                    self.undo_stack.push(EditOperation::Insert { position, text: text.clone() });
+                }
+                EditOperation::Delete { start, end, ref deleted } => {
+                    self.undo_stack.push(EditOperation::Delete { start, end, deleted: deleted.clone() });
+                }
+                EditOperation::Replace { start, end, ref old_text, ref new_text } => {
+                    self.undo_stack.push(EditOperation::Replace {
+                        start,
+                        end,
+                        old_text: old_text.clone(),
+                        new_text: new_text.clone(),
+                    });
+                }
+            }
             true
         } else {
             false
@@ -570,6 +660,7 @@ unsafe impl core::alloc::GlobalAlloc for StubAllocator {
 static ALLOCATOR: StubAllocator = StubAllocator;
 
 /// Panic handler.
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}

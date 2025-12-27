@@ -7,10 +7,124 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::time::Duration;
 use spin::Mutex;
 
 use super::{CapabilityToken, GatewayConfig, GatewayId, GatewayStats, Protocol};
 use super::tcp::{TcpConnection, TcpConnectionId, TcpGateway};
+
+// =============================================================================
+// S-LINK Message Types for Inter-Service Communication
+// =============================================================================
+
+/// S-LINK message type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageType {
+    /// Request message (expects response)
+    Request,
+    /// Response message
+    Response,
+    /// One-way notification
+    Notification,
+}
+
+/// S-LINK message for inter-service communication.
+#[derive(Debug, Clone)]
+pub struct SLinkMessage {
+    /// Channel ID for routing
+    pub channel_id: u64,
+    /// Message type
+    pub message_type: MessageType,
+    /// Correlation ID for request/response matching
+    pub correlation_id: u64,
+    /// Payload data
+    pub payload: Vec<u8>,
+    /// Capabilities attached to message
+    pub capabilities: Vec<CapabilityToken>,
+}
+
+/// Send a request and wait for response with timeout.
+pub fn send_and_receive(request: SLinkMessage, timeout: Duration) -> Result<SLinkMessage, NetworkError> {
+    // Convert timeout to CPU cycles (assuming ~2GHz CPU)
+    let timeout_cycles = timeout.as_nanos() as u64 * 2;
+    let start = get_timestamp();
+    
+    // Store the request in outbound queue for the target service
+    // In a real implementation, this would go through the S-LINK router
+    static OUTBOUND: Mutex<Vec<SLinkMessage>> = Mutex::new(Vec::new());
+    static INBOUND: Mutex<Vec<SLinkMessage>> = Mutex::new(Vec::new());
+    
+    let correlation_id = request.correlation_id;
+    OUTBOUND.lock().push(request);
+    
+    // Poll for response
+    loop {
+        // Check for matching response
+        {
+            let mut inbound = INBOUND.lock();
+            if let Some(idx) = inbound.iter().position(|m| {
+                m.message_type == MessageType::Response && m.correlation_id == correlation_id
+            }) {
+                return Ok(inbound.remove(idx));
+            }
+        }
+        
+        // Check timeout
+        let elapsed = get_timestamp().saturating_sub(start);
+        if elapsed >= timeout_cycles {
+            return Err(NetworkError::TimedOut);
+        }
+        
+        // CPU pause hint
+        pause_hint();
+    }
+}
+
+/// Deliver a response message (called by service handlers).
+pub fn deliver_response(response: SLinkMessage) {
+    static INBOUND: Mutex<Vec<SLinkMessage>> = Mutex::new(Vec::new());
+    INBOUND.lock().push(response);
+}
+
+/// Get pending requests for a service to process (called by service handlers).
+pub fn get_pending_requests() -> Vec<SLinkMessage> {
+    static OUTBOUND: Mutex<Vec<SLinkMessage>> = Mutex::new(Vec::new());
+    core::mem::take(&mut *OUTBOUND.lock())
+}
+
+#[cfg(target_arch = "x86_64")]
+fn get_timestamp() -> u64 {
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn get_timestamp() -> u64 {
+    let cnt: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, cntvct_el0", out(reg) cnt, options(nostack, nomem));
+    }
+    cnt
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn get_timestamp() -> u64 {
+    0
+}
+
+#[cfg(target_arch = "x86_64")]
+fn pause_hint() {
+    unsafe { core::arch::x86_64::_mm_pause() }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn pause_hint() {
+    unsafe {
+        core::arch::asm!("yield", options(nostack, nomem));
+    }
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn pause_hint() {}
 
 /// Network socket handle from kernel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

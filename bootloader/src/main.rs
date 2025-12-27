@@ -102,14 +102,41 @@ pub struct MemoryMapEntry {
 /// For now, this is a stub that demonstrates the structure.
 #[no_mangle]
 pub extern "C" fn efi_main() -> ! {
-    // TODO: Phase 1 Week 1-2 Implementation
-    // 1. Initialize UEFI services
-    // 2. Get memory map from firmware
-    // 3. Load kernel from filesystem
-    // 4. Verify kernel signature
-    // 5. Set up page tables for kernel
-    // 6. Exit boot services
-    // 7. Jump to kernel entry point with BootInfo
+    // UEFI bootloader implementation outline:
+    
+    // Step 1: Initialize UEFI services
+    // - Get SystemTable and BootServices pointers
+    // - Initialize console output for early debug messages
+    
+    // Step 2: Get memory map from firmware
+    // - Call GetMemoryMap() to get UEFI memory map
+    // - Convert to SplaxMemoryRegion format
+    // - Identify usable RAM regions
+    
+    // Step 3: Load kernel from filesystem
+    // - Locate EFI System Partition
+    // - Open kernel file (e.g., \EFI\SPLAX\KERNEL.ELF)
+    // - Read kernel into memory
+    
+    // Step 4: Verify kernel signature (optional, for secure boot)
+    // - Check ELF header magic
+    // - Verify cryptographic signature if enabled
+    
+    // Step 5: Set up page tables for kernel
+    // - Create identity mapping for first 4GB
+    // - Map kernel to higher half (0xFFFF_8000_0000_0000)
+    // - Set up recursive page table mapping
+    
+    // Step 6: Exit boot services
+    // - Call ExitBootServices() with memory map key
+    // - UEFI runtime services still available after this
+    
+    // Step 7: Jump to kernel entry point with BootInfo
+    // - Set up BootInfo structure with memory map, framebuffer, etc.
+    // - Transfer control to kernel entry point
+    
+    // Note: Actual implementation uses UEFI crate or custom UEFI bindings
+    // The kernel is currently booted via GRUB multiboot, not UEFI directly
     
     // For now, halt
     loop {
@@ -136,7 +163,7 @@ fn halt() {
 }
 
 /// Panic handler for the bootloader.
-#[panic_handler]
+#[cfg_attr(not(test), panic_handler)]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {
         halt();
