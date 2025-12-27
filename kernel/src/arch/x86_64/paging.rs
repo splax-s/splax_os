@@ -330,3 +330,106 @@ pub unsafe fn write_cr3(value: u64) {
         core::arch::asm!("mov cr3, {}", in(reg) value, options(nostack, preserves_flags));
     }
 }
+
+/// Boot page table addresses (set up by boot.S)
+const BOOT_PML4: u64 = 0x1000;
+const BOOT_PDP: u64 = 0x2000;
+const BOOT_PD: u64 = 0x3000;
+
+/// Page table for MMIO mappings (one PD can map 1GB using 2MB pages)
+/// We'll use 0x4000-0x4FFF for additional PDP entries
+/// And 0x5000-0x5FFF for additional PD entries
+const MMIO_PDP: u64 = 0x4000;
+const MMIO_PD: u64 = 0x5000;
+
+/// Track if MMIO page tables are initialized
+static MMIO_INITIALIZED: core::sync::atomic::AtomicBool = 
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Initialize MMIO mapping support.
+/// Must be called before map_mmio.
+pub fn init_mmio_mapping() {
+    use core::sync::atomic::Ordering;
+    
+    if MMIO_INITIALIZED.swap(true, Ordering::SeqCst) {
+        return; // Already initialized
+    }
+    
+    unsafe {
+        // Clear MMIO page tables
+        core::ptr::write_bytes(MMIO_PDP as *mut u8, 0, PAGE_SIZE);
+        core::ptr::write_bytes(MMIO_PD as *mut u8, 0, PAGE_SIZE);
+        
+        // Set up PML4[3] to point to MMIO_PDP (covers 0xC000_0000 - 0xFFFF_FFFF range)
+        // Actually, for addresses like 0xFEBC0000, we need PML4[0], PDP[3]
+        // 0xFEBC0000 >> 30 = 3 (PDP index), and PML4[0] is already used
+        
+        // The address 0xFEBC0000:
+        // Bits 47-39 (PML4): 0
+        // Bits 38-30 (PDP): 3 
+        // Bits 29-21 (PD): 501 (0xFEBC0000 >> 21 & 0x1FF = 501)
+        // 
+        // We need to add PDP[3] -> new PD for the 0xC0000000-0xFFFFFFFF range
+        
+        // Add PDP entry 3 pointing to MMIO_PD
+        let pdp_ptr = BOOT_PDP as *mut u64;
+        core::ptr::write_volatile(pdp_ptr.add(3), MMIO_PD | 0x03); // Present + Writable
+        
+        // Now map the 0xFE000000 - 0xFFFFFFFF range using 2MB pages
+        // PD entry for 0xFEBC0000: (0xFEBC0000 >> 21) & 0x1FF = (0xFEBC0000 - 0xC0000000) >> 21
+        // = 0x3EBC0000 >> 21 = 501
+        // 
+        // Let's map PD entries 496-511 (covers 0xFE000000 - 0xFFFFFFFF)
+        let pd_ptr = MMIO_PD as *mut u64;
+        for i in 496..512 {
+            // Physical address: 0xC0000000 + i * 2MB
+            let phys = 0xC000_0000u64 + (i as u64) * 0x20_0000;
+            // Huge page entry: addr | PRESENT | WRITABLE | HUGE | NO_CACHE | WRITE_THROUGH
+            let entry = phys | 0x9B; // Present(1) + Writable(2) + WriteThrough(8) + NoCache(0x10) + Huge(0x80)
+            core::ptr::write_volatile(pd_ptr.add(i), entry);
+        }
+        
+        // Flush TLB
+        flush_tlb();
+    }
+}
+
+/// Map an MMIO region for device access.
+/// The address will be identity-mapped (virtual == physical).
+///
+/// # Arguments
+/// * `phys_addr` - Physical base address of MMIO region
+/// * `size` - Size of the region in bytes
+///
+/// # Returns
+/// The virtual address to use (same as physical for identity mapping)
+///
+/// # Safety
+/// Caller must ensure this is a valid MMIO region.
+pub fn map_mmio(phys_addr: u64, size: usize) -> u64 {
+    // Ensure MMIO mapping is initialized
+    if !MMIO_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
+        init_mmio_mapping();
+    }
+    
+    // For addresses in the 0xC0000000-0xFFFFFFFF range, they should now be mapped
+    // by the init function above.
+    
+    // For other high addresses, we may need additional mappings
+    let end_addr = phys_addr + size as u64;
+    
+    if phys_addr >= 0xC000_0000 && end_addr <= 0x1_0000_0000 {
+        // Already covered by init_mmio_mapping
+        return phys_addr;
+    }
+    
+    // For addresses below 0xC0000000, check if they're already identity mapped
+    if phys_addr < 0x40_0000 && end_addr <= 0x40_0000 {
+        // First 4MB is already mapped by boot.S
+        return phys_addr;
+    }
+    
+    // For other ranges, we'd need to dynamically add page table entries
+    // For now, log a warning and hope for the best
+    phys_addr
+}

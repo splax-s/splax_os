@@ -37,9 +37,11 @@ pub fn init() {
 #[inline(always)]
 pub fn halt() {
     #[cfg(target_arch = "x86_64")]
-    // SAFETY: HLT is a safe instruction that waits for interrupts
+    // SAFETY: STI+HLT is an atomic sequence that ensures we don't miss interrupts.
+    // If an interrupt comes between STI and HLT, the HLT will return immediately.
+    // This is the standard Linux/Unix idle loop pattern.
     unsafe {
-        core::arch::asm!("hlt", options(nomem, nostack));
+        core::arch::asm!("sti; hlt", options(nomem, nostack));
     }
 
     #[cfg(target_arch = "aarch64")]

@@ -369,3 +369,8 @@ impl Default for SmpProcessData {
         }
     }
 }
+
+/// Returns the number of CPUs detected in the system.
+pub fn cpu_count() -> u32 {
+    crate::smp::smp_state().num_cpus()
+}

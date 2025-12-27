@@ -1,0 +1,323 @@
+#!/bin/bash
+#
+# Splax OS Build & Run Script
+#
+# Usage:
+#   ./scripts/splax build              # Build kernel
+#   ./scripts/splax iso                # Build + create ISO
+#   ./scripts/splax run                # Build + ISO + run QEMU
+#   ./scripts/splax run --nic=e1000    # Run with specific NIC
+#   ./scripts/splax clean              # Clean build artifacts
+#
+# Commands:
+#   build   - Build the kernel
+#   iso     - Build kernel and create bootable ISO
+#   run     - Build, create ISO, and run in QEMU
+#   clean   - Clean all build artifacts
+#   help    - Show this help message
+#
+# Options for 'run':
+#   --nic=TYPE      NIC type: virtio, e1000, rtl8139, none (default: virtio)
+#   --mem=SIZE      Memory size (default: 512M)
+#   --disk          Include VirtIO disk (test_disk.img)
+#   --debug         Enable GDB debugging (wait on :1234)
+#   --no-display    Run without display window
+#   --kvm           Enable KVM acceleration (Linux only)
+#   --monitor       Enable QEMU monitor on stdio
+#
+# Examples:
+#   ./scripts/splax run                         # Default: VirtIO NIC
+#   ./scripts/splax run --nic=e1000             # Intel E1000 NIC
+#   ./scripts/splax run --nic=rtl8139           # Realtek RTL8139
+#   ./scripts/splax run --nic=none --disk       # No network, with disk
+#   ./scripts/splax run --debug                 # Debug with GDB
+#   ./scripts/splax run --mem=1G --kvm          # 1GB RAM with KVM
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Get script directory and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
+
+# Target configuration
+TARGET="x86_64-unknown-none"
+KERNEL_BIN="target/${TARGET}/release/splax_kernel"
+ISO_FILE="target/splax.iso"
+DISK_IMG="test_disk.img"
+
+# Default QEMU options
+NIC_TYPE="virtio"
+MEMORY="512M"
+USE_DISK=false
+DEBUG_MODE=false
+NO_DISPLAY=false
+USE_KVM=false
+USE_MONITOR=false
+
+# Print colored message
+info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+success() { echo -e "${GREEN}[OK]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+
+# Show help
+show_help() {
+    cat << 'HELPEOF'
+Splax OS Build & Run Script
+
+Usage:
+  ./scripts/splax build              # Build kernel
+  ./scripts/splax iso                # Build + create ISO
+  ./scripts/splax run                # Build + ISO + run QEMU
+  ./scripts/splax run --nic=e1000    # Run with specific NIC
+  ./scripts/splax clean              # Clean build artifacts
+
+Commands:
+  build   - Build the kernel
+  iso     - Build kernel and create bootable ISO
+  run     - Build, create ISO, and run in QEMU
+  clean   - Clean all build artifacts
+  help    - Show this help message
+
+Options for 'run':
+  --nic=TYPE      NIC type: virtio, e1000, rtl8139, none (default: virtio)
+  --mem=SIZE      Memory size (default: 512M)
+  --disk          Include VirtIO disk (test_disk.img)
+  --debug         Enable GDB debugging (wait on :1234)
+  --no-display    Run without display window
+  --kvm           Enable KVM acceleration (Linux only)
+  --monitor       Enable QEMU monitor on stdio
+
+Examples:
+  ./scripts/splax run                         # Default: VirtIO NIC
+  ./scripts/splax run --nic=e1000             # Intel E1000 NIC
+  ./scripts/splax run --nic=rtl8139           # Realtek RTL8139
+  ./scripts/splax run --nic=none --disk       # No network, with disk
+  ./scripts/splax run --debug                 # Debug with GDB
+  ./scripts/splax run --mem=1G --kvm          # 1GB RAM with KVM
+
+Exit QEMU: Press Ctrl+A, then X
+HELPEOF
+    exit 0
+}
+
+# Build the kernel
+do_build() {
+    info "Building Splax kernel for ${TARGET}..."
+    
+    cargo build -p splax_kernel \
+        --bin splax_kernel \
+        --release \
+        --target "${TARGET}" \
+        -Zbuild-std=core,alloc \
+        -Zbuild-std-features=compiler-builtins-mem
+    
+    success "Kernel built: ${KERNEL_BIN}"
+}
+
+# Create bootable ISO
+do_iso() {
+    do_build
+    
+    info "Creating bootable ISO..."
+    
+    # Create ISO directory structure
+    mkdir -p target/iso/boot/grub
+    
+    # Copy kernel
+    cp "${KERNEL_BIN}" target/iso/boot/splax_kernel
+    
+    # Create GRUB config if not exists
+    if [[ ! -f target/iso/boot/grub/grub.cfg ]]; then
+        cat > target/iso/boot/grub/grub.cfg << 'EOF'
+set timeout=0
+set default=0
+
+menuentry "Splax OS" {
+    multiboot /boot/splax_kernel
+    boot
+}
+EOF
+    fi
+    
+    # Create ISO with GRUB
+    i686-elf-grub-mkrescue -o "${ISO_FILE}" target/iso 2>/dev/null
+    
+    success "ISO created: ${ISO_FILE}"
+}
+
+# Create test disk if needed
+ensure_disk() {
+    if [[ ! -f "${DISK_IMG}" ]]; then
+        info "Creating test disk image..."
+        qemu-img create -f raw "${DISK_IMG}" 64M
+        success "Created ${DISK_IMG}"
+    fi
+}
+
+# Run in QEMU
+do_run() {
+    do_iso
+    
+    info "Starting QEMU..."
+    
+    # Build QEMU command
+    QEMU_CMD="qemu-system-x86_64"
+    QEMU_ARGS=()
+    
+    # Basic options
+    QEMU_ARGS+=(-cdrom "${ISO_FILE}")
+    QEMU_ARGS+=(-m "${MEMORY}")
+    
+    # Serial console - use stdio for interactive use
+    QEMU_ARGS+=(-serial stdio)
+    
+    # Display options
+    if [[ "${NO_DISPLAY}" == true ]]; then
+        QEMU_ARGS+=(-display none)
+    fi
+    
+    # KVM acceleration
+    if [[ "${USE_KVM}" == true ]]; then
+        if [[ -e /dev/kvm ]]; then
+            QEMU_ARGS+=(-enable-kvm)
+            info "KVM acceleration enabled"
+        else
+            warn "KVM not available, running without acceleration"
+        fi
+    fi
+    
+    # Debug mode
+    if [[ "${DEBUG_MODE}" == true ]]; then
+        QEMU_ARGS+=(-s -S)
+        info "Debug mode: Waiting for GDB on localhost:1234"
+    fi
+    
+    # Network device
+    case "${NIC_TYPE}" in
+        virtio)
+            QEMU_ARGS+=(-device virtio-net-pci,netdev=net0)
+            QEMU_ARGS+=(-netdev user,id=net0)
+            info "NIC: VirtIO"
+            ;;
+        e1000)
+            QEMU_ARGS+=(-device e1000,netdev=net0)
+            QEMU_ARGS+=(-netdev user,id=net0)
+            info "NIC: Intel E1000"
+            ;;
+        rtl8139)
+            QEMU_ARGS+=(-device rtl8139,netdev=net0)
+            QEMU_ARGS+=(-netdev user,id=net0)
+            info "NIC: Realtek RTL8139"
+            ;;
+        none)
+            info "NIC: None"
+            ;;
+        *)
+            error "Unknown NIC type: ${NIC_TYPE}"
+            ;;
+    esac
+    
+    # Disk
+    if [[ "${USE_DISK}" == true ]]; then
+        ensure_disk
+        QEMU_ARGS+=(-drive file="${DISK_IMG}",if=virtio,format=raw)
+        info "Disk: ${DISK_IMG}"
+    fi
+    
+    # Monitor
+    if [[ "${USE_MONITOR}" == true ]]; then
+        QEMU_ARGS+=(-monitor telnet:127.0.0.1:55555,server,nowait)
+        info "Monitor: telnet 127.0.0.1 55555"
+    fi
+    
+    echo ""
+    info "Press Ctrl+A, X to exit QEMU"
+    echo ""
+    
+    # Run QEMU
+    exec "${QEMU_CMD}" "${QEMU_ARGS[@]}"
+}
+
+# Clean build artifacts
+do_clean() {
+    info "Cleaning build artifacts..."
+    cargo clean
+    rm -rf target/iso
+    rm -f "${ISO_FILE}"
+    success "Clean complete"
+}
+
+# Parse command
+COMMAND="${1:-help}"
+shift || true
+
+# Parse options
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --nic=*)
+            NIC_TYPE="${1#*=}"
+            shift
+            ;;
+        --mem=*)
+            MEMORY="${1#*=}"
+            shift
+            ;;
+        --disk)
+            USE_DISK=true
+            shift
+            ;;
+        --debug)
+            DEBUG_MODE=true
+            shift
+            ;;
+        --no-display)
+            NO_DISPLAY=true
+            shift
+            ;;
+        --kvm)
+            USE_KVM=true
+            shift
+            ;;
+        --monitor)
+            USE_MONITOR=true
+            shift
+            ;;
+        -h|--help)
+            show_help
+            ;;
+        *)
+            error "Unknown option: $1"
+            ;;
+    esac
+done
+
+# Execute command
+case "${COMMAND}" in
+    build)
+        do_build
+        ;;
+    iso)
+        do_iso
+        ;;
+    run)
+        do_run
+        ;;
+    clean)
+        do_clean
+        ;;
+    help|-h|--help)
+        show_help
+        ;;
+    *)
+        error "Unknown command: ${COMMAND}"
+        ;;
+esac

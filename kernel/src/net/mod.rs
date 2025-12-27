@@ -42,8 +42,16 @@ pub mod socket;
 pub mod dns;
 pub mod ssh;
 
+// Network device drivers
 #[cfg(target_arch = "x86_64")]
 pub mod virtio;
+#[cfg(target_arch = "x86_64")]
+pub mod e1000;
+#[cfg(target_arch = "x86_64")]
+pub mod rtl8139;
+
+// Wireless (WiFi) support
+pub mod wifi;
 
 // Re-exports
 pub use device::{NetworkDevice, NetworkDeviceInfo, NetworkError};
@@ -384,9 +392,45 @@ pub fn init() {
             let _ = writeln!(serial, "[net] Probing for network devices...");
         }
         
-        // Probe for virtio-net device
-        if let Some(device) = virtio::probe_virtio_net() {
-            let mac = device.lock().info().mac;
+        // Try to probe for devices in order of preference:
+        // 1. VirtIO (fastest in VMs)
+        // 2. E1000 (common in VMs)
+        // 3. RTL8139 (simple, widely supported)
+        // 4. Mock device (fallback for testing)
+        
+        let device: Option<alloc::sync::Arc<spin::Mutex<dyn device::NetworkDevice + Send>>> = 
+            // Try VirtIO first
+            if let Some(dev) = virtio::probe_virtio_net() {
+                if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
+                    let _ = writeln!(serial, "[net] Using VirtIO network driver");
+                }
+                Some(dev)
+            }
+            // Try E1000 (Intel)
+            else if let Some(dev) = e1000::probe_e1000() {
+                if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
+                    let _ = writeln!(serial, "[net] Using E1000 network driver");
+                }
+                Some(dev as alloc::sync::Arc<spin::Mutex<dyn device::NetworkDevice + Send>>)
+            }
+            // Try RTL8139 (Realtek)
+            else if let Some(dev) = rtl8139::probe_rtl8139() {
+                if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
+                    let _ = writeln!(serial, "[net] Using RTL8139 network driver");
+                }
+                Some(dev as alloc::sync::Arc<spin::Mutex<dyn device::NetworkDevice + Send>>)
+            }
+            // Fallback to mock device for basic functionality
+            else {
+                if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
+                    let _ = writeln!(serial, "[net] No hardware found, using mock network driver");
+                }
+                Some(virtio::create_mock_device())
+            };
+        
+        if let Some(dev) = device {
+            let mac = dev.lock().info().mac;
+            let name = dev.lock().info().name;
             let config = InterfaceConfig {
                 name: "eth0",
                 mac,
@@ -394,10 +438,10 @@ pub fn init() {
             };
             
             let mut stack = NETWORK_STACK.lock();
-            let id = stack.register_interface(config, device);
+            let id = stack.register_interface(config, dev);
             
             if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
-                let _ = writeln!(serial, "[net] virtio-net device registered: eth0 (id={})", id.0);
+                let _ = writeln!(serial, "[net] {} device registered: eth0 (id={})", name, id.0);
             }
         } else {
             if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
@@ -409,6 +453,9 @@ pub fn init() {
         if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
             let _ = writeln!(serial, "[net] Network stack initialized");
         }
+        
+        // Initialize WiFi subsystem (probe for WiFi devices)
+        wifi::init();
     }
 }
 
@@ -470,7 +517,20 @@ pub fn ping_count(target: Ipv4Address, count: u16) -> Result<PingResult, Network
             target.octets()[0], target.octets()[1], target.octets()[2], target.octets()[3],
             target.octets()[0], target.octets()[1], target.octets()[2], target.octets()[3]);
         
+        let mut interrupted = false;
+        
         for seq in 0..count {
+            // Check for Ctrl+C before each ping
+            #[cfg(target_arch = "x86_64")]
+            if crate::arch::x86_64::keyboard::check_ctrl_c() {
+                interrupted = true;
+                if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
+                    let _ = writeln!(serial, "^C");
+                }
+                crate::vga_println!("^C");
+                break;
+            }
+            
             result.transmitted += 1;
             
             // Create ICMP echo request with 56 bytes payload (64 bytes ICMP total)
@@ -565,11 +625,41 @@ pub fn ping_count(target: Ipv4Address, count: u16) -> Result<PingResult, Network
                 }
                 
                 if got_reply { break; }
+                
+                // Check for Ctrl+C during wait
+                #[cfg(target_arch = "x86_64")]
+                if crate::arch::x86_64::keyboard::check_ctrl_c() {
+                    interrupted = true;
+                    if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
+                        let _ = writeln!(serial, "^C");
+                    }
+                    crate::vga_println!("^C");
+                    break;
+                }
             }
             
+            if interrupted { break; }
+            
             // Delay between pings (~1 second like real ping)
-            for _ in 0..1000000 { core::hint::spin_loop(); }
+            // Check for Ctrl+C during delay too
+            for _ in 0..100 {
+                for _ in 0..10000 { core::hint::spin_loop(); }
+                #[cfg(target_arch = "x86_64")]
+                if crate::arch::x86_64::keyboard::check_ctrl_c() {
+                    interrupted = true;
+                    if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
+                        let _ = writeln!(serial, "^C");
+                    }
+                    crate::vga_println!("^C");
+                    break;
+                }
+            }
+            
+            if interrupted { break; }
         }
+        
+        // Suppress unused warning
+        let _ = interrupted;
         
         // Calculate statistics
         if result.received > 0 {
@@ -725,21 +815,9 @@ pub fn run_diagnostics() {
         
         drop(stack);
         
-        // Try to ping the gateway (QEMU's default gateway is 10.0.2.2)
-        let gateway = Ipv4Address::new(10, 0, 2, 2);
+        // Skip blocking ping test during boot - use 'ping' command from shell instead
         if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
-            let _ = writeln!(serial, "[net] Testing connectivity to gateway...");
-        }
-        
-        match ping(gateway) {
-            Ok(_) => {
-                // Success message already printed inside ping()
-            }
-            Err(e) => {
-                if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
-                    let _ = writeln!(serial, "[net] ✗ Ping failed: {:?}", e);
-                }
-            }
+            let _ = writeln!(serial, "[net] Network ready. Use 'ping <ip>' to test connectivity.");
         }
         
         // Print heap stats

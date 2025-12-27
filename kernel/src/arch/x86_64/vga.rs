@@ -2,6 +2,7 @@
 //!
 //! Provides text output to the VGA text mode buffer at 0xB8000.
 //! This allows visible output on the QEMU display.
+//! Includes scrollback buffer for viewing previous output.
 
 use core::arch::asm;
 use core::fmt;
@@ -13,6 +14,9 @@ const VGA_BUFFER: usize = 0xB8000;
 /// VGA text mode dimensions
 const VGA_WIDTH: usize = 80;
 const VGA_HEIGHT: usize = 25;
+
+/// Scrollback buffer size (number of lines to keep in history)
+const SCROLLBACK_LINES: usize = 200;
 
 /// VGA CRT Controller ports
 const VGA_CRTC_ADDR: u16 = 0x3D4;
@@ -72,6 +76,78 @@ struct ScreenChar {
 struct Buffer {
     chars: [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT],
 }
+
+/// Scrollback buffer for viewing previous output
+struct ScrollbackBuffer {
+    /// Ring buffer of lines
+    lines: [[ScreenChar; VGA_WIDTH]; SCROLLBACK_LINES],
+    /// Next line to write
+    write_pos: usize,
+    /// Total lines written (may exceed SCROLLBACK_LINES)
+    total_lines: usize,
+    /// Current scroll offset (0 = bottom/live, positive = scrolled up)
+    scroll_offset: usize,
+}
+
+impl ScrollbackBuffer {
+    const fn new() -> Self {
+        let blank = ScreenChar {
+            ascii_char: b' ',
+            color_code: ColorCode(0x07), // Light gray on black
+        };
+        Self {
+            lines: [[blank; VGA_WIDTH]; SCROLLBACK_LINES],
+            write_pos: 0,
+            total_lines: 0,
+            scroll_offset: 0,
+        }
+    }
+    
+    /// Push a line to the scrollback buffer
+    fn push_line(&mut self, line: &[ScreenChar; VGA_WIDTH]) {
+        self.lines[self.write_pos] = *line;
+        self.write_pos = (self.write_pos + 1) % SCROLLBACK_LINES;
+        self.total_lines += 1;
+        
+        // If scrolled up, adjust offset so view stays in place
+        if self.scroll_offset > 0 && self.scroll_offset < self.available_lines() {
+            self.scroll_offset += 1;
+        }
+    }
+    
+    /// Number of lines available for scrollback
+    fn available_lines(&self) -> usize {
+        self.total_lines.min(SCROLLBACK_LINES)
+    }
+    
+    /// Get a line from history (0 = most recent)
+    fn get_line(&self, offset: usize) -> Option<&[ScreenChar; VGA_WIDTH]> {
+        if offset >= self.available_lines() {
+            return None;
+        }
+        
+        // Calculate actual position in ring buffer
+        let pos = if self.total_lines < SCROLLBACK_LINES {
+            // Haven't wrapped yet
+            if offset >= self.total_lines {
+                return None;
+            }
+            self.total_lines - 1 - offset
+        } else {
+            // Wrapped - write_pos points to next write location (oldest)
+            let newest = if self.write_pos == 0 { SCROLLBACK_LINES - 1 } else { self.write_pos - 1 };
+            if offset >= SCROLLBACK_LINES {
+                return None;
+            }
+            (newest + SCROLLBACK_LINES - offset) % SCROLLBACK_LINES
+        };
+        
+        Some(&self.lines[pos])
+    }
+}
+
+/// Global scrollback buffer
+static SCROLLBACK: Mutex<ScrollbackBuffer> = Mutex::new(ScrollbackBuffer::new());
 
 /// VGA text mode writer
 pub struct Writer {
@@ -182,6 +258,19 @@ impl Writer {
 
     /// Scroll the screen up by one line
     fn scroll(&mut self) {
+        // Save the top line to scrollback buffer before scrolling
+        // Use try_lock to avoid deadlock in interrupt context
+        let mut top_line = [ScreenChar { ascii_char: b' ', color_code: self.color_code }; VGA_WIDTH];
+        for col in 0..VGA_WIDTH {
+            top_line[col] = unsafe {
+                core::ptr::read_volatile(&self.buffer.chars[0][col])
+            };
+        }
+        // Only save to scrollback if we can acquire the lock without blocking
+        if let Some(mut scrollback) = SCROLLBACK.try_lock() {
+            scrollback.push_line(&top_line);
+        }
+        
         // Move all lines up by one
         for row in 1..VGA_HEIGHT {
             for col in 0..VGA_WIDTH {
@@ -272,6 +361,45 @@ pub fn clear() {
     }
 }
 
+/// Get the current cursor row
+pub fn get_row() -> usize {
+    if let Some(ref writer) = *VGA_WRITER.lock() {
+        writer.row
+    } else {
+        0
+    }
+}
+
+/// Set the cursor row (for overwriting lines)
+pub fn set_row(row: usize) {
+    if let Some(ref mut writer) = *VGA_WRITER.lock() {
+        if row < VGA_HEIGHT {
+            writer.row = row;
+            writer.column = 0;
+        }
+    }
+}
+
+/// Clear a specific line
+pub fn clear_line(row: usize) {
+    if let Some(ref mut writer) = *VGA_WRITER.lock() {
+        if row < VGA_HEIGHT {
+            let blank = ScreenChar {
+                ascii_char: b' ',
+                color_code: writer.color_code,
+            };
+            for col in 0..VGA_WIDTH {
+                unsafe {
+                    core::ptr::write_volatile(
+                        &mut writer.buffer.chars[row][col],
+                        blank
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Handle backspace - move cursor back and erase character
 pub fn backspace() {
     if let Some(ref mut writer) = *VGA_WRITER.lock() {
@@ -335,5 +463,142 @@ pub fn update_hardware_cursor(row: usize, col: usize) {
 pub fn sync_cursor() {
     if let Some(ref writer) = *VGA_WRITER.lock() {
         update_hardware_cursor(writer.row, writer.column);
+    }
+}
+
+/// Save current screen state for scrollback viewing
+static SAVED_SCREEN: Mutex<Option<[[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]>> = Mutex::new(None);
+
+/// Scroll up to view previous output (Page Up)
+pub fn scroll_up() {
+    // Use try_lock to avoid deadlock in interrupt context
+    let Some(mut scrollback) = SCROLLBACK.try_lock() else { return };
+    let available = scrollback.available_lines();
+    
+    if available == 0 {
+        return; // No scrollback available
+    }
+    
+    // Save current screen if this is the first scroll
+    if scrollback.scroll_offset == 0 {
+        if let Some(writer_guard) = VGA_WRITER.try_lock() {
+            if let Some(ref writer) = *writer_guard {
+                let mut screen = [[ScreenChar { ascii_char: b' ', color_code: ColorCode(0x07) }; VGA_WIDTH]; VGA_HEIGHT];
+                for row in 0..VGA_HEIGHT {
+                    for col in 0..VGA_WIDTH {
+                        screen[row][col] = unsafe {
+                            core::ptr::read_volatile(&writer.buffer.chars[row][col])
+                        };
+                    }
+                }
+                if let Some(mut saved) = SAVED_SCREEN.try_lock() {
+                    *saved = Some(screen);
+                }
+            }
+        }
+    }
+    
+    // Increase scroll offset (scroll up = view older content)
+    let max_offset = available.saturating_sub(VGA_HEIGHT - 1);
+    if scrollback.scroll_offset < max_offset {
+        scrollback.scroll_offset += 5; // Scroll by 5 lines for faster navigation
+        if scrollback.scroll_offset > max_offset {
+            scrollback.scroll_offset = max_offset;
+        }
+    }
+    
+    // Render scrollback content
+    render_scrollback(&scrollback);
+}
+
+/// Scroll down to view more recent output (Page Down)
+pub fn scroll_down() {
+    // Use try_lock to avoid deadlock in interrupt context
+    let Some(mut scrollback) = SCROLLBACK.try_lock() else { return };
+    
+    if scrollback.scroll_offset == 0 {
+        return; // Already at live view
+    }
+    
+    // Decrease scroll offset
+    if scrollback.scroll_offset > 5 {
+        scrollback.scroll_offset -= 5;
+    } else {
+        scrollback.scroll_offset = 0;
+    }
+    
+    if scrollback.scroll_offset == 0 {
+        // Restore live screen
+        if let Some(mut saved_guard) = SAVED_SCREEN.try_lock() {
+            if let Some(saved) = saved_guard.take() {
+                if let Some(mut writer_guard) = VGA_WRITER.try_lock() {
+                    if let Some(ref mut writer) = *writer_guard {
+                        for row in 0..VGA_HEIGHT {
+                            for col in 0..VGA_WIDTH {
+                                unsafe {
+                                    core::ptr::write_volatile(&mut writer.buffer.chars[row][col], saved[row][col]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // Render scrollback content
+        render_scrollback(&scrollback);
+    }
+}
+
+/// Render scrollback buffer content to screen
+fn render_scrollback(scrollback: &ScrollbackBuffer) {
+    let vga_buffer = VGA_BUFFER as *mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT];
+    
+    // Show indicator that we're viewing history
+    let indicator_color = ColorCode::new(Color::Black, Color::Yellow);
+    
+    for row in 0..VGA_HEIGHT {
+        let offset = scrollback.scroll_offset + (VGA_HEIGHT - 1 - row);
+        if let Some(line) = scrollback.get_line(offset) {
+            for col in 0..VGA_WIDTH {
+                unsafe {
+                    core::ptr::write_volatile(&mut (*vga_buffer)[row][col], line[col]);
+                }
+            }
+        } else {
+            // No more history, show blank line
+            let blank = ScreenChar { ascii_char: b' ', color_code: ColorCode(0x07) };
+            for col in 0..VGA_WIDTH {
+                unsafe {
+                    core::ptr::write_volatile(&mut (*vga_buffer)[row][col], blank);
+                }
+            }
+        }
+    }
+    
+    // Show scroll indicator on the right edge
+    let indicator = ScreenChar {
+        ascii_char: b'|',
+        color_code: indicator_color,
+    };
+    unsafe {
+        core::ptr::write_volatile(&mut (*vga_buffer)[0][VGA_WIDTH - 1], indicator);
+    }
+    
+    // Show scroll position as percentage
+    let available = scrollback.available_lines();
+    if available > 0 {
+        let percent = ((scrollback.scroll_offset * 100) / available) as u8;
+        let percent_str = if percent >= 100 { b"TOP" } else if percent >= 10 { &[b'0' + (percent / 10), b'0' + (percent % 10), b'%'] } else { &[b' ', b'0' + percent, b'%'] };
+        
+        for (i, &ch) in percent_str.iter().enumerate() {
+            let indicator = ScreenChar {
+                ascii_char: ch,
+                color_code: indicator_color,
+            };
+            unsafe {
+                core::ptr::write_volatile(&mut (*vga_buffer)[0][VGA_WIDTH - 5 + i], indicator);
+            }
+        }
     }
 }

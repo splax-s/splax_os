@@ -4,11 +4,243 @@
 
 use core::arch::asm;
 use core::fmt::Write;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 use super::serial::SERIAL;
 
+// =============================================================================
+// Lock-Free Serial Input Ring Buffer
+// =============================================================================
+
+const SERIAL_BUFFER_SIZE: usize = 256;
+
+/// Lock-free ring buffer for serial input bytes
+pub struct SerialRingBuffer {
+    buffer: [core::sync::atomic::AtomicU8; SERIAL_BUFFER_SIZE],
+    head: AtomicUsize,
+    tail: AtomicUsize,
+}
+
+impl SerialRingBuffer {
+    pub const fn new() -> Self {
+        const ZERO: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+        Self {
+            buffer: [ZERO; SERIAL_BUFFER_SIZE],
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+        }
+    }
+    
+    /// Push a byte (called from interrupt handler - never blocks)
+    #[inline]
+    pub fn push(&self, byte: u8) {
+        let head = self.head.load(Ordering::Relaxed);
+        let next_head = (head + 1) % SERIAL_BUFFER_SIZE;
+        let tail = self.tail.load(Ordering::Acquire);
+        
+        if next_head == tail {
+            // Buffer full - drop oldest
+            self.tail.store((tail + 1) % SERIAL_BUFFER_SIZE, Ordering::Release);
+        }
+        
+        self.buffer[head].store(byte, Ordering::Release);
+        self.head.store(next_head, Ordering::Release);
+    }
+    
+    /// Pop a byte (called from main loop)
+    #[inline]
+    pub fn pop(&self) -> Option<u8> {
+        let tail = self.tail.load(Ordering::Relaxed);
+        let head = self.head.load(Ordering::Acquire);
+        
+        if tail == head {
+            return None;
+        }
+        
+        let byte = self.buffer[tail].load(Ordering::Acquire);
+        self.tail.store((tail + 1) % SERIAL_BUFFER_SIZE, Ordering::Release);
+        Some(byte)
+    }
+}
+
+/// Global serial input buffer - interrupt writes, main loop reads
+pub static SERIAL_INPUT_BUFFER: SerialRingBuffer = SerialRingBuffer::new();
+
 /// Command line buffer for kernel shell
 static COMMAND_BUFFER: Mutex<CommandBuffer> = Mutex::new(CommandBuffer::new());
+
+/// Command history for kernel shell
+static COMMAND_HISTORY: Mutex<CommandHistory> = Mutex::new(CommandHistory::new());
+
+/// Maximum number of commands to keep in history
+const HISTORY_SIZE: usize = 32;
+
+/// Command history buffer
+struct CommandHistory {
+    /// Stored commands
+    commands: [[u8; 256]; HISTORY_SIZE],
+    /// Length of each command
+    lengths: [usize; HISTORY_SIZE],
+    /// Number of commands stored
+    count: usize,
+    /// Current write position (circular)
+    write_pos: usize,
+    /// Current browse position for up/down navigation
+    browse_pos: usize,
+    /// Whether we're actively browsing history
+    browsing: bool,
+    /// Saved current line when browsing (like bash - saves what you typed before pressing up)
+    saved_line: [u8; 256],
+    saved_len: usize,
+}
+
+impl CommandHistory {
+    const fn new() -> Self {
+        Self {
+            commands: [[0; 256]; HISTORY_SIZE],
+            lengths: [0; HISTORY_SIZE],
+            count: 0,
+            write_pos: 0,
+            browse_pos: 0,
+            browsing: false,
+            saved_line: [0; 256],
+            saved_len: 0,
+        }
+    }
+    
+    /// Add a command to history (only adds non-empty, non-duplicate commands like bash)
+    fn push(&mut self, cmd: &str) {
+        if cmd.is_empty() {
+            return;
+        }
+        
+        // Don't add duplicates of the last command (like bash)
+        if self.count > 0 {
+            let last_pos = if self.write_pos == 0 { HISTORY_SIZE - 1 } else { self.write_pos - 1 };
+            if let Some(last_cmd) = self.get_at(last_pos) {
+                if last_cmd == cmd {
+                    // Reset browsing but don't add duplicate
+                    self.browsing = false;
+                    self.browse_pos = self.write_pos;
+                    return;
+                }
+            }
+        }
+        
+        let bytes = cmd.as_bytes();
+        let len = bytes.len().min(255);
+        
+        self.commands[self.write_pos][..len].copy_from_slice(&bytes[..len]);
+        self.lengths[self.write_pos] = len;
+        
+        self.write_pos = (self.write_pos + 1) % HISTORY_SIZE;
+        if self.count < HISTORY_SIZE {
+            self.count += 1;
+        }
+        
+        // Reset browsing state
+        self.browsing = false;
+        self.browse_pos = self.write_pos;
+    }
+    
+    /// Save current line before browsing (like bash does)
+    fn save_current_line(&mut self, line: &str) {
+        let bytes = line.as_bytes();
+        let len = bytes.len().min(255);
+        self.saved_line[..len].copy_from_slice(&bytes[..len]);
+        self.saved_len = len;
+    }
+    
+    /// Get saved line (what user was typing before pressing up)
+    fn get_saved_line(&self) -> Option<&str> {
+        if self.saved_len == 0 {
+            return Some(""); // Empty is valid
+        }
+        core::str::from_utf8(&self.saved_line[..self.saved_len]).ok()
+    }
+    
+    /// Start browsing and get previous command (up arrow) - Linux/bash style
+    fn previous(&mut self) -> Option<&str> {
+        if self.count == 0 {
+            return None;
+        }
+        
+        if !self.browsing {
+            // First time pressing up - start from most recent command
+            self.browsing = true;
+            // browse_pos starts at write_pos, we'll decrement to get last command
+            self.browse_pos = self.write_pos;
+        }
+        
+        // Calculate the position to try
+        let try_pos = if self.browse_pos == 0 {
+            HISTORY_SIZE - 1
+        } else {
+            self.browse_pos - 1
+        };
+        
+        // Calculate oldest valid position
+        let oldest = if self.count < HISTORY_SIZE {
+            0
+        } else {
+            self.write_pos  // In circular buffer, write_pos is where oldest gets overwritten
+        };
+        
+        // Check if try_pos has valid data
+        if self.lengths[try_pos] == 0 {
+            // No more history
+            return self.get_at(self.browse_pos);
+        }
+        
+        // Check bounds - don't go past oldest
+        let entries_back = if self.browse_pos >= self.write_pos {
+            self.browse_pos - self.write_pos
+        } else {
+            HISTORY_SIZE - self.write_pos + self.browse_pos
+        };
+        
+        if entries_back >= self.count {
+            // Already at oldest entry, stay put
+            return self.get_at(self.browse_pos);
+        }
+        
+        self.browse_pos = try_pos;
+        self.get_at(self.browse_pos)
+    }
+    
+    /// Get next command (down arrow) - Linux/bash style
+    fn next(&mut self) -> Option<&str> {
+        if !self.browsing || self.count == 0 {
+            return None;
+        }
+        
+        // Move forward in history
+        let new_pos = (self.browse_pos + 1) % HISTORY_SIZE;
+        
+        if new_pos == self.write_pos {
+            // Back to current (saved) command - return what user was typing
+            self.browsing = false;
+            return self.get_saved_line();
+        }
+        
+        self.browse_pos = new_pos;
+        self.get_at(self.browse_pos)
+    }
+    
+    /// Get command at position
+    fn get_at(&self, pos: usize) -> Option<&str> {
+        if self.lengths[pos] == 0 {
+            return None;
+        }
+        core::str::from_utf8(&self.commands[pos][..self.lengths[pos]]).ok()
+    }
+    
+    /// Reset browsing state
+    fn reset_browsing(&mut self) {
+        self.browsing = false;
+        self.browse_pos = self.write_pos;
+    }
+}
 
 /// Simple command buffer
 struct CommandBuffer {
@@ -46,6 +278,19 @@ impl CommandBuffer {
     
     fn as_str(&self) -> &str {
         core::str::from_utf8(&self.buffer[..self.len]).unwrap_or("")
+    }
+    
+    /// Replace contents with a string (for history navigation)
+    fn set(&mut self, s: &str) {
+        let bytes = s.as_bytes();
+        let len = bytes.len().min(255);
+        self.buffer[..len].copy_from_slice(&bytes[..len]);
+        self.len = len;
+    }
+    
+    /// Get current length
+    fn len(&self) -> usize {
+        self.len
     }
 }
 
@@ -190,9 +435,17 @@ pub extern "x86-interrupt" fn page_fault_handler(frame: InterruptFrame, error_co
 /// Timer interrupt counter
 static TIMER_TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+/// Keyboard interrupt counter
+static KEYBOARD_IRQ_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// Get current timer tick count.
 pub fn get_ticks() -> u64 {
     TIMER_TICKS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Get keyboard IRQ count
+pub fn get_keyboard_irq_count() -> u64 {
+    KEYBOARD_IRQ_COUNT.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Timer interrupt handler (PIC).
@@ -206,76 +459,244 @@ pub extern "x86-interrupt" fn timer_handler(_frame: InterruptFrame) {
 }
 
 /// Keyboard interrupt handler (PIC).
+/// 
+/// This handler is FAST and LOCK-FREE (Linux-style).
+/// It only pushes key events to a ring buffer - never blocks.
+/// The shell main loop processes the buffer.
 pub extern "x86-interrupt" fn keyboard_handler(_frame: InterruptFrame) {
+    // Increment keyboard IRQ counter
+    KEYBOARD_IRQ_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    
     // Read scancode from keyboard port
     let scancode: u8;
     unsafe {
         asm!("in al, 0x60", out("al") scancode);
     }
+    
+    // Send EOI FIRST to prevent keyboard lockup on any panic/error below
+    unsafe {
+        pic_send_eoi(vector::PIC_KEYBOARD);
+    }
 
     // Process the scancode through the keyboard driver
     if let Some(key_event) = super::keyboard::handle_scancode(scancode) {
-        // Handle special key combinations
-        if key_event.ctrl && key_event.character == 'c' {
-            // Ctrl+C - clear current line
-            let mut cmd_buf = COMMAND_BUFFER.lock();
-            cmd_buf.clear();
-            crate::vga_println!();
-            crate::vga_print!("splax> ");
-        } else {
-            // Display the character on VGA and handle input
-            match key_event.character {
-                '\n' => {
-                    crate::vga_println!();
-                    // Execute command
-                    let cmd_buf = COMMAND_BUFFER.lock();
-                    let cmd = cmd_buf.as_str();
-                    if !cmd.is_empty() {
-                        execute_shell_command(cmd);
+        // Push to lock-free ring buffer - NEVER blocks, NEVER drops
+        super::keyboard::KEYBOARD_BUFFER.push(key_event);
+    }
+}
+
+/// Process pending keyboard input from the ring buffer.
+/// Call this from the main loop to handle user input.
+/// This is where we can safely use locks since we're not in an interrupt.
+pub fn process_keyboard_input() {
+    use super::keyboard::{KEYBOARD_BUFFER, SpecialKey};
+    
+    while let Some(key_event) = KEYBOARD_BUFFER.pop() {
+        // Handle special keys (arrow keys, etc.)
+        if let Some(special) = key_event.special {
+            match special {
+                SpecialKey::ArrowUp => {
+                    // Get previous command from history (bash-style)
+                    let cmd_to_show = {
+                        let mut history = COMMAND_HISTORY.lock();
+                        
+                        // Save current line before first browse (like bash)
+                        if !history.browsing {
+                            let current = COMMAND_BUFFER.lock();
+                            history.save_current_line(current.as_str());
+                        }
+                        
+                        history.previous().map(|s| alloc::string::String::from(s))
+                    };
+                    
+                    if let Some(cmd) = cmd_to_show {
+                        // Clear current line on screen
+                        let old_len = COMMAND_BUFFER.lock().len();
+                        for _ in 0..old_len {
+                            super::vga::backspace();
+                        }
+                        // Set new command
+                        COMMAND_BUFFER.lock().set(&cmd);
+                        crate::vga_print!("{}", cmd);
                     }
-                    drop(cmd_buf);
-                    COMMAND_BUFFER.lock().clear();
-                    crate::vga_print!("splax> ");
                 }
-                '\x08' => {
-                    // Backspace
-                    let mut cmd_buf = COMMAND_BUFFER.lock();
-                    if cmd_buf.pop() {
-                        // Move cursor back, print space, move back again
+                SpecialKey::ArrowDown => {
+                    // Get next command from history (bash-style)
+                    let cmd_to_show = {
+                        let mut history = COMMAND_HISTORY.lock();
+                        history.next().map(|s| alloc::string::String::from(s))
+                    };
+                    
+                    // Clear current line on screen first
+                    let old_len = COMMAND_BUFFER.lock().len();
+                    for _ in 0..old_len {
                         super::vga::backspace();
                     }
-                }
-                '\t' => {
-                    crate::vga_print!("    ");
-                    let mut cmd_buf = COMMAND_BUFFER.lock();
-                    for _ in 0..4 {
-                        cmd_buf.push(' ');
+                    
+                    if let Some(cmd) = cmd_to_show {
+                        // Set command (could be history entry or saved line)
+                        COMMAND_BUFFER.lock().set(&cmd);
+                        crate::vga_print!("{}", cmd);
+                    } else {
+                        // At bottom of history with nothing to show - clear line
+                        COMMAND_BUFFER.lock().clear();
                     }
                 }
-                c if c.is_ascii_graphic() || c == ' ' => {
-                    crate::vga_print!("{}", c);
-                    COMMAND_BUFFER.lock().push(c);
+                SpecialKey::PageUp => {
+                    // Scroll VGA up (show older output)
+                    super::vga::scroll_up();
                 }
-                _ => {}
+                SpecialKey::PageDown => {
+                    // Scroll VGA down (show newer output)
+                    super::vga::scroll_down();
+                }
+                _ => {} // Ignore other special keys for now
+            }
+        } else if let Some(c) = key_event.character {
+            // Handle Ctrl+C (works with both 'c' and 'C')
+            if key_event.ctrl && (c == 'c' || c == 'C') {
+                // Ctrl+C - clear current line
+                COMMAND_HISTORY.lock().reset_browsing();
+                COMMAND_BUFFER.lock().clear();
+                crate::vga_println!("^C");
+                crate::vga_print!("splax> ");
+            } else {
+                // Display the character on VGA and handle input
+                match c {
+                    '\n' => {
+                        crate::vga_println!();
+                        // Execute command and add to history
+                        let cmd_string = {
+                            let mut cmd_buf = COMMAND_BUFFER.lock();
+                            let s = alloc::string::String::from(cmd_buf.as_str());
+                            cmd_buf.clear();
+                            s
+                        };
+                        if !cmd_string.is_empty() {
+                            // Add to history
+                            let mut history = COMMAND_HISTORY.lock();
+                            history.push(&cmd_string);
+                            history.reset_browsing();
+                            drop(history);
+                            execute_shell_command(&cmd_string);
+                        } else {
+                            // Empty command, just reset history browsing
+                            COMMAND_HISTORY.lock().reset_browsing();
+                        }
+                        crate::vga_print!("splax> ");
+                    }
+                    '\x08' => {
+                        // Backspace
+                        if COMMAND_BUFFER.lock().pop() {
+                            super::vga::backspace();
+                        }
+                    }
+                    '\t' => {
+                        crate::vga_print!("    ");
+                        let mut cmd_buf = COMMAND_BUFFER.lock();
+                        for _ in 0..4 {
+                            cmd_buf.push(' ');
+                        }
+                    }
+                    c if c.is_ascii_graphic() || c == ' ' => {
+                        crate::vga_print!("{}", c);
+                        COMMAND_BUFFER.lock().push(c);
+                    }
+                    _ => {}
+                }
             }
         }
-    }
-
-    // Send EOI to PIC
-    unsafe {
-        pic_send_eoi(vector::PIC_KEYBOARD);
     }
 }
 
 /// Serial command buffer for serial shell
 static SERIAL_COMMAND_BUFFER: Mutex<CommandBuffer> = Mutex::new(CommandBuffer::new());
 
-/// Serial interrupt handler (COM1 - IRQ4).
-pub extern "x86-interrupt" fn serial_handler(_frame: InterruptFrame) {
+/// Serial command history
+static SERIAL_COMMAND_HISTORY: Mutex<CommandHistory> = Mutex::new(CommandHistory::new());
+
+/// Handle serial terminal up arrow (previous command)
+fn handle_serial_history_up() {
+    if let Some(cmd) = SERIAL_COMMAND_HISTORY.lock().previous() {
+        let cmd_owned = alloc::string::String::from(cmd);
+        // Clear current line on terminal
+        let old_len = SERIAL_COMMAND_BUFFER.lock().len();
+        {
+            let serial = super::serial::SERIAL.lock();
+            // Erase current line: move back, overwrite with spaces, move back again
+            for _ in 0..old_len {
+                serial.write_byte(0x08);
+            }
+            for _ in 0..old_len {
+                serial.write_byte(b' ');
+            }
+            for _ in 0..old_len {
+                serial.write_byte(0x08);
+            }
+            // Print the history command
+            for b in cmd_owned.as_bytes() {
+                serial.write_byte(*b);
+            }
+        }
+        SERIAL_COMMAND_BUFFER.lock().set(&cmd_owned);
+    }
+}
+
+/// Handle serial terminal down arrow (next command)
+fn handle_serial_history_down() {
+    let old_len = SERIAL_COMMAND_BUFFER.lock().len();
+    {
+        let serial = super::serial::SERIAL.lock();
+        // Erase current line
+        for _ in 0..old_len {
+            serial.write_byte(0x08);
+        }
+        for _ in 0..old_len {
+            serial.write_byte(b' ');
+        }
+        for _ in 0..old_len {
+            serial.write_byte(0x08);
+        }
+    }
     
-    // Read all available bytes from serial port
+    if let Some(cmd) = SERIAL_COMMAND_HISTORY.lock().next() {
+        let cmd_owned = alloc::string::String::from(cmd);
+        {
+            let serial = super::serial::SERIAL.lock();
+            for b in cmd_owned.as_bytes() {
+                serial.write_byte(*b);
+            }
+        }
+        SERIAL_COMMAND_BUFFER.lock().set(&cmd_owned);
+    } else {
+        // Back to current (empty) line
+        SERIAL_COMMAND_BUFFER.lock().clear();
+    }
+}
+
+/// Escape sequence state for serial terminal
+static SERIAL_ESCAPE_STATE: Mutex<EscapeState> = Mutex::new(EscapeState::None);
+
+/// State machine for parsing ANSI escape sequences
+#[derive(Clone, Copy, PartialEq)]
+enum EscapeState {
+    None,
+    Escape,      // Got ESC (0x1B)
+    Bracket,     // Got ESC [
+}
+
+/// Serial interrupt handler (COM1 - IRQ4).
+/// 
+/// This handler is FAST - it only reads bytes and pushes to ring buffer.
+/// Actual processing happens in process_serial_input() from main loop.
+pub extern "x86-interrupt" fn serial_handler(_frame: InterruptFrame) {
+    // Send EOI FIRST to prevent issues
+    unsafe {
+        pic_send_eoi(vector::PIC_COM1);
+    }
+    
+    // Read all available bytes from serial port and push to buffer
     loop {
-        // Check if data available and read it
         let byte = {
             let serial = super::serial::SERIAL.lock();
             if !serial.has_data() {
@@ -284,9 +705,60 @@ pub extern "x86-interrupt" fn serial_handler(_frame: InterruptFrame) {
             serial.read_byte()
         };
         
-        let Some(byte) = byte else { break };
+        if let Some(byte) = byte {
+            SERIAL_INPUT_BUFFER.push(byte);
+        } else {
+            break;
+        }
+    }
+}
+
+/// Process pending serial input from the ring buffer.
+/// Call this from the main loop to handle user input.
+pub fn process_serial_input() {
+    while let Some(byte) = SERIAL_INPUT_BUFFER.pop() {
+        // Check escape sequence state
+        let escape_action = {
+            let mut escape_state = SERIAL_ESCAPE_STATE.lock();
+            match *escape_state {
+                EscapeState::Escape => {
+                    if byte == b'[' {
+                        *escape_state = EscapeState::Bracket;
+                        Some(b'_') // Continue marker
+                    } else {
+                        *escape_state = EscapeState::None;
+                        None
+                    }
+                }
+                EscapeState::Bracket => {
+                    *escape_state = EscapeState::None;
+                    Some(byte)
+                }
+                EscapeState::None => None,
+            }
+        };
+        
+        // Handle escape sequence actions
+        if let Some(action) = escape_action {
+            match action {
+                b'_' => continue,
+                b'A' => {
+                    handle_serial_history_up();
+                    continue;
+                }
+                b'B' => {
+                    handle_serial_history_down();
+                    continue;
+                }
+                b'C' | b'D' => continue,
+                _ => {}
+            }
+        }
         
         match byte {
+            0x1B => {
+                *SERIAL_ESCAPE_STATE.lock() = EscapeState::Escape;
+            }
             b'\r' | b'\n' => {
                 // Echo newline
                 {
@@ -295,16 +767,18 @@ pub extern "x86-interrupt" fn serial_handler(_frame: InterruptFrame) {
                     serial.write_byte(b'\n');
                 }
                 
-                // Execute command - copy to local buffer first
+                // Execute command
                 let cmd_string = {
                     let cmd_buf = SERIAL_COMMAND_BUFFER.lock();
                     alloc::string::String::from(cmd_buf.as_str())
                 };
                 
                 if !cmd_string.is_empty() {
+                    SERIAL_COMMAND_HISTORY.lock().push(&cmd_string);
                     execute_serial_command(&cmd_string);
                 }
                 SERIAL_COMMAND_BUFFER.lock().clear();
+                SERIAL_COMMAND_HISTORY.lock().reset_browsing();
                 
                 // Print prompt
                 {
@@ -315,18 +789,17 @@ pub extern "x86-interrupt" fn serial_handler(_frame: InterruptFrame) {
                 }
             }
             0x7F | 0x08 => {
-                // Backspace/Delete
                 let did_pop = SERIAL_COMMAND_BUFFER.lock().pop();
                 if did_pop {
                     let serial = super::serial::SERIAL.lock();
-                    serial.write_byte(0x08); // Move back
-                    serial.write_byte(b' ');  // Erase
-                    serial.write_byte(0x08); // Move back again
+                    serial.write_byte(0x08);
+                    serial.write_byte(b' ');
+                    serial.write_byte(0x08);
                 }
             }
             0x03 => {
-                // Ctrl+C - clear line
                 SERIAL_COMMAND_BUFFER.lock().clear();
+                SERIAL_COMMAND_HISTORY.lock().reset_browsing();
                 {
                     let serial = super::serial::SERIAL.lock();
                     for b in b"^C\r\nsplax> " {
@@ -335,17 +808,11 @@ pub extern "x86-interrupt" fn serial_handler(_frame: InterruptFrame) {
                 }
             }
             c if c >= 0x20 && c < 0x7F => {
-                // Printable character
                 SERIAL_COMMAND_BUFFER.lock().push(c as char);
                 super::serial::SERIAL.lock().write_byte(c);
             }
             _ => {}
         }
-    }
-    
-    // Send EOI to PIC
-    unsafe {
-        pic_send_eoi(vector::PIC_COM1);
     }
 }
 
@@ -378,6 +845,20 @@ fn execute_shell_command(cmd: &str) {
             crate::vga_println!("  echo <text>   - Print text (or > file)");
             crate::vga_println!("  pwd           - Print working directory");
             crate::vga_println!();
+            crate::vga_println!("Block Devices:");
+            crate::vga_println!("  lsblk         - List block devices");
+            crate::vga_println!("  blkinfo <dev> - Block device info");
+            crate::vga_println!("  diskread <dev> <sector> - Read sector");
+            crate::vga_println!();
+            crate::vga_println!("Filesystem (SplaxFS):");
+            crate::vga_println!("  mkfs <dev>    - Format device with SplaxFS");
+            crate::vga_println!("  mount <dev> <path> - Mount filesystem");
+            crate::vga_println!("  umount <path> - Unmount filesystem");
+            crate::vga_println!("  fsls <path>   - List directory on disk");
+            crate::vga_println!("  fsmkdir <path> - Create directory on disk");
+            crate::vga_println!("  fscat <file>  - Read file from disk");
+            crate::vga_println!("  fswrite <file> <text> - Write to file");
+            crate::vga_println!();
             crate::vga_println!("Network:");
             crate::vga_println!("  ping [-c n] <ip> - ICMP ping");
             crate::vga_println!("  traceroute <ip> - Trace route to host");
@@ -391,23 +872,35 @@ fn execute_shell_command(cmd: &str) {
             crate::vga_println!("  ssh <ip>      - SSH client connect");
             crate::vga_println!("  sshd <cmd>    - SSH server (start/stop/status)");
             crate::vga_println!();
+            crate::vga_println!("WiFi (Wireless):");
+            crate::vga_println!("  iwconfig      - Wireless interface info");
+            crate::vga_println!("  iwlist scan   - Scan for WiFi networks");
+            crate::vga_println!("  wifi scan     - Scan for WiFi networks");
+            crate::vga_println!("  wifi connect <ssid> [pass] - Connect");
+            crate::vga_println!("  wifi disconnect - Disconnect from WiFi");
+            crate::vga_println!("  wifi status   - Connection status");
+            crate::vga_println!();
             crate::vga_println!("System:");
             crate::vga_println!("  ps            - List processes");
             crate::vga_println!("  mem/free      - Memory usage");
             crate::vga_println!("  df            - Filesystem usage");
             crate::vga_println!("  uptime        - System uptime");
             crate::vga_println!("  uname [-a]    - System info");
-            crate::vga_println!("  whoami        - Current user");
-            crate::vga_println!("  hostname      - System hostname");
-            crate::vga_println!("  date          - System time");
             crate::vga_println!("  lscpu         - CPU information");
+            crate::vga_println!("  lspci         - List PCI devices");
+            crate::vga_println!("  proc [file]   - Read /proc (meminfo, cpuinfo...)");
+            crate::vga_println!("  lsdev         - List /dev devices");
+            crate::vga_println!("  sysinfo [path]- Read /sys info");
             crate::vga_println!("  dmesg         - Kernel messages");
             crate::vga_println!("  env           - Environment vars");
             crate::vga_println!("  id            - User/group IDs");
             crate::vga_println!("  services      - List services");
             crate::vga_println!("  version       - Version info");
             crate::vga_println!("  clear         - Clear screen");
-            crate::vga_println!("  reboot        - Halt system");
+            crate::vga_println!("  date          - Current date/time");
+            crate::vga_println!("  clock         - Live clock display");
+            crate::vga_println!("  shutdown      - Power off system");
+            crate::vga_println!("  reboot        - Reboot system");
         }
         "sconf" => {
             use super::vga::Color;
@@ -840,22 +1333,82 @@ fn execute_shell_command(cmd: &str) {
         }
         "uptime" => {
             use super::vga::Color;
-            let ticks = get_ticks();
-            // Assuming ~100 Hz timer
-            let seconds = ticks / 100;
-            let minutes = seconds / 60;
-            let hours = minutes / 60;
+            use super::rtc;
+            
+            let now = rtc::read_rtc();
+            let uptime = rtc::format_uptime();
             
             super::vga::set_color(Color::Yellow, Color::Black);
-            crate::vga_print!("Uptime: ");
+            crate::vga_print!(" {:02}:{:02}:{:02} ", now.hour, now.minute, now.second);
             super::vga::set_color(Color::LightGray, Color::Black);
-            if hours > 0 {
-                crate::vga_println!("{}h {}m {}s ({} ticks)", hours, minutes % 60, seconds % 60, ticks);
-            } else if minutes > 0 {
-                crate::vga_println!("{}m {}s ({} ticks)", minutes, seconds % 60, ticks);
-            } else {
-                crate::vga_println!("{}s ({} ticks)", seconds, ticks);
+            crate::vga_println!("up {}, 1 user, load average: 0.00, 0.00, 0.00", uptime);
+        }
+        "date" | "time" => {
+            use super::vga::Color;
+            use super::rtc;
+            
+            let now = rtc::read_rtc();
+            let iso = now.format_iso();
+            let iso_str = core::str::from_utf8(&iso).unwrap_or("????-??-?? ??:??:??");
+            
+            super::vga::set_color(Color::LightCyan, Color::Black);
+            crate::vga_println!("{} {} {:2} {:02}:{:02}:{:02} UTC {}",
+                now.day_name(), now.month_name(), now.day,
+                now.hour, now.minute, now.second, now.year);
+            super::vga::set_color(Color::LightGray, Color::Black);
+        }
+        "clock" => {
+            use super::vga::Color;
+            use super::rtc;
+            
+            crate::vga_println!("Press any key to stop clock...");
+            crate::vga_println!();
+            
+            // Get initial position
+            let start_row = super::vga::get_row();
+            
+            // Display live clock until keypress
+            let mut last_second: u8 = 255;
+            loop {
+                let now = rtc::read_rtc();
+                
+                // Only update display when second changes
+                if now.second != last_second {
+                    last_second = now.second;
+                    
+                    // Clear line and display time
+                    super::vga::set_row(start_row);
+                    super::vga::clear_line(start_row);
+                    
+                    super::vga::set_color(Color::LightGreen, Color::Black);
+                    crate::vga_print!("  ");
+                    super::vga::set_color(Color::White, Color::Blue);
+                    crate::vga_print!(" {:02}:{:02}:{:02} ", now.hour, now.minute, now.second);
+                    super::vga::set_color(Color::LightGray, Color::Black);
+                    crate::vga_print!("  {} {} {:2}, {}", 
+                        now.day_name(), now.month_name(), now.day, now.year);
+                }
+                
+                // Check for keypress
+                let status: u8;
+                unsafe {
+                    asm!("in al, dx", out("al") status, in("dx") 0x64u16, options(nomem, nostack));
+                }
+                if (status & 0x01) != 0 {
+                    // Key available - consume it and exit
+                    let _scancode: u8;
+                    unsafe {
+                        asm!("in al, dx", out("al") _scancode, in("dx") 0x60u16, options(nomem, nostack));
+                    }
+                    break;
+                }
+                
+                // Small delay to avoid busy spinning
+                for _ in 0..10000 {
+                    core::hint::spin_loop();
+                }
             }
+            crate::vga_println!();
         }
         "arp" => {
             use super::vga::Color;
@@ -898,6 +1451,254 @@ fn execute_shell_command(cmd: &str) {
             crate::vga_println!("healthy    0.1.0");
             crate::vga_println!();
             crate::vga_println!("Total: 4 services");
+        }
+        "lsblk" => {
+            use super::vga::Color;
+            super::vga::set_color(Color::Yellow, Color::Black);
+            crate::vga_println!("Block Devices:");
+            super::vga::set_color(Color::LightGray, Color::Black);
+            crate::vga_println!();
+            crate::vga_println!("NAME    SIZE        SECTORS     MODEL");
+            
+            let devices = crate::block::list_devices();
+            if devices.is_empty() {
+                crate::vga_println!("(no block devices)");
+            } else {
+                for dev in devices {
+                    let size_mb = (dev.total_sectors * dev.sector_size as u64) / (1024 * 1024);
+                    super::vga::set_color(Color::LightGreen, Color::Black);
+                    crate::vga_print!("{:<8}", dev.name);
+                    super::vga::set_color(Color::LightGray, Color::Black);
+                    crate::vga_println!("{:>6} MB    {:>10}  {}", 
+                        size_mb, dev.total_sectors, dev.model);
+                }
+            }
+        }
+        "blkinfo" => {
+            use super::vga::Color;
+            if parts[1].is_empty() {
+                super::vga::set_color(Color::LightRed, Color::Black);
+                crate::vga_println!("Usage: blkinfo <device>");
+                super::vga::set_color(Color::LightGray, Color::Black);
+                crate::vga_println!("Example: blkinfo vda");
+            } else {
+                let dev_name = parts[1];
+                match crate::block::with_device(dev_name, |dev| dev.info()) {
+                    Ok(info) => {
+                        super::vga::set_color(Color::Yellow, Color::Black);
+                        crate::vga_println!("Block Device: {}", info.name);
+                        super::vga::set_color(Color::LightGray, Color::Black);
+                        crate::vga_println!();
+                        crate::vga_println!("Model:        {}", info.model);
+                        crate::vga_println!("Sectors:      {}", info.total_sectors);
+                        crate::vga_println!("Sector Size:  {} bytes", info.sector_size);
+                        let size_mb = (info.total_sectors * info.sector_size as u64) / (1024 * 1024);
+                        crate::vga_println!("Total Size:   {} MB", size_mb);
+                        crate::vga_println!("Read-Only:    {}", if info.read_only { "yes" } else { "no" });
+                    }
+                    Err(e) => {
+                        super::vga::set_color(Color::LightRed, Color::Black);
+                        crate::vga_println!("Device not found: {}", dev_name);
+                        super::vga::set_color(Color::LightGray, Color::Black);
+                        crate::vga_println!("Error: {:?}", e);
+                    }
+                }
+            }
+        }
+        "diskread" => {
+            use super::vga::Color;
+            if parts[1].is_empty() || parts[2].is_empty() {
+                super::vga::set_color(Color::LightRed, Color::Black);
+                crate::vga_println!("Usage: diskread <device> <sector>");
+                super::vga::set_color(Color::LightGray, Color::Black);
+                crate::vga_println!("Example: diskread vda 0");
+            } else {
+                let dev_name = parts[1];
+                if let Ok(sector) = parts[2].parse::<u64>() {
+                    match crate::block::read(dev_name, sector, 1) {
+                        Ok(data) => {
+                            super::vga::set_color(Color::Yellow, Color::Black);
+                            crate::vga_println!("Sector {} from {}:", sector, dev_name);
+                            super::vga::set_color(Color::LightGray, Color::Black);
+                            crate::vga_println!();
+                            
+                            // Print hex dump (first 256 bytes)
+                            for (i, chunk) in data.iter().take(256).collect::<alloc::vec::Vec<_>>().chunks(16).enumerate() {
+                                crate::vga_print!("{:04x}: ", i * 16);
+                                for byte in chunk {
+                                    crate::vga_print!("{:02x} ", byte);
+                                }
+                                crate::vga_print!(" ");
+                                for byte in chunk {
+                                    let c = **byte;
+                                    if c >= 0x20 && c < 0x7f {
+                                        crate::vga_print!("{}", c as char);
+                                    } else {
+                                        crate::vga_print!(".");
+                                    }
+                                }
+                                crate::vga_println!();
+                            }
+                        }
+                        Err(e) => {
+                            super::vga::set_color(Color::LightRed, Color::Black);
+                            crate::vga_println!("Read failed: {:?}", e);
+                        }
+                    }
+                } else {
+                    super::vga::set_color(Color::LightRed, Color::Black);
+                    crate::vga_println!("Invalid sector number: {}", parts[2]);
+                }
+            }
+            super::vga::set_color(Color::LightGray, Color::Black);
+        }
+        // === Filesystem Commands ===
+        "mkfs" => {
+            use super::vga::Color;
+            if parts[1].is_empty() {
+                super::vga::set_color(Color::LightRed, Color::Black);
+                crate::vga_println!("Usage: mkfs <device>");
+                crate::vga_println!("Example: mkfs vda");
+            } else {
+                match crate::fs::splaxfs::format(parts[1]) {
+                    Ok(()) => {
+                        super::vga::set_color(Color::LightGreen, Color::Black);
+                        crate::vga_println!("Formatted {} with SplaxFS", parts[1]);
+                    }
+                    Err(e) => {
+                        super::vga::set_color(Color::LightRed, Color::Black);
+                        crate::vga_println!("Format failed: {:?}", e);
+                    }
+                }
+            }
+            super::vga::set_color(Color::LightGray, Color::Black);
+        }
+        "mount" => {
+            use super::vga::Color;
+            if parts[1].is_empty() || parts[2].is_empty() {
+                super::vga::set_color(Color::LightRed, Color::Black);
+                crate::vga_println!("Usage: mount <device> <path>");
+                crate::vga_println!("Example: mount vda /mnt");
+            } else {
+                match crate::fs::splaxfs::mount(parts[1], parts[2]) {
+                    Ok(()) => {
+                        super::vga::set_color(Color::LightGreen, Color::Black);
+                        crate::vga_println!("Mounted {} at {}", parts[1], parts[2]);
+                    }
+                    Err(e) => {
+                        super::vga::set_color(Color::LightRed, Color::Black);
+                        crate::vga_println!("Mount failed: {:?}", e);
+                    }
+                }
+            }
+            super::vga::set_color(Color::LightGray, Color::Black);
+        }
+        "umount" => {
+            use super::vga::Color;
+            if parts[1].is_empty() {
+                super::vga::set_color(Color::LightRed, Color::Black);
+                crate::vga_println!("Usage: umount <path>");
+            } else {
+                match crate::fs::splaxfs::unmount(parts[1]) {
+                    Ok(()) => {
+                        super::vga::set_color(Color::LightGreen, Color::Black);
+                        crate::vga_println!("Unmounted {}", parts[1]);
+                    }
+                    Err(e) => {
+                        super::vga::set_color(Color::LightRed, Color::Black);
+                        crate::vga_println!("Unmount failed: {:?}", e);
+                    }
+                }
+            }
+            super::vga::set_color(Color::LightGray, Color::Black);
+        }
+        "fsls" => {
+            use super::vga::Color;
+            let path = if parts[1].is_empty() { "/mnt" } else { parts[1] };
+            match crate::fs::splaxfs::ls(path) {
+                Ok(entries) => {
+                    super::vga::set_color(Color::Yellow, Color::Black);
+                    crate::vga_println!("Directory: {}", path);
+                    super::vga::set_color(Color::LightGray, Color::Black);
+                    for (name, file_type, size) in entries {
+                        let type_char = match file_type {
+                            crate::fs::splaxfs::FileType::Directory => 'd',
+                            crate::fs::splaxfs::FileType::Regular => '-',
+                            _ => '?',
+                        };
+                        crate::vga_println!("{}  {:>8}  {}", type_char, size, name);
+                    }
+                }
+                Err(e) => {
+                    super::vga::set_color(Color::LightRed, Color::Black);
+                    crate::vga_println!("ls failed: {:?}", e);
+                }
+            }
+            super::vga::set_color(Color::LightGray, Color::Black);
+        }
+        "fsmkdir" => {
+            use super::vga::Color;
+            if parts[1].is_empty() {
+                super::vga::set_color(Color::LightRed, Color::Black);
+                crate::vga_println!("Usage: fsmkdir <path>");
+            } else {
+                match crate::fs::splaxfs::mkdir(parts[1]) {
+                    Ok(()) => {
+                        super::vga::set_color(Color::LightGreen, Color::Black);
+                        crate::vga_println!("Created directory: {}", parts[1]);
+                    }
+                    Err(e) => {
+                        super::vga::set_color(Color::LightRed, Color::Black);
+                        crate::vga_println!("mkdir failed: {:?}", e);
+                    }
+                }
+            }
+            super::vga::set_color(Color::LightGray, Color::Black);
+        }
+        "fscat" => {
+            use super::vga::Color;
+            if parts[1].is_empty() {
+                super::vga::set_color(Color::LightRed, Color::Black);
+                crate::vga_println!("Usage: fscat <file>");
+            } else {
+                match crate::fs::splaxfs::read(parts[1]) {
+                    Ok(data) => {
+                        if let Ok(text) = core::str::from_utf8(&data) {
+                            crate::vga_println!("{}", text);
+                        } else {
+                            crate::vga_println!("(binary data, {} bytes)", data.len());
+                        }
+                    }
+                    Err(e) => {
+                        super::vga::set_color(Color::LightRed, Color::Black);
+                        crate::vga_println!("Read failed: {:?}", e);
+                    }
+                }
+            }
+            super::vga::set_color(Color::LightGray, Color::Black);
+        }
+        "fswrite" => {
+            use super::vga::Color;
+            if parts[1].is_empty() {
+                super::vga::set_color(Color::LightRed, Color::Black);
+                crate::vga_println!("Usage: fswrite <file> <text>");
+            } else {
+                // Join remaining parts as content
+                let content = parts[2..].join(" ");
+                // First create the file if needed
+                let _ = crate::fs::splaxfs::create(parts[1]);
+                match crate::fs::splaxfs::write(parts[1], content.as_bytes()) {
+                    Ok(()) => {
+                        super::vga::set_color(Color::LightGreen, Color::Black);
+                        crate::vga_println!("Wrote {} bytes to {}", content.len(), parts[1]);
+                    }
+                    Err(e) => {
+                        super::vga::set_color(Color::LightRed, Color::Black);
+                        crate::vga_println!("Write failed: {:?}", e);
+                    }
+                }
+            }
+            super::vga::set_color(Color::LightGray, Color::Black);
         }
         "channels" => {
             use super::vga::Color;
@@ -1004,15 +1805,6 @@ fn execute_shell_command(cmd: &str) {
         }
         "pwd" => {
             crate::vga_println!("/");
-        }
-        "date" => {
-            // Read from CMOS RTC
-            let ticks = get_ticks();
-            let seconds = ticks / 100; // Assuming ~100Hz timer
-            let hours = (seconds / 3600) % 24;
-            let minutes = (seconds / 60) % 60;
-            let secs = seconds % 60;
-            crate::vga_println!("System time: {:02}:{:02}:{:02} (since boot)", hours, minutes, secs);
         }
         "free" => {
             use super::vga::Color;
@@ -1146,7 +1938,81 @@ fn execute_shell_command(cmd: &str) {
             crate::vga_println!("[  0.002] Serial console on COM1");
             crate::vga_println!("[  0.010] Memory manager initialized");
             crate::vga_println!("[  0.015] Interrupts enabled");
-            crate::vga_println!("[  0.020] VirtIO-net driver loaded");
+            crate::vga_println!("[  0.020] Network drivers: virtio-net, e1000, rtl8139");
+        }
+        "lspci" => {
+            use super::vga::Color;
+            super::vga::set_color(Color::Yellow, Color::Black);
+            crate::vga_println!("PCI Devices:");
+            super::vga::set_color(Color::LightGray, Color::Black);
+            
+            // Scan PCI bus
+            for bus in 0..8u8 {
+                for device in 0..32u8 {
+                    for function in 0..8u8 {
+                        let addr = 0x80000000u32
+                            | ((bus as u32) << 16)
+                            | ((device as u32) << 11)
+                            | ((function as u32) << 8);
+                        
+                        let vendor_device: u32;
+                        unsafe {
+                            asm!("mov dx, 0xCF8", "out dx, eax", "mov dx, 0xCFC", "in eax, dx",
+                                in("eax") addr, lateout("eax") vendor_device, out("dx") _);
+                        }
+                        
+                        let vendor_id = (vendor_device & 0xFFFF) as u16;
+                        let device_id = ((vendor_device >> 16) & 0xFFFF) as u16;
+                        
+                        if vendor_id == 0xFFFF || vendor_id == 0 {
+                            continue;
+                        }
+                        
+                        // Read class code
+                        let class_addr = addr | 0x08;
+                        let class_code: u32;
+                        unsafe {
+                            asm!("mov dx, 0xCF8", "out dx, eax", "mov dx, 0xCFC", "in eax, dx",
+                                in("eax") class_addr, lateout("eax") class_code, out("dx") _);
+                        }
+                        let class = ((class_code >> 24) & 0xFF) as u8;
+                        let subclass = ((class_code >> 16) & 0xFF) as u8;
+                        
+                        let class_name = match (class, subclass) {
+                            (0x01, 0x01) => "IDE Controller",
+                            (0x01, 0x06) => "SATA Controller",
+                            (0x02, 0x00) => "Ethernet Controller",
+                            (0x03, 0x00) => "VGA Controller",
+                            (0x04, _) => "Multimedia Controller",
+                            (0x06, 0x00) => "Host Bridge",
+                            (0x06, 0x01) => "ISA Bridge",
+                            (0x06, 0x04) => "PCI Bridge",
+                            (0x0C, 0x03) => "USB Controller",
+                            _ => match class {
+                                0x01 => "Storage Controller",
+                                0x02 => "Network Controller",
+                                0x03 => "Display Controller",
+                                0x06 => "Bridge Device",
+                                _ => "Unknown Device",
+                            },
+                        };
+                        
+                        let vendor_name = match vendor_id {
+                            0x8086 => "Intel",
+                            0x1AF4 => "VirtIO",
+                            0x10EC => "Realtek",
+                            0x1022 => "AMD",
+                            0x10DE => "NVIDIA",
+                            0x1234 => "QEMU",
+                            0x1B36 => "QEMU/RedHat",
+                            _ => "Unknown",
+                        };
+                        
+                        crate::vga_println!("{:02x}:{:02x}.{} {:04x}:{:04x} {} [{}]",
+                            bus, device, function, vendor_id, device_id, class_name, vendor_name);
+                    }
+                }
+            }
         }
         "ssh" => {
             use super::vga::Color;
@@ -1226,22 +2092,384 @@ fn execute_shell_command(cmd: &str) {
                 }
             }
         }
+        "wifi" => {
+            use super::vga::Color;
+            let subcmd = parts[1];
+            
+            match subcmd {
+                "scan" => {
+                    super::vga::set_color(Color::Yellow, Color::Black);
+                    crate::vga_println!("Scanning for WiFi networks...");
+                    super::vga::set_color(Color::LightGray, Color::Black);
+                    
+                    let wifi_guard = crate::net::wifi::WIFI_DEVICE.lock();
+                    if let Some(ref wifi_arc) = *wifi_guard {
+                        let mut wifi = wifi_arc.lock();
+                        match wifi.scan() {
+                            Ok(networks) => {
+                                if networks.is_empty() {
+                                    crate::vga_println!("No networks found");
+                                } else {
+                                    crate::vga_println!();
+                                    crate::vga_println!("SSID                           BSSID              CH  SIGNAL  SECURITY");
+                                    crate::vga_println!("─────────────────────────────────────────────────────────────────────────");
+                                    for net in &networks {
+                                        let sec_str = match net.security {
+                                            crate::net::wifi::WifiSecurity::Open => "Open",
+                                            crate::net::wifi::WifiSecurity::Wep => "WEP",
+                                            crate::net::wifi::WifiSecurity::WpaPsk => "WPA",
+                                            crate::net::wifi::WifiSecurity::Wpa2Psk => "WPA2",
+                                            crate::net::wifi::WifiSecurity::Wpa3Sae => "WPA3",
+                                            crate::net::wifi::WifiSecurity::Wpa2Enterprise => "WPA2-EAP",
+                                            crate::net::wifi::WifiSecurity::Wpa3Enterprise => "WPA3-EAP",
+                                            crate::net::wifi::WifiSecurity::Unknown => "?",
+                                        };
+                                        let signal_bars = if net.signal_quality >= 80 { "████" }
+                                            else if net.signal_quality >= 60 { "███░" }
+                                            else if net.signal_quality >= 40 { "██░░" }
+                                            else if net.signal_quality >= 20 { "█░░░" }
+                                            else { "░░░░" };
+                                        
+                                        // Color based on signal strength
+                                        if net.signal_quality >= 70 {
+                                            super::vga::set_color(Color::LightGreen, Color::Black);
+                                        } else if net.signal_quality >= 40 {
+                                            super::vga::set_color(Color::Yellow, Color::Black);
+                                        } else {
+                                            super::vga::set_color(Color::LightRed, Color::Black);
+                                        }
+                                        
+                                        crate::vga_println!("{:<30} {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}  {:>2}  {} {}  {}",
+                                            if net.ssid.len() > 30 { &net.ssid[..30] } else { &net.ssid },
+                                            net.bssid.0[0], net.bssid.0[1], net.bssid.0[2],
+                                            net.bssid.0[3], net.bssid.0[4], net.bssid.0[5],
+                                            net.channel, signal_bars, net.signal_dbm, sec_str);
+                                        super::vga::set_color(Color::LightGray, Color::Black);
+                                    }
+                                    crate::vga_println!();
+                                    crate::vga_println!("{} networks found", networks.len());
+                                }
+                            }
+                            Err(e) => {
+                                super::vga::set_color(Color::LightRed, Color::Black);
+                                crate::vga_println!("Scan failed: {:?}", e);
+                                super::vga::set_color(Color::LightGray, Color::Black);
+                            }
+                        }
+                    } else {
+                        super::vga::set_color(Color::LightRed, Color::Black);
+                        crate::vga_println!("No WiFi device found");
+                        super::vga::set_color(Color::LightGray, Color::Black);
+                    }
+                }
+                "connect" => {
+                    let ssid = parts[2];
+                    let password = if parts[3].is_empty() { None } else { Some(alloc::string::String::from(parts[3])) };
+                    
+                    if ssid.is_empty() {
+                        super::vga::set_color(Color::LightRed, Color::Black);
+                        crate::vga_println!("Usage: wifi connect <ssid> [password]");
+                        super::vga::set_color(Color::LightGray, Color::Black);
+                    } else {
+                        let wifi_guard = crate::net::wifi::WIFI_DEVICE.lock();
+                        if let Some(ref wifi_arc) = *wifi_guard {
+                            let mut wifi = wifi_arc.lock();
+                            let creds = crate::net::wifi::WifiCredentials {
+                                ssid: alloc::string::String::from(ssid),
+                                password,
+                                identity: None,
+                            };
+                            
+                            super::vga::set_color(Color::Yellow, Color::Black);
+                            crate::vga_println!("Connecting to '{}'...", ssid);
+                            super::vga::set_color(Color::LightGray, Color::Black);
+                            
+                            match wifi.connect(&creds) {
+                                Ok(()) => {
+                                    super::vga::set_color(Color::LightGreen, Color::Black);
+                                    crate::vga_println!("Connected to '{}'", ssid);
+                                    super::vga::set_color(Color::LightGray, Color::Black);
+                                }
+                                Err(e) => {
+                                    super::vga::set_color(Color::LightRed, Color::Black);
+                                    crate::vga_println!("Connection failed: {:?}", e);
+                                    super::vga::set_color(Color::LightGray, Color::Black);
+                                }
+                            }
+                        } else {
+                            super::vga::set_color(Color::LightRed, Color::Black);
+                            crate::vga_println!("No WiFi device found");
+                            super::vga::set_color(Color::LightGray, Color::Black);
+                        }
+                    }
+                }
+                "disconnect" => {
+                    let wifi_guard = crate::net::wifi::WIFI_DEVICE.lock();
+                    if let Some(ref wifi_arc) = *wifi_guard {
+                        let mut wifi = wifi_arc.lock();
+                        match wifi.disconnect() {
+                            Ok(()) => {
+                                super::vga::set_color(Color::Yellow, Color::Black);
+                                crate::vga_println!("Disconnected from WiFi");
+                                super::vga::set_color(Color::LightGray, Color::Black);
+                            }
+                            Err(e) => {
+                                super::vga::set_color(Color::LightRed, Color::Black);
+                                crate::vga_println!("Disconnect failed: {:?}", e);
+                                super::vga::set_color(Color::LightGray, Color::Black);
+                            }
+                        }
+                    } else {
+                        super::vga::set_color(Color::LightRed, Color::Black);
+                        crate::vga_println!("No WiFi device found");
+                        super::vga::set_color(Color::LightGray, Color::Black);
+                    }
+                }
+                "status" => {
+                    let wifi_guard = crate::net::wifi::WIFI_DEVICE.lock();
+                    if let Some(ref wifi_arc) = *wifi_guard {
+                        let wifi = wifi_arc.lock();
+                        let info = wifi.info();
+                        let state = wifi.state();
+                        let mac = wifi.mac_address();
+                        
+                        super::vga::set_color(Color::Yellow, Color::Black);
+                        crate::vga_println!("WiFi Status:");
+                        super::vga::set_color(Color::LightGray, Color::Black);
+                        crate::vga_println!("  Device:   {}", info.name);
+                        crate::vga_println!("  Vendor:   {}", info.vendor);
+                        crate::vga_println!("  MAC:      {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                            mac.0[0], mac.0[1], mac.0[2], mac.0[3], mac.0[4], mac.0[5]);
+                        
+                        let state_str = match state {
+                            crate::net::wifi::WifiState::Disconnected => "Disconnected",
+                            crate::net::wifi::WifiState::Scanning => "Scanning",
+                            crate::net::wifi::WifiState::Authenticating => "Authenticating",
+                            crate::net::wifi::WifiState::KeyExchange => "Key Exchange",
+                            crate::net::wifi::WifiState::Connected => "Connected",
+                            crate::net::wifi::WifiState::Failed => "Failed",
+                        };
+                        crate::vga_println!("  State:    {}", state_str);
+                        
+                        if let Some(network) = wifi.current_network() {
+                            crate::vga_println!("  SSID:     {}", network.ssid);
+                            crate::vga_println!("  BSSID:    {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                                network.bssid.0[0], network.bssid.0[1], network.bssid.0[2],
+                                network.bssid.0[3], network.bssid.0[4], network.bssid.0[5]);
+                            crate::vga_println!("  Channel:  {}", network.channel);
+                            crate::vga_println!("  Signal:   {} dBm ({}%)", network.signal_dbm, network.signal_quality);
+                        }
+                        
+                        let stats = wifi.stats();
+                        crate::vga_println!("  TX:       {} packets, {} bytes", stats.tx_packets, stats.tx_bytes);
+                        crate::vga_println!("  RX:       {} packets, {} bytes", stats.rx_packets, stats.rx_bytes);
+                    } else {
+                        super::vga::set_color(Color::LightRed, Color::Black);
+                        crate::vga_println!("No WiFi device found");
+                        super::vga::set_color(Color::LightGray, Color::Black);
+                    }
+                }
+                _ | "" => {
+                    crate::vga_println!("Usage: wifi <scan|connect|disconnect|status>");
+                    crate::vga_println!();
+                    crate::vga_println!("Commands:");
+                    crate::vga_println!("  scan                    - Scan for available networks");
+                    crate::vga_println!("  connect <ssid> [pass]   - Connect to a network");
+                    crate::vga_println!("  disconnect              - Disconnect from WiFi");
+                    crate::vga_println!("  status                  - Show connection status");
+                }
+            }
+        }
+        "iwconfig" => {
+            use super::vga::Color;
+            
+            let wifi_guard = crate::net::wifi::WIFI_DEVICE.lock();
+            if let Some(ref wifi_arc) = *wifi_guard {
+                let wifi = wifi_arc.lock();
+                let info = wifi.info();
+                let state = wifi.state();
+                let mac = wifi.mac_address();
+                
+                super::vga::set_color(Color::LightGreen, Color::Black);
+                crate::vga_print!("wlan0");
+                super::vga::set_color(Color::LightGray, Color::Black);
+                crate::vga_println!("    IEEE 802.11  ESSID:off/any");
+                crate::vga_println!("          Mode:Managed  Frequency:2.437 GHz  Access Point: Not-Associated");
+                crate::vga_println!("          Tx-Power={}  dBm", info.max_tx_power);
+                
+                let state_str = match state {
+                    crate::net::wifi::WifiState::Connected => "on",
+                    _ => "off",
+                };
+                crate::vga_println!("          Link Quality=0/70  Signal level=0 dBm");
+                crate::vga_println!("          Power Management:{}", state_str);
+                
+                if let Some(network) = wifi.current_network() {
+                    crate::vga_println!();
+                    super::vga::set_color(Color::LightGreen, Color::Black);
+                    crate::vga_print!("wlan0");
+                    super::vga::set_color(Color::LightGray, Color::Black);
+                    crate::vga_println!("    IEEE 802.11  ESSID:\"{}\"", network.ssid);
+                    crate::vga_println!("          Mode:Managed  Frequency:{}.{} GHz  Access Point: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                        network.frequency / 1000, (network.frequency % 1000) / 100,
+                        network.bssid.0[0], network.bssid.0[1], network.bssid.0[2],
+                        network.bssid.0[3], network.bssid.0[4], network.bssid.0[5]);
+                    crate::vga_println!("          Link Quality={}/70  Signal level={} dBm",
+                        (network.signal_quality as u32 * 70) / 100, network.signal_dbm);
+                }
+            } else {
+                crate::vga_println!("wlan0     No wireless extensions.");
+                crate::vga_println!();
+                super::vga::set_color(Color::Yellow, Color::Black);
+                crate::vga_println!("No WiFi adapter detected");
+                super::vga::set_color(Color::LightGray, Color::Black);
+            }
+        }
+        "iwlist" => {
+            use super::vga::Color;
+            let subcmd = parts[1];
+            
+            if subcmd == "scan" || subcmd.is_empty() {
+                // Alias for wifi scan
+                super::vga::set_color(Color::Yellow, Color::Black);
+                crate::vga_println!("wlan0     Scan results:");
+                super::vga::set_color(Color::LightGray, Color::Black);
+                
+                let wifi_guard = crate::net::wifi::WIFI_DEVICE.lock();
+                if let Some(ref wifi_arc) = *wifi_guard {
+                    let mut wifi = wifi_arc.lock();
+                    match wifi.scan() {
+                        Ok(networks) => {
+                            for (i, net) in networks.iter().enumerate() {
+                                crate::vga_println!("          Cell {:02} - Address: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                                    i + 1,
+                                    net.bssid.0[0], net.bssid.0[1], net.bssid.0[2],
+                                    net.bssid.0[3], net.bssid.0[4], net.bssid.0[5]);
+                                crate::vga_println!("                    Channel:{}", net.channel);
+                                crate::vga_println!("                    Frequency:{}.{} GHz",
+                                    net.frequency / 1000, (net.frequency % 1000) / 100);
+                                crate::vga_println!("                    Quality={}/70  Signal level={} dBm",
+                                    (net.signal_quality as u32 * 70) / 100, net.signal_dbm);
+                                
+                                let enc = if net.security != crate::net::wifi::WifiSecurity::Open { "on" } else { "off" };
+                                crate::vga_println!("                    Encryption key:{}", enc);
+                                crate::vga_println!("                    ESSID:\"{}\"", net.ssid);
+                                crate::vga_println!();
+                            }
+                        }
+                        Err(_) => {
+                            crate::vga_println!("          Scan failed");
+                        }
+                    }
+                } else {
+                    crate::vga_println!("wlan0     Interface doesn't support scanning.");
+                }
+            } else {
+                crate::vga_println!("Usage: iwlist <interface> scan");
+            }
+        }
         "lscpu" => {
             crate::vga_println!("Architecture:        x86_64");
             crate::vga_println!("CPU op-modes:        64-bit");
-            crate::vga_println!("CPU(s):              1");
+            crate::vga_println!("CPU(s):              {}", crate::sched::smp::cpu_count());
             crate::vga_println!("Vendor ID:           GenuineIntel");
             crate::vga_println!("Model name:          QEMU Virtual CPU");
         }
-        "reboot" | "shutdown" => {
+        "proc" => {
             use super::vga::Color;
-            super::vga::set_color(Color::LightRed, Color::Black);
-            crate::vga_println!("System halting...");
-            super::vga::set_color(Color::LightGray, Color::Black);
-            // Actually halt the CPU
-            loop {
-                unsafe { asm!("hlt"); }
+            let path = if parts[1].is_empty() { "" } else { parts[1] };
+            
+            if path.is_empty() {
+                // List /proc entries
+                super::vga::set_color(Color::Yellow, Color::Black);
+                crate::vga_println!("/proc:");
+                super::vga::set_color(Color::LightGray, Color::Black);
+                for entry in crate::fs::procfs::list_proc() {
+                    let type_char = match entry.file_type {
+                        crate::fs::procfs::ProcFileType::Directory => 'd',
+                        crate::fs::procfs::ProcFileType::File => '-',
+                        crate::fs::procfs::ProcFileType::Link => 'l',
+                    };
+                    if entry.file_type == crate::fs::procfs::ProcFileType::Directory {
+                        super::vga::set_color(Color::LightBlue, Color::Black);
+                    } else if entry.file_type == crate::fs::procfs::ProcFileType::Link {
+                        super::vga::set_color(Color::LightCyan, Color::Black);
+                    }
+                    crate::vga_println!("{} {}", type_char, entry.name);
+                    super::vga::set_color(Color::LightGray, Color::Black);
+                }
+            } else {
+                // Read specific proc file
+                if let Some(content) = crate::fs::procfs::read_proc_file(path) {
+                    crate::vga_print!("{}", content);
+                } else {
+                    super::vga::set_color(Color::LightRed, Color::Black);
+                    crate::vga_println!("proc: not found: {}", path);
+                }
             }
+            super::vga::set_color(Color::LightGray, Color::Black);
+        }
+        "lsdev" => {
+            use super::vga::Color;
+            super::vga::set_color(Color::Yellow, Color::Black);
+            crate::vga_println!("/dev:");
+            super::vga::set_color(Color::LightGray, Color::Black);
+            crate::vga_println!("NAME       TYPE    MAJOR  MINOR");
+            
+            for entry in crate::fs::devfs::list_dev() {
+                let type_str = match entry.device_type {
+                    crate::fs::devfs::DeviceType::Char => "char",
+                    crate::fs::devfs::DeviceType::Block => "block",
+                    crate::fs::devfs::DeviceType::Net => "net",
+                };
+                super::vga::set_color(Color::LightGreen, Color::Black);
+                crate::vga_print!("{:<10} ", entry.name);
+                super::vga::set_color(Color::LightGray, Color::Black);
+                crate::vga_println!("{:<8}{:>5}  {:>5}", type_str, entry.major, entry.minor);
+            }
+        }
+        "sysinfo" => {
+            use super::vga::Color;
+            let path = if parts[1].is_empty() { "" } else { parts[1] };
+            
+            if path.is_empty() {
+                // List /sys entries
+                super::vga::set_color(Color::Yellow, Color::Black);
+                crate::vga_println!("/sys:");
+                super::vga::set_color(Color::LightGray, Color::Black);
+                for entry in crate::fs::sysfs::list_sys() {
+                    super::vga::set_color(Color::LightBlue, Color::Black);
+                    crate::vga_println!("d {}", entry.name);
+                    super::vga::set_color(Color::LightGray, Color::Black);
+                }
+            } else {
+                // Read specific sys file
+                if let Some(content) = crate::fs::sysfs::read_sys_file(path) {
+                    crate::vga_print!("{}", content);
+                } else {
+                    super::vga::set_color(Color::LightRed, Color::Black);
+                    crate::vga_println!("sysinfo: not found: {}", path);
+                }
+            }
+            super::vga::set_color(Color::LightGray, Color::Black);
+        }
+        "shutdown" | "poweroff" => {
+            use super::vga::Color;
+            use super::power;
+            
+            super::vga::set_color(Color::Yellow, Color::Black);
+            power::shutdown_message();
+            super::vga::set_color(Color::LightGray, Color::Black);
+            power::shutdown();
+        }
+        "reboot" => {
+            use super::vga::Color;
+            use super::power;
+            
+            super::vga::set_color(Color::Yellow, Color::Black);
+            power::reboot_message();
+            super::vga::set_color(Color::LightGray, Color::Black);
+            power::reboot();
         }
         "" => {}
         _ => {
@@ -1298,6 +2526,20 @@ fn execute_serial_command(cmd: &str) {
             serial_println!("  echo <text>   - Print text (or > file)");
             serial_println!("  pwd           - Print working directory");
             serial_println!();
+            serial_println!("Block Devices:");
+            serial_println!("  lsblk         - List block devices");
+            serial_println!("  blkinfo <dev> - Block device info");
+            serial_println!("  diskread <dev> <sector> - Read sector");
+            serial_println!();
+            serial_println!("Filesystem (SplaxFS):");
+            serial_println!("  mkfs <dev>    - Format device with SplaxFS");
+            serial_println!("  mount <dev> <path> - Mount filesystem");
+            serial_println!("  umount <path> - Unmount filesystem");
+            serial_println!("  fsls <path>   - List directory on disk");
+            serial_println!("  fsmkdir <path> - Create directory on disk");
+            serial_println!("  fscat <file>  - Read file from disk");
+            serial_println!("  fswrite <file> <text> - Write to file");
+            serial_println!();
             serial_println!("Network:");
             serial_println!("  ping [-c n] <ip> - ICMP ping");
             serial_println!("  traceroute <ip> - Trace route to host");
@@ -1321,6 +2563,7 @@ fn execute_serial_command(cmd: &str) {
             serial_println!("  hostname      - System hostname");
             serial_println!("  date          - System time");
             serial_println!("  lscpu         - CPU information");
+            serial_println!("  lspci         - List PCI devices");
             serial_println!("  dmesg         - Kernel messages");
             serial_println!("  env           - Environment vars");
             serial_println!("  id            - User/group IDs");
@@ -1658,6 +2901,199 @@ fn execute_serial_command(cmd: &str) {
             serial_println!("  s-store (storage)     - Storage abstraction");
             serial_println!("  s-gate  (network)     - Network gateway");
         }
+        "lsblk" => {
+            serial_println!("Block Devices:");
+            serial_println!();
+            serial_println!("NAME    SIZE        SECTORS     MODEL");
+            
+            let devices = crate::block::list_devices();
+            if devices.is_empty() {
+                serial_println!("(no block devices)");
+            } else {
+                for dev in devices {
+                    let size_mb = (dev.total_sectors * dev.sector_size as u64) / (1024 * 1024);
+                    serial_println!("{:<8}{:>6} MB    {:>10}  {}", 
+                        dev.name, size_mb, dev.total_sectors, dev.model);
+                }
+            }
+        }
+        "blkinfo" => {
+            if parts[1].is_empty() {
+                serial_println!("Usage: blkinfo <device>");
+                serial_println!("Example: blkinfo vda");
+            } else {
+                let dev_name = parts[1];
+                match crate::block::with_device(dev_name, |dev| dev.info()) {
+                    Ok(info) => {
+                        serial_println!("Block Device: {}", info.name);
+                        serial_println!();
+                        serial_println!("Model:        {}", info.model);
+                        serial_println!("Sectors:      {}", info.total_sectors);
+                        serial_println!("Sector Size:  {} bytes", info.sector_size);
+                        let size_mb = (info.total_sectors * info.sector_size as u64) / (1024 * 1024);
+                        serial_println!("Total Size:   {} MB", size_mb);
+                        serial_println!("Read-Only:    {}", if info.read_only { "yes" } else { "no" });
+                    }
+                    Err(e) => {
+                        serial_println!("Device not found: {}", dev_name);
+                        serial_println!("Error: {:?}", e);
+                    }
+                }
+            }
+        }
+        "diskread" => {
+            if parts[1].is_empty() || parts[2].is_empty() {
+                serial_println!("Usage: diskread <device> <sector>");
+                serial_println!("Example: diskread vda 0");
+            } else {
+                let dev_name = parts[1];
+                if let Ok(sector) = parts[2].parse::<u64>() {
+                    match crate::block::read(dev_name, sector, 1) {
+                        Ok(data) => {
+                            serial_println!("Sector {} from {}:", sector, dev_name);
+                            serial_println!();
+                            
+                            // Print hex dump (first 256 bytes)
+                            for (i, chunk) in data.iter().take(256).collect::<alloc::vec::Vec<_>>().chunks(16).enumerate() {
+                                serial_print!("{:04x}: ", i * 16);
+                                for byte in chunk {
+                                    serial_print!("{:02x} ", byte);
+                                }
+                                serial_print!(" ");
+                                for byte in chunk {
+                                    let c = **byte;
+                                    if c >= 0x20 && c < 0x7f {
+                                        serial_print!("{}", c as char);
+                                    } else {
+                                        serial_print!(".");
+                                    }
+                                }
+                                serial_println!();
+                            }
+                        }
+                        Err(e) => {
+                            serial_println!("Read failed: {:?}", e);
+                        }
+                    }
+                } else {
+                    serial_println!("Invalid sector number: {}", parts[2]);
+                }
+            }
+        }
+        // === Filesystem Commands (Serial) ===
+        "mkfs" => {
+            if parts[1].is_empty() {
+                serial_println!("Usage: mkfs <device>");
+                serial_println!("Example: mkfs vda");
+            } else {
+                match crate::fs::splaxfs::format(parts[1]) {
+                    Ok(()) => {
+                        serial_println!("[OK] Formatted {} with SplaxFS", parts[1]);
+                    }
+                    Err(e) => {
+                        serial_println!("[ERROR] Format failed: {:?}", e);
+                    }
+                }
+            }
+        }
+        "mount" => {
+            if parts[1].is_empty() || parts[2].is_empty() {
+                serial_println!("Usage: mount <device> <path>");
+                serial_println!("Example: mount vda /mnt");
+            } else {
+                match crate::fs::splaxfs::mount(parts[1], parts[2]) {
+                    Ok(()) => {
+                        serial_println!("[OK] Mounted {} at {}", parts[1], parts[2]);
+                    }
+                    Err(e) => {
+                        serial_println!("[ERROR] Mount failed: {:?}", e);
+                    }
+                }
+            }
+        }
+        "umount" => {
+            if parts[1].is_empty() {
+                serial_println!("Usage: umount <path>");
+            } else {
+                match crate::fs::splaxfs::unmount(parts[1]) {
+                    Ok(()) => {
+                        serial_println!("[OK] Unmounted {}", parts[1]);
+                    }
+                    Err(e) => {
+                        serial_println!("[ERROR] Unmount failed: {:?}", e);
+                    }
+                }
+            }
+        }
+        "fsls" => {
+            let path = if parts[1].is_empty() { "/mnt" } else { parts[1] };
+            match crate::fs::splaxfs::ls(path) {
+                Ok(entries) => {
+                    serial_println!("Directory: {}", path);
+                    for (name, file_type, size) in entries {
+                        let type_char = match file_type {
+                            crate::fs::splaxfs::FileType::Directory => 'd',
+                            crate::fs::splaxfs::FileType::Regular => '-',
+                            _ => '?',
+                        };
+                        serial_println!("{}  {:>8}  {}", type_char, size, name);
+                    }
+                }
+                Err(e) => {
+                    serial_println!("[ERROR] ls failed: {:?}", e);
+                }
+            }
+        }
+        "fsmkdir" => {
+            if parts[1].is_empty() {
+                serial_println!("Usage: fsmkdir <path>");
+            } else {
+                match crate::fs::splaxfs::mkdir(parts[1]) {
+                    Ok(()) => {
+                        serial_println!("[OK] Created directory: {}", parts[1]);
+                    }
+                    Err(e) => {
+                        serial_println!("[ERROR] mkdir failed: {:?}", e);
+                    }
+                }
+            }
+        }
+        "fscat" => {
+            if parts[1].is_empty() {
+                serial_println!("Usage: fscat <file>");
+            } else {
+                match crate::fs::splaxfs::read(parts[1]) {
+                    Ok(data) => {
+                        if let Ok(text) = core::str::from_utf8(&data) {
+                            serial_println!("{}", text);
+                        } else {
+                            serial_println!("(binary data, {} bytes)", data.len());
+                        }
+                    }
+                    Err(e) => {
+                        serial_println!("[ERROR] Read failed: {:?}", e);
+                    }
+                }
+            }
+        }
+        "fswrite" => {
+            if parts[1].is_empty() {
+                serial_println!("Usage: fswrite <file> <text>");
+            } else {
+                // Join remaining parts as content
+                let content = parts[2..].join(" ");
+                // First create the file if needed
+                let _ = crate::fs::splaxfs::create(parts[1]);
+                match crate::fs::splaxfs::write(parts[1], content.as_bytes()) {
+                    Ok(()) => {
+                        serial_println!("[OK] Wrote {} bytes to {}", content.len(), parts[1]);
+                    }
+                    Err(e) => {
+                        serial_println!("[ERROR] Write failed: {:?}", e);
+                    }
+                }
+            }
+        }
         "arp" => {
             serial_println!("Address                  HWtype  HWaddress           Flags Mask  Iface");
             
@@ -1766,13 +3202,19 @@ fn execute_serial_command(cmd: &str) {
         "pwd" => {
             serial_println!("/");
         }
-        "date" => {
-            let ticks = get_ticks();
-            let seconds = ticks / 100;
-            let hours = (seconds / 3600) % 24;
-            let minutes = (seconds / 60) % 60;
-            let secs = seconds % 60;
-            serial_println!("System time: {:02}:{:02}:{:02} (since boot)", hours, minutes, secs);
+        "date" | "time" => {
+            use super::rtc;
+            let now = rtc::read_rtc();
+            serial_println!("{} {} {:2} {:02}:{:02}:{:02} UTC {}",
+                now.day_name(), now.month_name(), now.day,
+                now.hour, now.minute, now.second, now.year);
+        }
+        "uptime" => {
+            use super::rtc;
+            let now = rtc::read_rtc();
+            let uptime = rtc::format_uptime();
+            serial_println!(" {:02}:{:02}:{:02} up {}, 1 user, load average: 0.00, 0.00, 0.00",
+                now.hour, now.minute, now.second, uptime);
         }
         "free" => {
             let stats = crate::mm::heap_stats();
@@ -1891,11 +3333,19 @@ fn execute_serial_command(cmd: &str) {
             // ANSI clear screen for serial terminal
             serial_print!("\x1b[2J\x1b[H");
         }
-        "reboot" | "shutdown" => {
-            serial_println!("System halting...");
-            loop {
-                unsafe { asm!("hlt"); }
-            }
+        "shutdown" | "poweroff" => {
+            use super::power;
+            serial_println!();
+            serial_println!("System is going down for poweroff NOW!");
+            serial_println!();
+            power::shutdown();
+        }
+        "reboot" => {
+            use super::power;
+            serial_println!();
+            serial_println!("System is going down for reboot NOW!");
+            serial_println!();
+            power::reboot();
         }
         "" => {}
         _ => {
@@ -1945,6 +3395,133 @@ pub fn init_pic() {
 
     let mut serial = SERIAL.lock();
     let _ = writeln!(serial, "[x86_64] PIC initialized");
+    drop(serial);
+    
+    // Initialize the 8254 PIT (Programmable Interval Timer) for periodic interrupts
+    init_pit();
+    
+    // Initialize the 8042 keyboard controller
+    init_keyboard_controller();
+}
+
+/// Initialize the 8042 PS/2 keyboard controller.
+/// 
+/// This ensures the keyboard is enabled and ready to generate interrupts.
+/// Simplified initialization that works with QEMU after GRUB.
+fn init_keyboard_controller() {
+    const PS2_DATA: u16 = 0x60;
+    const PS2_STATUS: u16 = 0x64;
+    const PS2_COMMAND: u16 = 0x64;
+    
+    // Helper to wait for input buffer to be empty (bit 1 = 0)
+    fn wait_for_write() {
+        for _ in 0..100000 {
+            let status: u8;
+            unsafe { asm!("in al, dx", out("al") status, in("dx") PS2_STATUS); }
+            if (status & 0x02) == 0 { return; }
+        }
+    }
+    
+    // Helper to flush output buffer
+    fn flush_output() {
+        for _ in 0..100 {
+            let status: u8;
+            unsafe { asm!("in al, dx", out("al") status, in("dx") PS2_STATUS); }
+            if (status & 0x01) != 0 {
+                let _: u8;
+                unsafe { asm!("in al, dx", out("al") _, in("dx") PS2_DATA); }
+            } else {
+                break;
+            }
+            // Small delay
+            for _ in 0..100 { unsafe { asm!("nop"); } }
+        }
+    }
+    
+    // Flush any stale data
+    flush_output();
+    
+    // Read current controller configuration
+    wait_for_write();
+    unsafe { asm!("out dx, al", in("dx") PS2_COMMAND, in("al") 0x20u8); }
+    
+    // Wait for data
+    for _ in 0..100000 {
+        let status: u8;
+        unsafe { asm!("in al, dx", out("al") status, in("dx") PS2_STATUS); }
+        if (status & 0x01) != 0 { break; }
+    }
+    
+    let old_config: u8;
+    unsafe { asm!("in al, dx", out("al") old_config, in("dx") PS2_DATA); }
+    
+    // Enable first port interrupt (bit 0), keep translation enabled (bit 6)
+    // This is important - GRUB may have left keyboard in translated mode
+    let new_config = old_config | 0x01 | 0x40;  // Enable IRQ1 and translation
+    
+    // Write new config
+    wait_for_write();
+    unsafe { asm!("out dx, al", in("dx") PS2_COMMAND, in("al") 0x60u8); }
+    wait_for_write();
+    unsafe { asm!("out dx, al", in("dx") PS2_DATA, in("al") new_config); }
+    
+    // Enable first PS/2 port (may already be enabled by GRUB)
+    wait_for_write();
+    unsafe { asm!("out dx, al", in("dx") PS2_COMMAND, in("al") 0xAEu8); }
+    
+    // Flush any pending data
+    flush_output();
+    
+    // Enable keyboard scanning (F4 command)
+    wait_for_write();
+    unsafe { asm!("out dx, al", in("dx") PS2_DATA, in("al") 0xF4u8); }
+    
+    // Small delay then flush
+    for _ in 0..10000 { unsafe { asm!("nop"); } }
+    flush_output();
+    
+    // Read the PIC mask to verify IRQ1 is enabled
+    let pic_mask: u8;
+    unsafe { asm!("in al, dx", out("al") pic_mask, in("dx") 0x21u16); }
+    
+    let mut serial = SERIAL.lock();
+    let _ = writeln!(serial, "[x86_64] PS/2 keyboard: old_config={:#x} new_config={:#x} pic_mask={:#x}", 
+        old_config, new_config, pic_mask);
+}
+
+/// Initialize the 8254 PIT for periodic timer interrupts.
+/// 
+/// The PIT has a base frequency of 1.193182 MHz.
+/// We'll set it to ~100 Hz (every 10ms) for responsive keyboard handling.
+fn init_pit() {
+    // PIT ports:
+    // 0x40 - Channel 0 data (connected to IRQ0)
+    // 0x43 - Command register
+    
+    // Channel 0, rate generator mode, 16-bit binary
+    // Command byte: 0x36 = 00110110
+    //   Bits 7-6: 00 = Channel 0
+    //   Bits 5-4: 11 = Access mode: lobyte/hibyte
+    //   Bits 3-1: 011 = Mode 3 (square wave generator)
+    //   Bit 0: 0 = Binary mode
+    const PIT_COMMAND: u16 = 0x43;
+    const PIT_CHANNEL0: u16 = 0x40;
+    
+    // Divisor for ~100 Hz: 1193182 / 100 = 11932 = 0x2E9C
+    // Actually let's use ~1000 Hz for very responsive input: 1193182 / 1000 = 1193 = 0x04A9
+    const DIVISOR: u16 = 1193; // ~1000 Hz (1ms intervals)
+    
+    unsafe {
+        // Send command byte
+        asm!("out dx, al", in("dx") PIT_COMMAND, in("al") 0x36u8);
+        
+        // Send divisor (low byte first, then high byte)
+        asm!("out dx, al", in("dx") PIT_CHANNEL0, in("al") (DIVISOR & 0xFF) as u8);
+        asm!("out dx, al", in("dx") PIT_CHANNEL0, in("al") ((DIVISOR >> 8) & 0xFF) as u8);
+    }
+    
+    let mut serial = SERIAL.lock();
+    let _ = writeln!(serial, "[x86_64] PIT initialized at ~1000 Hz");
 }
 
 /// Enable interrupts.

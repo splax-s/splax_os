@@ -1,19 +1,39 @@
 //! # Filesystem Subsystem
 //!
-//! Splax OS in-memory filesystem (ramfs).
+//! Splax OS filesystem support:
+//! - VFS: Virtual Filesystem layer
+//! - RamFS: VFS-compatible in-memory filesystem
+//! - ProcFS: Process/system information (/proc)
+//! - DevFS: Device nodes (/dev)
+//! - SysFS: Kernel objects (/sys)
+//! - SplaxFS: On-disk persistent filesystem
 //!
-//! ## Design
+//! ## Architecture
 //!
-//! The filesystem is a simple in-memory tree structure:
-//! - All files and directories exist only in RAM
-//! - Files have content stored as byte vectors
-//! - Directories contain named children
-//! - No persistence (data is lost on reboot)
+//! ```text
+//! ┌─────────────────────────────────────────────┐
+//! │              VFS Layer                       │
+//! │  (mount, open, read, write, close, etc.)    │
+//! └─────────────┬───────────────────────────────┘
+//!               │
+//!     ┌─────────┼─────────┬─────────┬─────────┐
+//!     ▼         ▼         ▼         ▼         ▼
+//! ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐
+//! │ RamFS │ │ProcFS │ │ DevFS │ │ SysFS │ │SplaxFS│
+//! └───────┘ └───────┘ └───────┘ └───────┘ └───────┘
+//! ```
 //!
 //! ## API
 //!
 //! The filesystem uses capability-gated access. Operations require
 //! appropriate capabilities for the target path.
+
+pub mod vfs;
+pub mod ramfs;
+pub mod splaxfs;
+pub mod procfs;
+pub mod devfs;
+pub mod sysfs;
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -439,6 +459,7 @@ pub fn init() {
         return; // Already initialized
     }
 
+    // Initialize legacy RamFs
     let mut fs = FILESYSTEM.lock();
     *fs = RamFs::new(4 * 1024 * 1024);
 
@@ -449,6 +470,9 @@ pub fn init() {
     let _ = fs.create_dir("/home");
     let _ = fs.create_dir("/var");
     let _ = fs.create_dir("/var/log");
+    let _ = fs.create_dir("/proc");
+    let _ = fs.create_dir("/dev");
+    let _ = fs.create_dir("/sys");
 
     // Create some initial files
     let _ = fs.create_file("/etc/hostname");

@@ -123,6 +123,19 @@ pub fn _print(args: fmt::Arguments) {
     SERIAL.lock().write_fmt(args).unwrap();
 }
 
+/// Print to the serial port
+#[macro_export]
+macro_rules! serial_print {
+    ($($arg:tt)*) => ($crate::arch::x86_64::serial::_print(format_args!($($arg)*)));
+}
+
+/// Print with newline to the serial port
+#[macro_export]
+macro_rules! serial_println {
+    () => ($crate::serial_print!("\n"));
+    ($($arg:tt)*) => ($crate::serial_print!("{}\n", format_args!($($arg)*)));
+}
+
 /// Reads a byte from an I/O port.
 #[inline(always)]
 unsafe fn inb(port: u16) -> u8 {

@@ -304,3 +304,29 @@ pub enum SchedulerError {
     /// Invalid scheduling class
     InvalidClass,
 }
+
+/// Global scheduler instance
+static SCHEDULER: spin::Lazy<Scheduler> = spin::Lazy::new(|| {
+    Scheduler::new(SchedulerConfig::default())
+});
+
+/// Gets the global scheduler
+pub fn scheduler() -> &'static Scheduler {
+    &SCHEDULER
+}
+
+/// Returns the count of running processes
+pub fn running_process_count() -> usize {
+    let processes = SCHEDULER.processes.lock();
+    processes.values().filter(|p| p.state == ProcessState::Running).count()
+}
+
+/// Returns the total process count
+pub fn total_process_count() -> usize {
+    SCHEDULER.processes.lock().len()
+}
+
+/// Lists all processes
+pub fn list_processes() -> Vec<ProcessInfo> {
+    SCHEDULER.processes.lock().values().cloned().collect()
+}

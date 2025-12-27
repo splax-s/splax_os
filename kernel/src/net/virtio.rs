@@ -651,6 +651,7 @@ pub fn get_io_base() -> u16 {
 }
 
 /// Probes for VirtIO network devices.
+/// Returns None if no real VirtIO device is found (no mock fallback).
 pub fn probe_virtio_net() -> Option<Arc<Mutex<dyn NetworkDevice + Send>>> {
     #[cfg(target_arch = "x86_64")]
     {
@@ -665,11 +666,19 @@ pub fn probe_virtio_net() -> Option<Arc<Mutex<dyn NetworkDevice + Send>>> {
         }
         
         if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
-            let _ = writeln!(serial, "[virtio] No VirtIO device found, using mock driver");
+            let _ = writeln!(serial, "[virtio] No VirtIO device found");
         }
     }
     
-    create_mock_virtio_net()
+    None
+}
+
+/// Creates a mock VirtIO network device for testing when no real hardware is available.
+pub fn create_mock_device() -> Arc<Mutex<dyn NetworkDevice + Send>> {
+    let mac = MacAddress([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
+    let device = VirtioNetDevice::new(0, mac);
+    let _ = device.init();
+    Arc::new(Mutex::new(device))
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -793,11 +802,4 @@ fn read_virtio_mac(io_base: u16) -> MacAddress {
         mac[i] = unsafe { port_read_u8(config_offset + i as u16) };
     }
     MacAddress(mac)
-}
-
-fn create_mock_virtio_net() -> Option<Arc<Mutex<dyn NetworkDevice + Send>>> {
-    let mac = MacAddress([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
-    let device = VirtioNetDevice::new(0, mac);
-    let _ = device.init();
-    Some(Arc::new(Mutex::new(device)))
 }

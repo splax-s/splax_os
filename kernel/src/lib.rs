@@ -36,6 +36,7 @@
 extern crate alloc;
 
 pub mod arch;
+pub mod block;
 pub mod cap;
 pub mod fs;
 pub mod ipc;
@@ -107,6 +108,14 @@ impl Kernel {
     /// This function never returns.
     pub fn run(&mut self) -> ! {
         loop {
+            // Process pending keyboard input from the lock-free ring buffer
+            #[cfg(target_arch = "x86_64")]
+            arch::x86_64::interrupts::process_keyboard_input();
+            
+            // Process pending serial input from the lock-free ring buffer
+            #[cfg(target_arch = "x86_64")]
+            arch::x86_64::interrupts::process_serial_input();
+            
             // Run scheduler
             if let Some(next_process) = self.scheduler.schedule() {
                 // Switch to next process
@@ -197,11 +206,20 @@ pub extern "C" fn kernel_main(_boot_info: *const u8) -> ! {
     // Initialize filesystem
     fs::init();
     
+    // Initialize block subsystem (VirtIO-blk, etc.)
+    block::init();
+    
+    serial_println!("[kernel] About to init network...");
+    
     // Initialize network subsystem
     net::init();
     
+    serial_println!("[kernel] Network init complete, running diagnostics...");
+    
     // Run network diagnostics
     net::run_diagnostics();
+    
+    serial_println!("[kernel] Diagnostics complete");
 
     // Print completion messages and show VGA status
     #[cfg(target_arch = "x86_64")]
@@ -245,6 +263,7 @@ pub extern "C" fn kernel_main(_boot_info: *const u8) -> ! {
 ///
 /// In a capability-secure system, panics are serious. We log as much
 /// information as possible before halting.
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "x86_64")]

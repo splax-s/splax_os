@@ -20,6 +20,8 @@ pub mod interrupts;
 pub mod keyboard;
 pub mod lapic;
 pub mod paging;
+pub mod power;
+pub mod rtc;
 pub mod serial;
 pub mod vga;
 
@@ -73,6 +75,15 @@ pub fn init() {
     {
         let mut s = serial::SERIAL.lock();
         let _ = writeln!(s, "[x86_64] PIC initialized");
+    }
+    
+    // Initialize RTC and record boot time
+    rtc::init();
+    {
+        let mut s = serial::SERIAL.lock();
+        let now = rtc::read_rtc();
+        let _ = writeln!(s, "[x86_64] RTC initialized: {}-{:02}-{:02} {:02}:{:02}:{:02}",
+            now.year, now.month, now.day, now.hour, now.minute, now.second);
     }
     
     // Enable interrupts

@@ -1,19 +1,24 @@
-//! # Process Management
+//! # Process Management Module
 //!
-//! Process creation, lifecycle management, and resource tracking.
+//! This module provides process creation, lifecycle management, and execution.
 //!
-//! ## Process Model
+//! ## Submodules
 //!
-//! In Splax OS, processes are lightweight and capability-bound:
-//! - Each process has a unique ID and a capability token
-//! - Processes can only access resources they have capabilities for
-//! - No users, groups, or traditional permissions
+//! - `elf`: ELF binary parser
+//! - `exec`: Process execution (loading and running binaries)
+//! - `signal`: Signal handling (POSIX-style async events)
+//! - `wait`: Process exit and wait (child reaping)
 //!
-//! ## Address Space
+//! ## Core Types
 //!
-//! Each process has its own address space:
-//! - User space: 0x0000_0000_0000 - 0x0000_7FFF_FFFF_FFFF
-//! - Kernel mapped: 0xFFFF_8000_0000_0000 - 0xFFFF_FFFF_FFFF_FFFF
+//! - `Process`: Process descriptor with context, stacks, capabilities
+//! - `ProcessManager`: Global process manager singleton
+//! - `ProcessError`: Process operation errors
+
+pub mod elf;
+pub mod exec;
+pub mod signal;
+pub mod wait;
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -76,6 +81,10 @@ pub struct Process {
     pub cpu_time: u64,
     /// Time when process was created
     pub created_at: u64,
+    /// Program break (for brk syscall)
+    pub brk: u64,
+    /// Working directory
+    pub cwd: String,
 }
 
 impl Process {
@@ -112,6 +121,8 @@ impl Process {
             children: Vec::new(),
             cpu_time: 0,
             created_at: 0,
+            brk: 0,
+            cwd: String::from("/"),
         }
     }
 
@@ -147,7 +158,48 @@ impl Process {
             children: Vec::new(),
             cpu_time: 0,
             created_at: 0,
+            brk: 0,
+            cwd: String::from("/"),
         }
+    }
+
+    /// Creates a user process from an ELF binary.
+    pub fn from_elf(
+        pid: ProcessId,
+        name: String,
+        parent: ProcessId,
+        elf_data: &[u8],
+        page_table: u64,
+        kernel_stack: u64,
+        cap_token: CapabilityToken,
+    ) -> Result<Self, exec::ExecError> {
+        // Parse ELF and prepare execution context
+        let (elf_info, ctx, _stack_data) = exec::prepare_exec(elf_data, &[&name], &[])?;
+        
+        #[cfg(target_arch = "x86_64")]
+        let context = Context::new_user(ctx.entry, ctx.stack_ptr, page_table);
+
+        Ok(Self {
+            pid,
+            name,
+            parent,
+            state: ProcessState::Ready,
+            class: SchedulingClass::Interactive,
+            priority: 128,
+            #[cfg(target_arch = "x86_64")]
+            context,
+            page_table,
+            kernel_stack,
+            kernel_stack_size: KERNEL_STACK_SIZE,
+            user_stack: Some(ctx.stack_ptr),
+            cap_token,
+            exit_code: None,
+            children: Vec::new(),
+            cpu_time: 0,
+            created_at: 0,
+            brk: ctx.brk,
+            cwd: String::from("/"),
+        })
     }
 }
 
@@ -222,6 +274,29 @@ impl ProcessManager {
         Ok(pid)
     }
 
+    /// Spawns a process from an ELF binary.
+    pub fn spawn_elf(
+        &self,
+        name: String,
+        elf_data: &[u8],
+        page_table: u64,
+        cap_token: CapabilityToken,
+    ) -> Result<ProcessId, ProcessError> {
+        let pid = self.alloc_pid();
+        let parent = self.current_pid().unwrap_or(ProcessId::KERNEL);
+        
+        // Allocate kernel stack
+        let kernel_stack = 0x0000_0001_0000_0000 + (pid.0 * KERNEL_STACK_SIZE as u64);
+        
+        let process = Process::from_elf(
+            pid, name, parent, elf_data, page_table, kernel_stack, cap_token
+        ).map_err(|_| ProcessError::InvalidElf)?;
+        
+        self.processes.lock().insert(pid, process);
+        
+        Ok(pid)
+    }
+
     /// Returns the current process ID.
     pub fn current_pid(&self) -> Option<ProcessId> {
         *self.current.lock()
@@ -257,6 +332,8 @@ impl ProcessManager {
             children: p.children.clone(),
             cpu_time: p.cpu_time,
             created_at: p.created_at,
+            brk: p.brk,
+            cwd: p.cwd.clone(),
         })
     }
 
@@ -266,6 +343,22 @@ impl ProcessManager {
         let process = processes.get_mut(&pid).ok_or(ProcessError::NotFound)?;
         process.state = state;
         Ok(())
+    }
+
+    /// Updates process brk (for memory allocation).
+    pub fn set_brk(&self, pid: ProcessId, brk: u64) -> Result<u64, ProcessError> {
+        let mut processes = self.processes.lock();
+        let process = processes.get_mut(&pid).ok_or(ProcessError::NotFound)?;
+        let old_brk = process.brk;
+        process.brk = brk;
+        Ok(old_brk)
+    }
+
+    /// Gets process brk.
+    pub fn get_brk(&self, pid: ProcessId) -> Result<u64, ProcessError> {
+        let processes = self.processes.lock();
+        let process = processes.get(&pid).ok_or(ProcessError::NotFound)?;
+        Ok(process.brk)
     }
 
     /// Terminates a process.
@@ -328,6 +421,14 @@ impl ProcessManager {
     pub fn process_count(&self) -> usize {
         self.processes.lock().len()
     }
+
+    /// Lists all processes.
+    pub fn list(&self) -> Vec<(ProcessId, String, ProcessState)> {
+        self.processes.lock()
+            .iter()
+            .map(|(pid, p)| (*pid, p.name.clone(), p.state))
+            .collect()
+    }
 }
 
 /// Process-related errors.
@@ -343,6 +444,8 @@ pub enum ProcessError {
     InvalidState,
     /// Too many processes
     LimitReached,
+    /// Invalid ELF binary
+    InvalidElf,
 }
 
 /// Global process manager instance.
