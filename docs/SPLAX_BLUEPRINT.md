@@ -27,10 +27,10 @@ We're taking the best architectural patterns from the Linux kernel (35+ years of
 | `ipc/` | `kernel/src/ipc/` | ✅ Active | S-LINK zero-copy channels |
 | `security/` | `kernel/src/cap/` | ✅ Active | S-CAP replaces LSM/SELinux |
 | `sched/` | `kernel/src/sched/` | ✅ Active | Deterministic, SMP-aware |
-| `block/` | `kernel/src/block/` | ✅ Active | VirtIO-blk, block device abstraction |
+| `block/` | `kernel/src/block/` | ✅ Active | VirtIO-blk, NVMe, AHCI |
 | `crypto/` | `kernel/src/crypto/` | 📋 Planned | Safe crypto primitives |
-| `sound/` | `kernel/src/sound/` | 📋 Phase 4 | Audio subsystem |
-| `gpu/drm/` | `kernel/src/gpu/` | 📋 Phase 4 | Graphics subsystem |
+| `sound/` | `kernel/src/sound/` | ✅ Done | HDA, VirtIO-snd, AudioDevice trait |
+| `gpu/drm/` | `kernel/src/gpu/` | ✅ Done | Framebuffer, console, primitives |
 
 ---
 
@@ -266,8 +266,8 @@ pub struct ServiceDefinition {
 | Keyboard | PS/2, USB HID | ✅ Done |
 | Network | VirtIO, e1000, RTL8139 | ✅ Done |
 | Storage | VirtIO-blk, AHCI, NVMe | ✅ Done |
-| Graphics | Simple FB, VirtIO-GPU | 📋 Phase 4 |
-| Audio | HDA, VirtIO-snd | 📋 Phase 4 |
+| Graphics | Simple FB, console | ✅ Done |
+| Audio | HDA, VirtIO-snd | ✅ Done |
 | USB | xHCI | ✅ Done |
 
 #### 6.3 ACPI & Power Management (Linux `drivers/acpi/`)
@@ -917,17 +917,20 @@ pub struct SLinkChannel {
 - [x] SplaxFS journaling and recovery (write-ahead log, transactions)
 - [x] NVMe storage driver (queue management, namespace support)
 - [x] AHCI/SATA storage driver (FIS, port management, DMA)
+- [x] S-INSTALL installer system (hardware detection, partitioning, encryption)
+- [x] Graphics/framebuffer subsystem (color, console, font, primitives)
+- [x] Audio subsystem (HDA, VirtIO-snd, PCM streams)
 
 ### In Progress 🔄
-- [ ] S-INSTALL installer system
-- [ ] Graphics/framebuffer subsystem
-- [ ] Audio subsystem (basic)
+- [ ] IPv6 support
+- [ ] PCI subsystem (device enumeration, MSI/MSI-X)
+- [ ] Netfilter/firewall
+- [ ] ACPI power management
 
 ### Next Milestones 📋
-1. **Week 1-2**: NVMe/AHCI storage drivers
-2. **Week 3-4**: S-INSTALL installer system
-3. **Week 5-6**: Graphics/framebuffer basics
-4. **Week 7-8**: Audio subsystem (basic)
+1. **Week 1-2**: IPv6 networking
+2. **Week 3-4**: PCI device enumeration
+3. **Week 5-6**: Firewall/netfilter
 
 ---
 
