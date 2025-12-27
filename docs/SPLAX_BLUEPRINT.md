@@ -906,20 +906,22 @@ pub struct SLinkChannel {
 - [x] S-WAVE WASM runtime with bytecode interpreter
 - [x] 20+ host functions for WASM
 - [x] WASM shell commands (status, hostfn, caps, etc.)
+- [x] S-WAVE VFS integration (load .wasm from filesystem)
+- [x] WASM validation from files
+- [x] Test WASM modules in /bin/
 
 ### In Progress 🔄
 - [ ] Full ELF execution (userspace transition)
-- [ ] S-WAVE kernel integration (load .wasm files)
+- [ ] S-WAVE full function execution in kernel
 - [ ] SplaxFS journaling and recovery
 - [ ] USB subsystem
 
 ### Next Milestones 📋
-1. **Week 1-2**: Connect S-WAVE to VFS for .wasm file loading
-2. **Week 3-4**: Userspace process execution (ring 3)
-3. **Week 5-6**: S-INIT service manager
-4. **Week 7-8**: USB core + keyboard driver
-5. **Week 9-10**: NVMe/AHCI storage drivers
-6. **Week 11-12**: S-INSTALL installer system
+1. **Week 1-2**: Userspace process execution (ring 3)
+2. **Week 3-4**: S-INIT service manager
+3. **Week 5-6**: USB core + keyboard driver
+4. **Week 7-8**: NVMe/AHCI storage drivers
+5. **Week 9-10**: S-INSTALL installer system
 
 ---
 

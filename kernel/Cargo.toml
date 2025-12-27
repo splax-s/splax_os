@@ -20,6 +20,7 @@ path = "src/main_aarch64.rs"
 spin = { workspace = true }
 bitflags = { workspace = true }
 log = { workspace = true }
+splax_wave = { path = "../runtime/wave" }
 
 [features]
 default = []

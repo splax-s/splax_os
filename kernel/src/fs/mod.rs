@@ -488,6 +488,67 @@ pub fn init() {
     let _ = fs.create_file("/etc/motd");
     let _ = fs.write_file("/etc/motd", b"Welcome to Splax OS!\n\nA capability-secure, distributed-first operating system.\n\nType 'help' for available commands.\n");
 
+    // Create a minimal test WASM module
+    // This is a valid WASM 1.0 module that:
+    //   - Has a function type: () -> i32
+    //   - Has one function that returns 42
+    //   - Exports the function as "main"
+    let _ = fs.create_file("/bin/hello.wasm");
+    let test_wasm: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6D, // Magic: \0asm
+        0x01, 0x00, 0x00, 0x00, // Version: 1
+        // Type section
+        0x01, 0x05,             // Section ID=1, size=5
+        0x01,                   // 1 type
+        0x60, 0x00, 0x01, 0x7F, // func () -> i32
+        // Function section
+        0x03, 0x02,             // Section ID=3, size=2
+        0x01, 0x00,             // 1 function, type index 0
+        // Export section
+        0x07, 0x08,             // Section ID=7, size=8
+        0x01,                   // 1 export
+        0x04, b'm', b'a', b'i', b'n', // Name: "main"
+        0x00, 0x00,             // Export kind=func, index=0
+        // Code section
+        0x0A, 0x06,             // Section ID=10, size=6
+        0x01,                   // 1 function body
+        0x04,                   // Body size=4
+        0x00,                   // 0 locals
+        0x41, 0x2A,             // i32.const 42
+        0x0B,                   // end
+    ];
+    let _ = fs.write_file("/bin/hello.wasm", test_wasm);
+
+    // Create another test WASM: adds two numbers
+    let _ = fs.create_file("/bin/add.wasm");
+    let add_wasm: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6D, // Magic: \0asm
+        0x01, 0x00, 0x00, 0x00, // Version: 1
+        // Type section
+        0x01, 0x07,             // Section ID=1, size=7
+        0x01,                   // 1 type
+        0x60, 0x02, 0x7F, 0x7F, // func (i32, i32)
+        0x01, 0x7F,             // -> i32
+        // Function section
+        0x03, 0x02,             // Section ID=3, size=2
+        0x01, 0x00,             // 1 function, type index 0
+        // Export section
+        0x07, 0x07,             // Section ID=7, size=7
+        0x01,                   // 1 export
+        0x03, b'a', b'd', b'd', // Name: "add"
+        0x00, 0x00,             // Export kind=func, index=0
+        // Code section
+        0x0A, 0x09,             // Section ID=10, size=9
+        0x01,                   // 1 function body
+        0x07,                   // Body size=7
+        0x00,                   // 0 locals
+        0x20, 0x00,             // local.get 0
+        0x20, 0x01,             // local.get 1
+        0x6A,                   // i32.add
+        0x0B,                   // end
+    ];
+    let _ = fs.write_file("/bin/add.wasm", add_wasm);
+
     #[cfg(target_arch = "x86_64")]
     {
         use core::fmt::Write;

@@ -76,6 +76,7 @@ dependencies = [
  "bitflags",
  "log",
  "spin",
+ "splax_wave",
 ]
 
 [[package]]

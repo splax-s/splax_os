@@ -70,6 +70,23 @@ pub struct CapabilityToken {
     value: [u64; 4],
 }
 
+impl CapabilityToken {
+    /// Create a new capability token from raw values
+    pub const fn new(value: [u64; 4]) -> Self {
+        Self { value }
+    }
+
+    /// Create a null/empty capability token
+    pub const fn null() -> Self {
+        Self { value: [0; 4] }
+    }
+
+    /// Get the raw token value
+    pub fn raw(&self) -> &[u64; 4] {
+        &self.value
+    }
+}
+
 /// WASM section types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

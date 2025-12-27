@@ -45,6 +45,7 @@ pub mod net;
 pub mod process;
 pub mod sched;
 pub mod smp;
+pub mod wasm;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -221,6 +222,9 @@ pub extern "C" fn kernel_main(_boot_info: *const u8) -> ! {
     
     serial_println!("[kernel] Diagnostics complete");
 
+    // Initialize WASM runtime
+    wasm::init();
+
     // Print completion messages and show VGA status
     #[cfg(target_arch = "x86_64")]
     {
@@ -244,6 +248,7 @@ pub extern "C" fn kernel_main(_boot_info: *const u8) -> ! {
         vga_println!("[OK] S-CAP capability system ready");
         vga_println!("[OK] S-LINK IPC system ready");
         vga_println!("[OK] S-ATLAS service registry ready");
+        vga_println!("[OK] S-WAVE WASM runtime ready");
         vga_println!("[OK] Filesystem: ramfs (4 MB)");
         vga_println!("[OK] Network: virtio-net (10.0.2.15)");
         vga::set_color(Color::LightGray, Color::Black);

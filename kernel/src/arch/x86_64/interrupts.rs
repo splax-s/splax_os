@@ -1753,18 +1753,20 @@ fn execute_shell_command(cmd: &str) {
             let subcmd = parts[1];
             match subcmd {
                 "status" | "" => {
+                    let stats = crate::wasm::stats();
                     super::vga::set_color(Color::Yellow, Color::Black);
                     crate::vga_println!("S-WAVE WASM Runtime Status:");
                     super::vga::set_color(Color::LightGray, Color::Black);
                     crate::vga_println!();
-                    crate::vga_println!("Runtime:            S-WAVE v1.0");
+                    crate::vga_println!("Runtime:            S-WAVE v1.0 ({})", 
+                        if stats.runtime_initialized { "active" } else { "not initialized" });
                     crate::vga_println!("WASM Version:       1.0 (MVP)");
-                    crate::vga_println!("Modules loaded:     0");
-                    crate::vga_println!("Active instances:   0");
-                    crate::vga_println!("Max modules:        1,024");
-                    crate::vga_println!("Max instances:      4,096");
-                    crate::vga_println!("Max memory/inst:    256 MB");
-                    crate::vga_println!("Max steps/call:     1,000,000,000");
+                    crate::vga_println!("Modules loaded:     {}", stats.modules_loaded);
+                    crate::vga_println!("Total WASM size:    {} bytes", stats.total_wasm_size);
+                    crate::vga_println!("Max modules:        256");
+                    crate::vga_println!("Max instances:      1,024");
+                    crate::vga_println!("Max memory/inst:    64 MB");
+                    crate::vga_println!("Max steps/call:     100,000,000");
                     crate::vga_println!();
                     super::vga::set_color(Color::Cyan, Color::Black);
                     crate::vga_println!("Supported Features:");
@@ -1774,6 +1776,7 @@ fn execute_shell_command(cmd: &str) {
                     crate::vga_println!("  [x] Function calls and returns");
                     crate::vga_println!("  [x] Control flow (block/loop/if/br)");
                     crate::vga_println!("  [x] Capability-bound host imports");
+                    crate::vga_println!("  [x] VFS integration");
                     crate::vga_println!("  [ ] SIMD (planned)");
                     crate::vga_println!("  [ ] Threads (planned)");
                 }
@@ -1855,9 +1858,19 @@ fn execute_shell_command(cmd: &str) {
                     crate::vga_println!("Loaded WASM Modules:");
                     super::vga::set_color(Color::LightGray, Color::Black);
                     crate::vga_println!();
-                    crate::vga_println!("(no modules loaded)");
-                    crate::vga_println!();
-                    crate::vga_println!("Use 'wasm load <file>' to load a module");
+                    let modules = crate::wasm::list_modules();
+                    if modules.is_empty() {
+                        crate::vga_println!("(no modules loaded)");
+                        crate::vga_println!();
+                        crate::vga_println!("Use 'wasm load <file>' to load a module");
+                    } else {
+                        for m in &modules {
+                            crate::vga_println!("  {:?} {} ({} bytes) - {}", m.id, m.name, m.size, m.path);
+                        }
+                        crate::vga_println!();
+                        let stats = crate::wasm::stats();
+                        crate::vga_println!("Total: {} modules, {} bytes", stats.modules_loaded, stats.total_wasm_size);
+                    }
                 }
                 "validate" => {
                     let filename = parts[2];
@@ -1870,12 +1883,38 @@ fn execute_shell_command(cmd: &str) {
                         crate::vga_println!("Validating: {}", filename);
                         super::vga::set_color(Color::LightGray, Color::Black);
                         crate::vga_println!();
-                        crate::vga_println!("  Checking magic number... pending");
-                        crate::vga_println!("  Checking version... pending");
-                        crate::vga_println!("  Parsing sections... pending");
-                        crate::vga_println!();
-                        crate::vga_println!("Note: File system integration pending.");
-                        crate::vga_println!("      Use 'cat' to check if file exists.");
+                        match crate::wasm::validate_file(filename) {
+                            Ok(result) => {
+                                if result.valid {
+                                    super::vga::set_color(Color::LightGreen, Color::Black);
+                                    crate::vga_println!("  Valid WASM module!");
+                                    super::vga::set_color(Color::LightGray, Color::Black);
+                                    crate::vga_println!("  Version: {}", result.version);
+                                    crate::vga_println!("  Size: {} bytes", result.size);
+                                    crate::vga_println!("  Functions: {}", result.function_count);
+                                    crate::vga_println!("  Imports: {}", result.import_count);
+                                    crate::vga_println!("  Exports: {}", result.export_count);
+                                    crate::vga_println!("  Memory: {}", if result.has_memory { "yes" } else { "no" });
+                                    crate::vga_println!("  Start function: {}", if result.has_start { "yes" } else { "no" });
+                                } else {
+                                    super::vga::set_color(Color::LightRed, Color::Black);
+                                    crate::vga_println!("  Invalid WASM file");
+                                    super::vga::set_color(Color::LightGray, Color::Black);
+                                    if result.size < 8 {
+                                        crate::vga_println!("  File too small (< 8 bytes)");
+                                    } else if result.version == 0 {
+                                        crate::vga_println!("  Bad magic number (not a WASM file)");
+                                    } else {
+                                        crate::vga_println!("  Unsupported version: {}", result.version);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                super::vga::set_color(Color::LightRed, Color::Black);
+                                crate::vga_println!("  Error: {:?}", e);
+                                super::vga::set_color(Color::LightGray, Color::Black);
+                            }
+                        }
                     }
                 }
                 "load" => {
@@ -1888,21 +1927,46 @@ fn execute_shell_command(cmd: &str) {
                         super::vga::set_color(Color::Yellow, Color::Black);
                         crate::vga_println!("Loading WASM module: {}", filename);
                         super::vga::set_color(Color::LightGray, Color::Black);
-                        crate::vga_println!("(WASM file loading not yet implemented)");
-                        crate::vga_println!("WASM modules will be loadable from /bin/*.wasm");
+                        match crate::wasm::load_file(filename) {
+                            Ok(module_id) => {
+                                super::vga::set_color(Color::LightGreen, Color::Black);
+                                crate::vga_println!("Module loaded: {:?}", module_id);
+                                super::vga::set_color(Color::LightGray, Color::Black);
+                                crate::vga_println!("Use 'wasm run <module>' to execute");
+                            }
+                            Err(e) => {
+                                super::vga::set_color(Color::LightRed, Color::Black);
+                                crate::vga_println!("Load failed: {:?}", e);
+                                super::vga::set_color(Color::LightGray, Color::Black);
+                            }
+                        }
                     }
                 }
                 "run" => {
                     let module = parts[2];
                     if module.is_empty() {
                         super::vga::set_color(Color::LightRed, Color::Black);
-                        crate::vga_println!("Usage: wasm run <module>");
+                        crate::vga_println!("Usage: wasm run <file.wasm>");
                         super::vga::set_color(Color::LightGray, Color::Black);
                     } else {
                         super::vga::set_color(Color::Yellow, Color::Black);
-                        crate::vga_println!("Running module: {}", module);
+                        crate::vga_println!("Running: {}", module);
                         super::vga::set_color(Color::LightGray, Color::Black);
-                        crate::vga_println!("(WASM execution not yet connected to kernel)");
+                        match crate::wasm::run_file(module) {
+                            Ok(results) => {
+                                super::vga::set_color(Color::LightGreen, Color::Black);
+                                crate::vga_println!("Execution completed");
+                                super::vga::set_color(Color::LightGray, Color::Black);
+                                if !results.is_empty() {
+                                    crate::vga_println!("Results: {:?}", results);
+                                }
+                            }
+                            Err(e) => {
+                                super::vga::set_color(Color::LightRed, Color::Black);
+                                crate::vga_println!("Execution failed: {:?}", e);
+                                super::vga::set_color(Color::LightGray, Color::Black);
+                            }
+                        }
                     }
                 }
                 _ => {
@@ -3483,13 +3547,15 @@ fn execute_serial_command(cmd: &str) {
             let subcmd = parts[1];
             match subcmd {
                 "" | "status" => {
+                    let stats = crate::wasm::stats();
                     serial_println!("S-WAVE WASM Runtime Status:");
                     serial_println!("==========================");
                     serial_println!();
-                    serial_println!("Runtime:            S-WAVE v1.0");
+                    serial_println!("Runtime:            S-WAVE v1.0 ({})", 
+                        if stats.runtime_initialized { "active" } else { "not initialized" });
                     serial_println!("WASM Version:       1.0 (MVP)");
                     serial_println!("Capability System:  Enabled");
-                    serial_println!("WASI Compatibility: Partial (Preview1)");
+                    serial_println!("VFS Integration:    Enabled");
                     serial_println!();
                     serial_println!("Features:");
                     serial_println!("  [x] Module parsing & validation");
@@ -3497,11 +3563,12 @@ fn execute_serial_command(cmd: &str) {
                     serial_println!("  [x] Linear memory management");
                     serial_println!("  [x] Host function bindings (20+ syscalls)");
                     serial_println!("  [x] Capability-bound imports");
-                    serial_println!("  [ ] Full interpreter (in progress)");
+                    serial_println!("  [x] Bytecode interpreter");
+                    serial_println!("  [x] VFS file loading");
                     serial_println!("  [ ] JIT compilation");
                     serial_println!();
-                    serial_println!("Loaded Modules:     0");
-                    serial_println!("Memory Usage:       0 bytes");
+                    serial_println!("Loaded Modules:     {}", stats.modules_loaded);
+                    serial_println!("Memory Usage:       {} bytes", stats.total_wasm_size);
                 }
                 "help" => {
                     serial_println!("S-WAVE WASM Runtime Commands:");
@@ -3581,9 +3648,19 @@ fn execute_serial_command(cmd: &str) {
                     serial_println!("Loaded WASM Modules:");
                     serial_println!("====================");
                     serial_println!();
-                    serial_println!("  (none)");
-                    serial_println!();
-                    serial_println!("Use 'wasm load <file>' to load a module.");
+                    let modules = crate::wasm::list_modules();
+                    if modules.is_empty() {
+                        serial_println!("  (none)");
+                        serial_println!();
+                        serial_println!("Use 'wasm load <file>' to load a module.");
+                    } else {
+                        for m in &modules {
+                            serial_println!("  {:?} {} ({} bytes) - {}", m.id, m.name, m.size, m.path);
+                        }
+                        serial_println!();
+                        let stats = crate::wasm::stats();
+                        serial_println!("Total: {} modules, {} bytes", stats.modules_loaded, stats.total_wasm_size);
+                    }
                 }
                 "validate" => {
                     let file = parts[2];
@@ -3594,17 +3671,32 @@ fn execute_serial_command(cmd: &str) {
                     } else {
                         serial_println!("Validating: {}", file);
                         serial_println!();
-                        // For now, simulated validation
-                        serial_println!("  Checking magic number... OK");
-                        serial_println!("  Checking version... OK (1.0)");
-                        serial_println!("  Parsing sections...");
-                        serial_println!("    - Type section: not found");
-                        serial_println!("    - Import section: not found");
-                        serial_println!("    - Function section: not found");
-                        serial_println!("    - Code section: not found");
-                        serial_println!();
-                        serial_println!("Note: File system integration pending.");
-                        serial_println!("      Use 'fscat' to check if file exists.");
+                        match crate::wasm::validate_file(file) {
+                            Ok(result) => {
+                                if result.valid {
+                                    serial_println!("  [OK] Valid WASM module");
+                                    serial_println!("  Version: {}", result.version);
+                                    serial_println!("  Size: {} bytes", result.size);
+                                    serial_println!("  Functions: {}", result.function_count);
+                                    serial_println!("  Imports: {}", result.import_count);
+                                    serial_println!("  Exports: {}", result.export_count);
+                                    serial_println!("  Memory: {}", if result.has_memory { "yes" } else { "no" });
+                                    serial_println!("  Start function: {}", if result.has_start { "yes" } else { "no" });
+                                } else {
+                                    serial_println!("  [ERR] Invalid WASM file");
+                                    if result.size < 8 {
+                                        serial_println!("  File too small (< 8 bytes)");
+                                    } else if result.version == 0 {
+                                        serial_println!("  Bad magic number (not a WASM file)");
+                                    } else {
+                                        serial_println!("  Unsupported version: {}", result.version);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                serial_println!("  Error: {:?}", e);
+                            }
+                        }
                     }
                 }
                 "load" => {
@@ -3613,20 +3705,34 @@ fn execute_serial_command(cmd: &str) {
                         serial_println!("Usage: wasm load <file.wasm>");
                     } else {
                         serial_println!("Loading module: {}", file);
-                        serial_println!();
-                        serial_println!("Note: File system integration pending.");
-                        serial_println!("      Module loading will be available once VFS is connected.");
+                        match crate::wasm::load_file(file) {
+                            Ok(module_id) => {
+                                serial_println!("  [OK] Module loaded: {:?}", module_id);
+                                serial_println!("  Use 'wasm run {}' to execute", file);
+                            }
+                            Err(e) => {
+                                serial_println!("  [ERR] Load failed: {:?}", e);
+                            }
+                        }
                     }
                 }
                 "run" => {
                     let module = parts[2];
                     if module.is_empty() {
-                        serial_println!("Usage: wasm run <module_name>");
+                        serial_println!("Usage: wasm run <file.wasm>");
                     } else {
-                        serial_println!("Running module: {}", module);
-                        serial_println!();
-                        serial_println!("Error: Module '{}' not found.", module);
-                        serial_println!("Use 'wasm list' to see loaded modules.");
+                        serial_println!("Running: {}", module);
+                        match crate::wasm::run_file(module) {
+                            Ok(results) => {
+                                serial_println!("  [OK] Execution completed");
+                                if !results.is_empty() {
+                                    serial_println!("  Results: {:?}", results);
+                                }
+                            }
+                            Err(e) => {
+                                serial_println!("  [ERR] Execution failed: {:?}", e);
+                            }
+                        }
                     }
                 }
                 _ => {
