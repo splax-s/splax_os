@@ -21,13 +21,13 @@ We're taking the best architectural patterns from the Linux kernel (35+ years of
 |-----------------|--------------|--------|--------------|
 | `kernel/` | `kernel/src/` | ✅ Active | Pure Rust, no C bindings |
 | `mm/` | `kernel/src/mm/` | ✅ Active | RAII memory management |
-| `fs/` | `kernel/src/fs/` | 🔄 Basic | Capability-gated VFS |
-| `net/` | `kernel/src/net/` | ✅ Active | Async networking, SSH |
-| `drivers/` | `kernel/src/drivers/` | 🔄 Planned | Safe driver abstractions |
+| `fs/` | `kernel/src/fs/` | ✅ Active | VFS + SplaxFS + RamFS + ProcFS + SysFS + DevFS |
+| `net/` | `kernel/src/net/` | ✅ Active | Async networking, SSH, WiFi framework |
+| `drivers/` | `kernel/src/drivers/` | 🔄 Basic | VirtIO-net, VirtIO-blk, E1000, RTL8139 |
 | `ipc/` | `kernel/src/ipc/` | ✅ Active | S-LINK zero-copy channels |
 | `security/` | `kernel/src/cap/` | ✅ Active | S-CAP replaces LSM/SELinux |
 | `sched/` | `kernel/src/sched/` | ✅ Active | Deterministic, SMP-aware |
-| `block/` | `kernel/src/block/` | 📋 Planned | Async block I/O |
+| `block/` | `kernel/src/block/` | ✅ Active | VirtIO-blk, block device abstraction |
 | `crypto/` | `kernel/src/crypto/` | 📋 Planned | Safe crypto primitives |
 | `sound/` | `kernel/src/sound/` | 📋 Phase 4 | Audio subsystem |
 | `gpu/drm/` | `kernel/src/gpu/` | 📋 Phase 4 | Graphics subsystem |
@@ -76,9 +76,12 @@ We're taking the best architectural patterns from the Linux kernel (35+ years of
 
 | Component | Linux Path | Splax Path | Status |
 |-----------|------------|------------|--------|
-| Driver Core | `drivers/base/` | `drivers/mod.rs` | 📋 Planned |
-| VirtIO | `drivers/virtio/` | `net/virtio.rs` | ✅ Done |
-| VirtIO Block | `drivers/block/virtio_blk.c` | `drivers/virtio_blk.rs` | 📋 Planned |
+| Driver Core | `drivers/base/` | `drivers/mod.rs` | � Basic |
+| VirtIO Net | `drivers/virtio/` | `net/virtio.rs` | ✅ Done |
+| VirtIO Block | `drivers/block/virtio_blk.c` | `block/virtio_blk.rs` | ✅ Done |
+| E1000 | `drivers/net/e1000/` | `net/e1000.rs` | ✅ Done |
+| RTL8139 | `drivers/net/rtl8139.c` | `net/rtl8139.rs` | ✅ Done |
+| WiFi | `drivers/net/wireless/` | `net/wifi.rs` | 🔄 Framework |
 | NVMe | `drivers/nvme/` | `drivers/nvme.rs` | 📋 Planned |
 | AHCI/SATA | `drivers/ata/` | `drivers/ahci.rs` | 📋 Planned |
 | USB Core | `drivers/usb/core/` | `drivers/usb/mod.rs` | 📋 Planned |
@@ -89,7 +92,8 @@ We're taking the best architectural patterns from the Linux kernel (35+ years of
 
 | Component | Linux Path | Splax Path | Status |
 |-----------|------------|------------|--------|
-| Block Core | `block/blk-core.c` | `block/mod.rs` | 📋 Planned |
+| Block Core | `block/blk-core.c` | `block/mod.rs` | ✅ Done |
+| VirtIO Block | `block/virtio_blk.c` | `block/virtio_blk.rs` | ✅ Done |
 | I/O Scheduler | `block/elevator.c` | `block/scheduler.rs` | 📋 Planned |
 | Partitions | `block/partitions/` | `block/partitions.rs` | 📋 Planned |
 | Bio Layer | `block/bio.c` | `block/bio.rs` | 📋 Planned |
@@ -114,14 +118,15 @@ We're taking the best architectural patterns from the Linux kernel (35+ years of
 
 | Filesystem | Linux Path | Splax Path | Priority |
 |------------|------------|------------|----------|
-| RamFS | `fs/ramfs/` | `fs/ramfs.rs` | ✅ Done (basic) |
-| SplaxFS | N/A | `fs/splaxfs/` | 🔥 High - Native FS |
-| ext4 (read) | `fs/ext4/` | `fs/ext4_ro.rs` | Medium |
-| FAT32 | `fs/fat/` | `fs/fat32.rs` | Medium - USB/EFI |
-| ISO9660 | `fs/isofs/` | `fs/iso9660.rs` | Low - CD-ROM |
-| Procfs | `fs/proc/` | `fs/procfs.rs` | High - System info |
-| Sysfs | `fs/sysfs/` | `fs/sysfs.rs` | High - Device info |
-| Devfs | `fs/devpts/` | `fs/devfs.rs` | High - Device nodes |
+| RamFS | `fs/ramfs/` | `fs/ramfs.rs` | ✅ Done |
+| SplaxFS | N/A | `fs/splaxfs.rs` | ✅ Done - Native FS |
+| VFS Core | `fs/` | `fs/vfs.rs` | ✅ Done |
+| Procfs | `fs/proc/` | `fs/procfs.rs` | ✅ Done |
+| Sysfs | `fs/sysfs/` | `fs/sysfs.rs` | ✅ Done |
+| Devfs | `fs/devpts/` | `fs/devfs.rs` | ✅ Done |
+| ext4 (read) | `fs/ext4/` | `fs/ext4_ro.rs` | 📋 Planned |
+| FAT32 | `fs/fat/` | `fs/fat32.rs` | 📋 Planned |
+| ISO9660 | `fs/isofs/` | `fs/iso9660.rs` | 📋 Low Priority |
 
 #### 3.3 SplaxFS Native Filesystem Design
 
@@ -165,28 +170,37 @@ pub struct SplaxFS {
 
 | Format | Linux Path | Splax Path | Priority |
 |--------|------------|------------|----------|
-| ELF | `fs/binfmt_elf.c` | `exec/elf.rs` | 🔥 High |
-| WASM | N/A | `exec/wasm.rs` (S-WAVE) | 🔥 High |
-| Script | `fs/binfmt_script.c` | `exec/script.rs` | Medium |
-| Flat | `fs/binfmt_flat.c` | `exec/flat.rs` | Low |
+| ELF | `fs/binfmt_elf.c` | `process/elf.rs` | ✅ Done (loader) |
+| WASM | N/A | `runtime/wave/` (S-WAVE) | ✅ Done (interpreter) |
+| Script | `fs/binfmt_script.c` | `exec/script.rs` | 📋 Planned |
+| Flat | `fs/binfmt_flat.c` | `exec/flat.rs` | 📋 Low Priority |
 
 #### 4.3 S-WAVE Runtime (WASM)
 
 ```rust
 // WebAssembly runtime with capability injection
-pub struct WaveRuntime {
-    engine: wasmtime::Engine,
-    linker: wasmtime::Linker<WaveState>,
-    capability_filter: CapabilityFilter,
+// IMPLEMENTED in runtime/wave/src/lib.rs
+pub struct Wave {
+    config: WaveConfig,
+    modules: BTreeMap<ModuleId, Module>,
+    instances: BTreeMap<InstanceId, Instance>,
 }
 
-impl WaveRuntime {
-    // WASM modules get capabilities injected at load time
-    pub fn load(&self, wasm: &[u8], caps: Vec<CapabilityToken>) -> Result<Instance>;
+impl Wave {
+    // Load and validate WASM module
+    pub fn load(&self, wasm_bytes: Vec<u8>, name: Option<String>, cap: &CapabilityToken) -> Result<ModuleId>;
     
-    // Host functions are capability-gated
-    pub fn call(&self, func: &str, args: &[Value], cap: &CapabilityToken) -> Result<Vec<Value>>;
+    // Instantiate with capability bindings
+    pub fn instantiate(&self, module_id: ModuleId, capability_bindings: Vec<(HostFunction, CapabilityToken)>) -> Result<InstanceId>;
 }
+
+// Bytecode interpreter supports:
+// - Control flow (block, loop, if, br, br_if, return)
+// - Local/global variables
+// - Memory operations (load/store i32, i64)
+// - i32/i64 arithmetic and comparison
+// - Type conversions
+// - 20+ host functions for system calls
 ```
 
 ---
@@ -867,29 +881,45 @@ pub struct SLinkChannel {
 - [x] Memory management (frame allocator, heap, paging)
 - [x] Interrupt handling (IDT, PIC, keyboard, timer)
 - [x] VGA text mode output
-- [x] Serial console (COM1)
+- [x] Serial console (COM1) with ring buffer input
 - [x] Basic scheduler with SMP support
-- [x] Capability system (S-CAP)
-- [x] IPC channels (S-LINK)
+- [x] Capability system (S-CAP) with tokens and audit
+- [x] IPC channels (S-LINK) with zero-copy messaging
 - [x] Full network stack (Ethernet, IP, TCP, UDP, ICMP)
 - [x] VirtIO-net driver
+- [x] E1000 network driver
+- [x] RTL8139 network driver
+- [x] WiFi driver framework
 - [x] Ping, traceroute, DNS tools
-- [x] SSH client/server
-- [x] Dual shell (VGA + Serial)
+- [x] SSH client/server (basic)
+- [x] Dual shell (VGA + Serial) with 40+ commands
+- [x] Block device abstraction layer
+- [x] VirtIO-blk driver (basic)
+- [x] RamFS filesystem
+- [x] SplaxFS native filesystem (disk-backed)
+- [x] ProcFS (process filesystem)
+- [x] SysFS (system filesystem)
+- [x] DevFS (device filesystem)
+- [x] VFS layer with mount system
+- [x] ELF loader (basic)
+- [x] Process management with signals
+- [x] S-WAVE WASM runtime with bytecode interpreter
+- [x] 20+ host functions for WASM
+- [x] WASM shell commands (status, hostfn, caps, etc.)
 
 ### In Progress 🔄
-- [ ] VirtIO-blk driver (block devices)
-- [ ] Basic VFS layer
-- [ ] RamFS improvements
-- [ ] Process exec (ELF loading)
+- [ ] Full ELF execution (userspace transition)
+- [ ] S-WAVE kernel integration (load .wasm files)
+- [ ] SplaxFS journaling and recovery
+- [ ] USB subsystem
 
 ### Next Milestones 📋
-1. **Week 1-2**: VirtIO-blk driver + block layer
-2. **Week 3-4**: VFS abstraction + mount system
-3. **Week 5-6**: ProcFS + SysFS
-4. **Week 7-8**: ELF loader + process exec
-5. **Week 9-10**: S-WAVE WASM runtime
-6. **Week 11-12**: S-INIT service manager
+1. **Week 1-2**: Connect S-WAVE to VFS for .wasm file loading
+2. **Week 3-4**: Userspace process execution (ring 3)
+3. **Week 5-6**: S-INIT service manager
+4. **Week 7-8**: USB core + keyboard driver
+5. **Week 9-10**: NVMe/AHCI storage drivers
+6. **Week 11-12**: S-INSTALL installer system
 
 ---
 
