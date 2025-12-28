@@ -68,8 +68,8 @@ We're taking the best architectural patterns from the Linux kernel (35+ years of
 | DNS | `(userspace)` | `net/dns.rs` | ✅ Done |
 | SSH | `(userspace)` | `net/ssh.rs` | ✅ Done |
 | Socket API | `net/socket.c` | `net/socket.rs` | ✅ Done |
-| IPv6 | `net/ipv6/` | `net/ipv6.rs` | 📋 Planned |
-| Netfilter | `net/netfilter/` | `net/firewall.rs` | 📋 Planned |
+| IPv6 | `net/ipv6/` | `net/ipv6.rs` | ✅ Done |
+| Netfilter | `net/netfilter/` | `net/firewall.rs` | ✅ Done |
 | Traffic Control | `net/sched/` | `net/qos.rs` | 📋 Planned |
 
 #### 2.2 Driver Framework (Linux `drivers/`)
@@ -86,7 +86,7 @@ We're taking the best architectural patterns from the Linux kernel (35+ years of
 | AHCI/SATA | `drivers/ata/` | `block/ahci.rs` | ✅ Done |
 | USB Core | `drivers/usb/core/` | `usb/mod.rs` | ✅ Done |
 | USB HID | `drivers/hid/` | `usb/hid.rs` | ✅ Done |
-| PCI | `drivers/pci/` | `drivers/pci.rs` | 📋 Planned |
+| PCI | `drivers/pci/` | `pci/mod.rs` | ✅ Done |
 
 #### 2.3 Block Layer (Linux `block/`)
 
@@ -124,8 +124,8 @@ We're taking the best architectural patterns from the Linux kernel (35+ years of
 | Procfs | `fs/proc/` | `fs/procfs.rs` | ✅ Done |
 | Sysfs | `fs/sysfs/` | `fs/sysfs.rs` | ✅ Done |
 | Devfs | `fs/devpts/` | `fs/devfs.rs` | ✅ Done |
-| ext4 (read) | `fs/ext4/` | `fs/ext4_ro.rs` | 📋 Planned |
-| FAT32 | `fs/fat/` | `fs/fat32.rs` | 📋 Planned |
+| ext4 (read) | `fs/ext4/` | `fs/ext4.rs` | ✅ Done |
+| FAT32 | `fs/fat/` | `fs/fat32.rs` | ✅ Done |
 | ISO9660 | `fs/isofs/` | `fs/iso9660.rs` | 📋 Low Priority |
 
 #### 3.3 SplaxFS Native Filesystem Design
@@ -255,7 +255,7 @@ pub struct ServiceDefinition {
 |--------------|------------|------------|--------|
 | x86_64 | `arch/x86/` | `arch/x86_64/` | ✅ Active |
 | AArch64 | `arch/arm64/` | `arch/aarch64/` | ✅ Basic |
-| RISC-V | `arch/riscv/` | `arch/riscv/` | 📋 Planned |
+| RISC-V | `arch/riscv/` | `arch/riscv64/` | ✅ Done |
 
 #### 6.2 Hardware Drivers
 
@@ -530,7 +530,7 @@ pub struct NativePort {
 ├── Cargo.toml                          # Workspace root
 ├── splax_kernel.json                   # x86_64 target spec
 ├── splax_kernel_aarch64.json           # ARM64 target spec
-├── splax_kernel_riscv.json             # RISC-V target spec (planned)
+├── splax_kernel_riscv64.json           # RISC-V target spec ✅
 │
 ├── kernel/                             # S-CORE KERNEL
 │   ├── Cargo.toml
@@ -604,8 +604,8 @@ pub struct NativePort {
 │       │   ├── ssh.rs                  # SSH client/server
 │       │   ├── socket.rs               # Socket API
 │       │   ├── virtio.rs               # VirtIO-net driver
-│       │   ├── firewall.rs             # Packet filtering (planned)
-│       │   └── ipv6.rs                 # IPv6 (planned)
+│       │   ├── firewall.rs             # Packet filtering ✅
+│       │   └── ipv6.rs                 # IPv6 ✅
 │       │
 │       ├── drivers/                    # DRIVERS (Linux: drivers/)
 │       │   ├── mod.rs                  # Driver framework (planned)
@@ -1073,10 +1073,10 @@ pub mod syscall;   // ~2KB: Syscall dispatch
 
 ### 11.7 Migration Checklist
 
-**Phase A: Filesystem (Weeks 1-4)** 🟡 IN PROGRESS
-- [ ] Create `services/storage/src/vfs_server.rs`
-- [ ] Define VFS RPC protocol in `kernel/src/fs/vfs_rpc.rs`
-- [ ] Implement kernel VFS stub that calls S-STORAGE
+**Phase A: Filesystem (Weeks 1-4)** ✅ COMPLETE
+- [x] Create `services/storage/src/vfs_server.rs`
+- [x] Define VFS RPC protocol in `services/storage/src/vfs_protocol.rs`
+- [x] Implement kernel VFS stub that calls S-STORAGE (`kernel/src/fs/vfs_stub.rs`)
 - [ ] Move SplaxFS to `services/storage/src/splaxfs.rs`
 - [ ] Move RamFS to `services/storage/src/ramfs.rs`
 - [ ] Move ext4 to `services/storage/src/ext4.rs`
@@ -1195,6 +1195,8 @@ pub struct SLinkChannel {
 - [x] **S-INIT process spawning** (real syscall-based)
 - [x] **S-WAVE real timestamps** (rdtsc/cntvct_el0)
 - [x] **AArch64 syscall dispatch** (clone, waitpid, kill)
+- [x] **RISC-V 64-bit architecture** (full port with SBI, PLIC, Sv39/Sv48 MMU)
+- [x] **Phase A VFS migration** (kernel VFS stub + userspace VFS server)
 
 ### Future Enhancements 📋
 These are **now implemented**:
