@@ -1024,3 +1024,135 @@ impl Filesystem for Ext4Fs {
         Ok(())
     }
 }
+
+// ============================================================================
+// Module-level mount API for shell commands
+// ============================================================================
+
+/// Block device wrapper that uses block module's read/write functions.
+struct BlockDeviceWrapper {
+    name: String,
+}
+
+impl BlockDeviceWrapper {
+    fn new(name: &str) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+impl crate::block::BlockDevice for BlockDeviceWrapper {
+    fn info(&self) -> crate::block::BlockDeviceInfo {
+        crate::block::list_devices()
+            .into_iter()
+            .find(|d| d.name == self.name)
+            .unwrap_or(crate::block::BlockDeviceInfo {
+                name: self.name.clone(),
+                sector_size: 512,
+                total_sectors: 0,
+                read_only: true,
+                model: String::new(),
+            })
+    }
+    
+    fn read_sectors(&self, start: u64, buf: &mut [u8]) -> Result<(), crate::block::BlockError> {
+        let sector_size = self.info().sector_size;
+        let count = buf.len() / sector_size;
+        let data = crate::block::read(&self.name, start, count)?;
+        buf[..data.len()].copy_from_slice(&data);
+        Ok(())
+    }
+    
+    fn write_sectors(&self, _start: u64, _data: &[u8]) -> Result<(), crate::block::BlockError> {
+        Err(crate::block::BlockError::Unsupported)
+    }
+    
+    fn flush(&self) -> Result<(), crate::block::BlockError> {
+        Ok(())
+    }
+    
+    fn is_ready(&self) -> bool {
+        true
+    }
+}
+
+/// Global ext4 mount registry.
+static EXT4_MOUNTS: spin::RwLock<BTreeMap<String, Ext4Fs>> = spin::RwLock::new(BTreeMap::new());
+
+/// Mount an ext4 filesystem.
+pub fn mount(device_name: &str, mount_point: &str) -> Result<(), VfsError> {
+    use alloc::string::ToString;
+    
+    // Check device exists
+    if !crate::block::list_devices().iter().any(|d| d.name == device_name) {
+        return Err(VfsError::NotFound);
+    }
+    
+    // Create block device wrapper
+    let device = Arc::new(BlockDeviceWrapper::new(device_name));
+    
+    // Create ext4 filesystem
+    let fs = Ext4Fs::new(device);
+    
+    // Mount it (parse superblock, etc.)
+    fs.mount()?;
+    
+    // Store in registry
+    EXT4_MOUNTS.write().insert(mount_point.to_string(), fs);
+    
+    crate::serial_println!("[ext4] Mounted {} at {} (read-only)", device_name, mount_point);
+    Ok(())
+}
+
+/// Unmount an ext4 filesystem.
+pub fn unmount(mount_point: &str) -> Result<(), VfsError> {
+    if EXT4_MOUNTS.write().remove(mount_point).is_some() {
+        crate::serial_println!("[ext4] Unmounted {}", mount_point);
+        Ok(())
+    } else {
+        Err(VfsError::NotFound)
+    }
+}
+
+/// List directory on ext4 filesystem.
+pub fn ls(path: &str) -> Result<Vec<(String, VfsFileType, u64)>, VfsError> {
+    // Find mount point
+    let mounts = EXT4_MOUNTS.read();
+    for (mount_point, fs) in mounts.iter() {
+        if path.starts_with(mount_point.as_str()) {
+            let _rel_path = &path[mount_point.len()..];
+            
+            // List root directory
+            let entries = fs.readdir(EXT4_ROOT_INODE as u64)?;
+            return Ok(entries.iter().map(|entry| {
+                let ft = match fs.getattr(entry.ino) {
+                    Ok(attrs) => attrs.file_type,
+                    Err(_) => VfsFileType::Regular,
+                };
+                let size = match fs.getattr(entry.ino) {
+                    Ok(attrs) => attrs.size,
+                    Err(_) => 0,
+                };
+                (entry.name.clone(), ft, size)
+            }).collect());
+        }
+    }
+    Err(VfsError::NotFound)
+}
+
+/// Read file from ext4 filesystem.
+pub fn cat(path: &str) -> Result<Vec<u8>, VfsError> {
+    let mounts = EXT4_MOUNTS.read();
+    for (mount_point, fs) in mounts.iter() {
+        if path.starts_with(mount_point.as_str()) {
+            let rel_path = &path[mount_point.len()..];
+            
+            // Lookup file
+            let ino = fs.lookup(EXT4_ROOT_INODE as u64, rel_path)?;
+            
+            // Read entire file
+            return fs.read(ino, 0, 1024 * 1024); // Max 1MB
+        }
+    }
+    Err(VfsError::NotFound)
+}
+
