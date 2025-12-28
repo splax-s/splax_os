@@ -1,7 +1,7 @@
 //! # Architecture-Specific Code
 //!
 //! This module provides a unified interface to architecture-specific functionality.
-//! The kernel uses this abstraction to remain portable across x86_64 and aarch64.
+//! The kernel uses this abstraction to remain portable across x86_64, aarch64, and riscv64.
 
 #[cfg(target_arch = "x86_64")]
 pub mod x86_64;
@@ -9,12 +9,18 @@ pub mod x86_64;
 #[cfg(target_arch = "aarch64")]
 pub mod aarch64;
 
+#[cfg(target_arch = "riscv64")]
+pub mod riscv64;
+
 // Re-export the current architecture's implementation
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::{gdt, idt, CpuContext, PageTableEntry};
 
 #[cfg(target_arch = "aarch64")]
 pub use aarch64::*;
+
+#[cfg(target_arch = "riscv64")]
+pub use riscv64::{CpuContext, PageTableEntry};
 
 /// Initialize architecture-specific features.
 ///
@@ -29,6 +35,9 @@ pub fn init() {
 
     #[cfg(target_arch = "aarch64")]
     unsafe { aarch64::init(); }
+
+    #[cfg(target_arch = "riscv64")]
+    riscv64::init();
 }
 
 /// Halt the CPU until the next interrupt.
@@ -49,6 +58,10 @@ pub fn halt() {
     unsafe {
         core::arch::asm!("wfe", options(nomem, nostack));
     }
+
+    #[cfg(target_arch = "riscv64")]
+    // SAFETY: WFI is a safe instruction that waits for interrupts
+    riscv64::wfi();
 }
 
 /// Disable interrupts and return the previous state.
@@ -85,7 +98,12 @@ pub fn disable_interrupts() -> bool {
         (daif & 0x3C0) == 0
     }
 
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    #[cfg(target_arch = "riscv64")]
+    {
+        riscv64::disable_interrupts()
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
     false
 }
 
@@ -108,6 +126,9 @@ pub fn restore_interrupts(enabled: bool) {
         unsafe {
             core::arch::asm!("msr daifclr, #0xf");
         }
+
+        #[cfg(target_arch = "riscv64")]
+        riscv64::enable_interrupts();
     }
 }
 
@@ -142,6 +163,11 @@ pub fn read_cycle_counter() -> u64 {
         counter
     }
 
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    #[cfg(target_arch = "riscv64")]
+    {
+        riscv64::csr::read_time()
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
     0
 }

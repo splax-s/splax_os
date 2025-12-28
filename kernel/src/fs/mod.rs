@@ -7,8 +7,11 @@
 //! - DevFS: Device nodes (/dev)
 //! - SysFS: Kernel objects (/sys)
 //! - SplaxFS: On-disk persistent filesystem
+//! - VFS Stub: Thin layer for hybrid kernel IPC (Phase A migration)
 //!
 //! ## Architecture
+//!
+//! ### Current (Monolithic)
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────┐
@@ -21,6 +24,23 @@
 //! ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐
 //! │ RamFS │ │ProcFS │ │ DevFS │ │ SysFS │ │SplaxFS│
 //! └───────┘ └───────┘ └───────┘ └───────┘ └───────┘
+//! ```
+//!
+//! ### Future (Hybrid Kernel - Phase A)
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────┐
+//! │          Kernel VFS Stub (vfs_stub.rs)       │
+//! │         (Forwards to S-STORAGE via IPC)     │
+//! └─────────────────────┬───────────────────────┘
+//!                       │ S-LINK IPC
+//!                       ▼
+//! ┌─────────────────────────────────────────────┐
+//! │         S-STORAGE Userspace Service          │
+//! │  ┌───────┐ ┌───────┐ ┌───────┐ ┌─────────┐  │
+//! │  │ RamFS │ │ ext4  │ │FAT32  │ │ SplaxFS │  │
+//! │  └───────┘ └───────┘ └───────┘ └─────────┘  │
+//! └─────────────────────────────────────────────┘
 //! ```
 //!
 //! ## API
@@ -36,6 +56,9 @@ pub mod devfs;
 pub mod sysfs;
 pub mod ext4;
 pub mod fat32;
+
+// Phase A: Hybrid kernel VFS stub (forwards to S-STORAGE userspace)
+pub mod vfs_stub;
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;

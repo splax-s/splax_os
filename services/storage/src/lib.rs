@@ -1,40 +1,65 @@
-//! # S-STORAGE: Object Storage Service
+//! # S-STORAGE: Storage Service
 //!
-//! S-STORAGE provides capability-gated object storage. Unlike traditional
-//! filesystems, there are no paths or directories - just objects identified
-//! by unique IDs and accessed via capability tokens.
+//! S-STORAGE provides two storage models:
 //!
-//! ## Design Philosophy
+//! ## 1. Object Storage (Original)
 //!
-//! - **No Paths**: Objects are identified by ID, not path
-//! - **Capability-Gated**: Every operation requires a token
-//! - **Immutable by Default**: Objects can be versioned
-//! - **Content-Addressed**: Optional deduplication via content hashing
+//! Capability-gated object storage where objects are identified by unique IDs
+//! rather than paths, accessed via capability tokens.
 //!
-//! ## Object Model
+//! ## 2. VFS Server (Phase A Migration)
+//!
+//! Traditional VFS operations exposed as an IPC service. This enables the
+//! hybrid kernel architecture where filesystem logic runs in userspace.
+//!
+//! ## Architecture (Hybrid Kernel)
 //!
 //! ```text
-//! Object {
-//!     id: ObjectId,
-//!     metadata: Metadata,
-//!     data: [u8],
-//!     capabilities: [Token],
-//! }
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │                        Applications                              │
+//! ├─────────────────────────────────────────────────────────────────┤
+//! │                     Kernel VFS Stub                              │
+//! │           (Thin layer that forwards to S-STORAGE)               │
+//! ├─────────────────────────────────────────────────────────────────┤
+//! │                        S-LINK IPC                                │
+//! ├─────────────────────────────────────────────────────────────────┤
+//! │  ┌───────────────────┐  ┌────────────────────────────────────┐ │
+//! │  │   Object Storage  │  │          VFS Server                 │ │
+//! │  │   (ObjectId API)  │  │  (Traditional path-based VFS)       │ │
+//! │  └───────────────────┘  └────────────────────────────────────┘ │
+//! │                       S-STORAGE Service                          │
+//! └─────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! ## Example
+//! ## Example (Object Storage)
 //!
 //! ```ignore
-//! // Create an object
 //! let id = storage.create(data, metadata, create_token)?;
-//!
-//! // Read an object
 //! let data = storage.read(id, read_token)?;
+//! ```
+//!
+//! ## Example (VFS Server)
+//!
+//! ```ignore
+//! let server = VfsServer::new();
+//! server.mount("/", ramfs, None, false)?;
+//! let handle = server.open("/etc/config", OpenFlags::read_only(), 0)?;
+//! let data = server.read(handle, None, 1024)?;
 //! ```
 
 #![no_std]
 
 extern crate alloc;
+
+// VFS RPC Protocol (message formats for kernel<->storage IPC)
+pub mod vfs_protocol;
+
+// VFS Server (userspace filesystem handler)
+pub mod vfs_server;
+
+// Re-export VFS types
+pub use vfs_protocol::*;
+pub use vfs_server::{Filesystem, VfsServer};
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
