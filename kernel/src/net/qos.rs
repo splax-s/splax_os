@@ -479,8 +479,8 @@ impl Qdisc for TbfQdisc {
     }
 
     fn dequeue(&mut self) -> Option<QueuedPacket> {
-        // Get current time (would use real timer in production)
-        let now = 0u64; // Placeholder
+        // Get current time using the architecture's cycle counter
+        let now = crate::arch::read_cycle_counter();
         self.update_tokens(now);
 
         if let Some(packet) = self.queue.front() {

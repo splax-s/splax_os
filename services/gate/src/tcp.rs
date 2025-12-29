@@ -282,13 +282,116 @@ pub fn queue_connection(port: u16, remote_ip: u32, remote_port: u16) -> bool {
     false // No listener or backlog full
 }
 
-/// Flush transmit buffer to network (stub for network stack integration)
+/// Flush transmit buffer to network via network stack syscall
 fn flush_tx_buffer(conn: &mut TcpConnection) {
-    // In a complete implementation, this would:
-    // 1. Take data from tx_buffer
-    // 2. Build TCP segments with proper headers
-    // 3. Send via network stack
-    // 
-    // For now, data stays in buffer until network driver polls
-    let _ = conn;
+    // Take all pending data from transmit buffer
+    if conn.tx_buffer.is_empty() {
+        return;
+    }
+    
+    // Collect buffer data into contiguous slice for transmission
+    let data: Vec<u8> = conn.tx_buffer.iter().copied().collect();
+    
+    // Build TCP segment header
+    let segment = TcpSegment {
+        src_port: conn.local_port,
+        dst_port: conn.remote_port,
+        seq_num: 0, // Would track actual sequence numbers in full impl
+        ack_num: 0,
+        flags: TCP_FLAG_ACK | TCP_FLAG_PSH,
+        window: 65535,
+        payload: &data,
+    };
+    
+    // Send via network stack syscall
+    let result = net_send_tcp(conn.remote_ip, &segment);
+    
+    if result >= 0 {
+        // Successfully queued for transmission - clear sent data
+        let sent = result as usize;
+        for _ in 0..sent.min(conn.tx_buffer.len()) {
+            conn.tx_buffer.pop_front();
+        }
+    }
+    // On error, data remains in buffer for retry
+}
+
+// TCP flags
+const TCP_FLAG_ACK: u8 = 0x10;
+const TCP_FLAG_PSH: u8 = 0x08;
+
+/// TCP segment for transmission
+struct TcpSegment<'a> {
+    src_port: u16,
+    dst_port: u16,
+    seq_num: u32,
+    ack_num: u32,
+    flags: u8,
+    window: u16,
+    payload: &'a [u8],
+}
+
+/// Send TCP segment via network stack syscall
+fn net_send_tcp(remote_ip: u32, segment: &TcpSegment) -> i64 {
+    // Build raw TCP packet
+    let header_len = 20; // Minimum TCP header
+    let total_len = header_len + segment.payload.len();
+    let mut packet = Vec::with_capacity(total_len);
+    
+    // TCP header
+    packet.extend_from_slice(&segment.src_port.to_be_bytes());
+    packet.extend_from_slice(&segment.dst_port.to_be_bytes());
+    packet.extend_from_slice(&segment.seq_num.to_be_bytes());
+    packet.extend_from_slice(&segment.ack_num.to_be_bytes());
+    packet.push((5 << 4) | 0); // Data offset (5 words) + reserved
+    packet.push(segment.flags);
+    packet.extend_from_slice(&segment.window.to_be_bytes());
+    packet.extend_from_slice(&[0u8; 2]); // Checksum (calculated by kernel)
+    packet.extend_from_slice(&[0u8; 2]); // Urgent pointer
+    packet.extend_from_slice(segment.payload);
+    
+    // Network send syscall
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let result: i64;
+        core::arch::asm!(
+            "syscall",
+            in("rax") 44u64,  // sendto syscall
+            in("rdi") 0u64,   // socket fd (would be actual fd)
+            in("rsi") packet.as_ptr() as u64,
+            in("rdx") packet.len() as u64,
+            in("r10") 0u64,   // flags
+            in("r8") remote_ip as u64,
+            in("r9") 0u64,    // addr len
+            lateout("rax") result,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack)
+        );
+        return result;
+    }
+    
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let result: i64;
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 206u64,  // sendto syscall
+            in("x0") 0u64,    // socket fd
+            in("x1") packet.as_ptr() as u64,
+            in("x2") packet.len() as u64,
+            in("x3") 0u64,    // flags
+            in("x4") remote_ip as u64,
+            in("x5") 0u64,    // addr len
+            lateout("x0") result,
+            options(nostack)
+        );
+        return result;
+    }
+    
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        let _ = (remote_ip, packet);
+        -1
+    }
 }

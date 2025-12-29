@@ -164,16 +164,210 @@ impl DmaBuffer {
     }
 
     /// Syncs for device access (flush caches)
+    /// 
+    /// Called before the device reads from the buffer.
+    /// Ensures all CPU writes are visible to the device by flushing
+    /// dirty cache lines to memory.
     pub fn sync_for_device(&self) {
         if !self.coherent {
-            // In full implementation: cache flush
+            // Memory barrier to ensure all prior writes complete
+            Self::memory_barrier_write();
+            
+            // Flush cache lines covering this buffer
+            Self::cache_flush(self.virt_addr as usize, self.size);
+            
+            // Full memory barrier after flush
+            Self::memory_barrier_full();
         }
     }
 
     /// Syncs for CPU access (invalidate caches)
+    ///
+    /// Called before the CPU reads from the buffer after device writes.
+    /// Invalidates cache lines so CPU reads fresh data from memory.
     pub fn sync_for_cpu(&self) {
         if !self.coherent {
-            // In full implementation: cache invalidate
+            // Memory barrier before invalidation
+            Self::memory_barrier_full();
+            
+            // Invalidate cache lines covering this buffer
+            Self::cache_invalidate(self.virt_addr as usize, self.size);
+            
+            // Read memory barrier after invalidation
+            Self::memory_barrier_read();
+        }
+    }
+
+    /// Issues a full memory barrier (fence)
+    #[inline(always)]
+    fn memory_barrier_full() {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            // MFENCE: Full memory fence - serializes all loads and stores
+            core::arch::asm!("mfence", options(nostack, preserves_flags));
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            // DSB SY: Data Synchronization Barrier, full system
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        }
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            // FENCE: Full fence for RISC-V
+            core::arch::asm!("fence iorw, iorw", options(nostack, preserves_flags));
+        }
+    }
+
+    /// Issues a write memory barrier
+    #[inline(always)]
+    fn memory_barrier_write() {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            // SFENCE: Store fence - ensures all prior stores are visible
+            core::arch::asm!("sfence", options(nostack, preserves_flags));
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            // DSB ST: Data Synchronization Barrier, stores only
+            core::arch::asm!("dsb st", options(nostack, preserves_flags));
+        }
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            // FENCE: Write fence for RISC-V
+            core::arch::asm!("fence ow, ow", options(nostack, preserves_flags));
+        }
+    }
+
+    /// Issues a read memory barrier
+    #[inline(always)]
+    fn memory_barrier_read() {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            // LFENCE: Load fence - ensures all prior loads complete
+            core::arch::asm!("lfence", options(nostack, preserves_flags));
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            // DSB LD: Data Synchronization Barrier, loads only
+            core::arch::asm!("dsb ld", options(nostack, preserves_flags));
+        }
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            // FENCE: Read fence for RISC-V
+            core::arch::asm!("fence ir, ir", options(nostack, preserves_flags));
+        }
+    }
+
+    /// Flushes cache lines for a memory region
+    ///
+    /// Writes dirty cache lines back to memory without invalidating.
+    fn cache_flush(addr: usize, size: usize) {
+        #[cfg(target_arch = "x86_64")]
+        {
+            // x86-64 cache line size is typically 64 bytes
+            const CACHE_LINE_SIZE: usize = 64;
+            let start = addr & !(CACHE_LINE_SIZE - 1);
+            let end = (addr + size + CACHE_LINE_SIZE - 1) & !(CACHE_LINE_SIZE - 1);
+            
+            let mut current = start;
+            while current < end {
+                unsafe {
+                    // CLFLUSH: Cache Line Flush - writes back and invalidates
+                    // CLWB would be preferred (write-back without invalidate) but requires newer CPUs
+                    core::arch::asm!(
+                        "clflush [{}]",
+                        in(reg) current,
+                        options(nostack, preserves_flags)
+                    );
+                }
+                current += CACHE_LINE_SIZE;
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            // ARM64 cache line size is typically 64 bytes (can vary)
+            const CACHE_LINE_SIZE: usize = 64;
+            let start = addr & !(CACHE_LINE_SIZE - 1);
+            let end = (addr + size + CACHE_LINE_SIZE - 1) & !(CACHE_LINE_SIZE - 1);
+            
+            let mut current = start;
+            while current < end {
+                unsafe {
+                    // DC CVAC: Data Cache Clean by VA to Point of Coherency
+                    core::arch::asm!(
+                        "dc cvac, {}",
+                        in(reg) current,
+                        options(nostack, preserves_flags)
+                    );
+                }
+                current += CACHE_LINE_SIZE;
+            }
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            // RISC-V cache management depends on extensions
+            // CBO (Cache Block Operations) extension provides cbo.flush
+            // Without CBO, use fence.i for instruction cache coherence
+            let _ = (addr, size);
+            // Fallback: full fence
+            unsafe {
+                core::arch::asm!("fence.i", options(nostack, preserves_flags));
+            }
+        }
+    }
+
+    /// Invalidates cache lines for a memory region
+    ///
+    /// Discards cache lines, forcing fresh read from memory.
+    fn cache_invalidate(addr: usize, size: usize) {
+        #[cfg(target_arch = "x86_64")]
+        {
+            // x86-64: CLFLUSH both flushes and invalidates
+            // There's no invalidate-only instruction available in user mode
+            const CACHE_LINE_SIZE: usize = 64;
+            let start = addr & !(CACHE_LINE_SIZE - 1);
+            let end = (addr + size + CACHE_LINE_SIZE - 1) & !(CACHE_LINE_SIZE - 1);
+            
+            let mut current = start;
+            while current < end {
+                unsafe {
+                    core::arch::asm!(
+                        "clflush [{}]",
+                        in(reg) current,
+                        options(nostack, preserves_flags)
+                    );
+                }
+                current += CACHE_LINE_SIZE;
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            const CACHE_LINE_SIZE: usize = 64;
+            let start = addr & !(CACHE_LINE_SIZE - 1);
+            let end = (addr + size + CACHE_LINE_SIZE - 1) & !(CACHE_LINE_SIZE - 1);
+            
+            let mut current = start;
+            while current < end {
+                unsafe {
+                    // DC IVAC: Data Cache Invalidate by VA to Point of Coherency
+                    // Note: IVAC may cause data loss if line is dirty; 
+                    // use CIVAC (clean+invalidate) if unsure
+                    core::arch::asm!(
+                        "dc ivac, {}",
+                        in(reg) current,
+                        options(nostack, preserves_flags)
+                    );
+                }
+                current += CACHE_LINE_SIZE;
+            }
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            // RISC-V: Similar to flush, depends on CBO extension
+            let _ = (addr, size);
+            unsafe {
+                core::arch::asm!("fence.i", options(nostack, preserves_flags));
+            }
         }
     }
 }

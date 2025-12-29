@@ -157,6 +157,143 @@ fn kill_process(pid: u64, signal: i32) -> Result<(), ()> {
     if result == 0 { Ok(()) } else { Err(()) }
 }
 
+/// Result of a non-blocking waitpid call
+enum WaitResult {
+    /// Process exited with status code
+    Exited(i32),
+    /// Process was killed by signal
+    Signaled(i32),
+    /// Process is still running
+    StillRunning,
+    /// Error occurred (process doesn't exist or not a child)
+    Error,
+}
+
+/// Non-blocking wait for process status
+fn waitpid_nonblocking(pid: u64) -> WaitResult {
+    let result: i64;
+    let status: i32;
+    const WNOHANG: u64 = 1;
+    
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let mut status_val: i32 = 0;
+        core::arch::asm!(
+            "syscall",
+            in("rax") 61u64,  // wait4 syscall
+            in("rdi") pid as i64,
+            in("rsi") &mut status_val as *mut i32 as u64,
+            in("rdx") WNOHANG,
+            in("r10") 0u64,   // rusage = NULL
+            lateout("rax") result,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack)
+        );
+        status = status_val;
+    }
+    
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let mut status_val: i32 = 0;
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 260u64,  // waitpid syscall
+            in("x0") pid as i64,
+            in("x1") &mut status_val as *mut i32 as u64,
+            in("x2") WNOHANG,
+            lateout("x0") result,
+            options(nostack)
+        );
+        status = status_val;
+    }
+    
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        result = -1;
+        status = 0;
+    }
+    
+    if result < 0 {
+        WaitResult::Error
+    } else if result == 0 {
+        WaitResult::StillRunning
+    } else {
+        // Decode wait status (POSIX-style)
+        if (status & 0x7f) == 0 {
+            // Exited normally: exit code in bits 8-15
+            WaitResult::Exited((status >> 8) & 0xff)
+        } else {
+            // Killed by signal: signal number in bits 0-6
+            WaitResult::Signaled(status & 0x7f)
+        }
+    }
+}
+
+/// Get current timestamp in milliseconds
+fn get_timestamp_ms() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Read TSC and convert to approximate milliseconds
+        // Assumes ~2GHz CPU for rough conversion
+        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        tsc / 2_000_000  // Rough ms conversion
+    }
+    
+    #[cfg(target_arch = "aarch64")]
+    {
+        let cnt: u64;
+        let freq: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) cnt, options(nostack, nomem));
+            core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nostack, nomem));
+        }
+        // Convert counter to milliseconds using frequency
+        if freq > 0 {
+            (cnt * 1000) / freq
+        } else {
+            cnt / 1_000_000  // Fallback: assume ~1GHz
+        }
+    }
+    
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        0
+    }
+}
+
+/// Yield CPU to scheduler
+fn yield_cpu() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        // sched_yield syscall
+        core::arch::asm!(
+            "syscall",
+            in("rax") 24u64,  // sched_yield
+            lateout("rax") _,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack)
+        );
+    }
+    
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        // sched_yield syscall
+        core::arch::asm!(
+            "svc #0",
+            in("x8") 124u64,  // sched_yield
+            lateout("x0") _,
+            options(nostack)
+        );
+    }
+    
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        core::hint::spin_loop();
+    }
+}
+
 // =============================================================================
 // SERVICE TYPES
 // =============================================================================
@@ -555,19 +692,41 @@ impl ServiceManager {
         if let Some(pid) = service.pid {
             const SIGTERM: i32 = 15;
             const SIGKILL: i32 = 9;
+            const GRACEFUL_TIMEOUT_MS: u64 = 5000; // 5 second timeout
             
             // Try graceful shutdown first
             let _ = kill_process(pid, SIGTERM);
             
-            // Wait briefly for process to exit
-            // In a full implementation, we'd use proper timeout
-            for _ in 0..1000 {
-                // Spin-wait (real impl would yield to scheduler)
-                core::hint::spin_loop();
+            // Wait for process to exit with proper timeout
+            let start_time = get_timestamp_ms();
+            loop {
+                // Check if process has exited using waitpid with WNOHANG
+                match waitpid_nonblocking(pid) {
+                    WaitResult::Exited(_) | WaitResult::Signaled(_) => {
+                        // Process exited gracefully
+                        break;
+                    }
+                    WaitResult::StillRunning => {
+                        // Check timeout
+                        let elapsed = get_timestamp_ms().saturating_sub(start_time);
+                        if elapsed >= GRACEFUL_TIMEOUT_MS {
+                            // Timeout - force kill
+                            let _ = kill_process(pid, SIGKILL);
+                            // Brief wait for SIGKILL to take effect
+                            for _ in 0..100 {
+                                yield_cpu();
+                            }
+                            break;
+                        }
+                        // Yield to scheduler to avoid busy-waiting
+                        yield_cpu();
+                    }
+                    WaitResult::Error => {
+                        // Process may have already exited
+                        break;
+                    }
+                }
             }
-            
-            // Force kill if still running
-            let _ = kill_process(pid, SIGKILL);
         }
         
         service.state = ServiceState::Stopped;

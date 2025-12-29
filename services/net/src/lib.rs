@@ -285,7 +285,7 @@ pub enum SocketMessage {
 }
 
 /// Socket domain (address family)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SocketDomain {
     /// IPv4
     Inet,

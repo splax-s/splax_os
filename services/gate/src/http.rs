@@ -98,23 +98,76 @@ impl HttpResponseMessage {
         response
     }
     
-    /// Parses from bytes (simple format: status as u16 + body).
-    /// In a full implementation, this would parse a proper serialization format.
+    /// Parses from bytes using a structured binary format.
+    /// Format: status(u16) | headers_count(u16) | [key_len(u16) | key | value_len(u16) | value]... | body_len(u32) | body
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 2 {
+        if bytes.len() < 4 {
             return None;
         }
         
-        let status = u16::from_le_bytes([bytes[0], bytes[1]]);
-        let body = if bytes.len() > 2 {
-            bytes[2..].to_vec()
+        let mut offset = 0;
+        
+        // Read status code
+        let status = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        offset += 2;
+        
+        // Read headers count
+        if offset + 2 > bytes.len() {
+            return Some(Self { status, headers: Vec::new(), body: Vec::new() });
+        }
+        let headers_count = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]) as usize;
+        offset += 2;
+        
+        // Read headers
+        let mut headers = Vec::with_capacity(headers_count);
+        for _ in 0..headers_count {
+            // Read key length and key
+            if offset + 2 > bytes.len() { break; }
+            let key_len = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]) as usize;
+            offset += 2;
+            
+            if offset + key_len > bytes.len() { break; }
+            let key = core::str::from_utf8(&bytes[offset..offset + key_len])
+                .ok()?
+                .to_string();
+            offset += key_len;
+            
+            // Read value length and value
+            if offset + 2 > bytes.len() { break; }
+            let value_len = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]) as usize;
+            offset += 2;
+            
+            if offset + value_len > bytes.len() { break; }
+            let value = core::str::from_utf8(&bytes[offset..offset + value_len])
+                .ok()?
+                .to_string();
+            offset += value_len;
+            
+            headers.push((key, value));
+        }
+        
+        // Read body
+        let body = if offset + 4 <= bytes.len() {
+            let body_len = u32::from_le_bytes([
+                bytes[offset], bytes[offset + 1], 
+                bytes[offset + 2], bytes[offset + 3]
+            ]) as usize;
+            offset += 4;
+            
+            if offset + body_len <= bytes.len() {
+                bytes[offset..offset + body_len].to_vec()
+            } else {
+                bytes[offset..].to_vec()
+            }
+        } else if offset < bytes.len() {
+            bytes[offset..].to_vec()
         } else {
             Vec::new()
         };
         
         Some(Self {
             status,
-            headers: Vec::new(),
+            headers,
             body,
         })
     }

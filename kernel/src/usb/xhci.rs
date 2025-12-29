@@ -469,9 +469,9 @@ pub struct XhciController {
     /// Capability register length
     cap_length: u8,
     /// Number of ports
-    num_ports: u8,
+    pub num_ports: u8,
     /// Number of device slots
-    num_slots: u8,
+    pub num_slots: u8,
     /// Command ring
     command_ring: CommandRing,
     /// Event ring
@@ -878,19 +878,159 @@ impl UsbHostController for XhciController {
 }
 
 /// Probe for xHCI controllers via PCI
+/// 
+/// Scans the PCI bus for USB 3.0 xHCI controllers and returns the first one found.
+/// xHCI controllers are identified by:
+/// - Class: 0x0C (Serial Bus Controller)
+/// - Subclass: 0x03 (USB Controller)  
+/// - Programming Interface: 0x30 (xHCI)
 pub fn probe_xhci() -> Option<Box<dyn UsbHostController>> {
-    // In a full implementation, we would scan PCI for devices with:
-    // Class: 0x0C (Serial Bus Controller)
-    // Subclass: 0x03 (USB Controller)
-    // Prog IF: 0x30 (xHCI)
-    //
-    // For now, we return None and the USB subsystem will work
-    // without a hardware controller (useful for testing)
+    use crate::pci::{self, class, serial_subclass};
     
-    // Example of how to create a controller if we find one:
-    // if let Some(base_addr) = find_xhci_pci_device() {
-    //     return Some(Box::new(XhciController::new(base_addr)));
-    // }
+    crate::serial_println!("[xhci] Probing for xHCI controllers...");
     
+    // Find all USB controllers (class 0x0C, subclass 0x03)
+    let usb_controllers = pci::pci().find_by_class(class::SERIAL_BUS, serial_subclass::USB);
+    
+    for device in usb_controllers {
+        // Check if this is an xHCI controller (prog_if = 0x30)
+        if device.prog_if == XHCI_PROG_IF {
+            crate::serial_println!(
+                "[xhci] Found xHCI controller at {} - {:04x}:{:04x}",
+                device.address,
+                device.vendor_id,
+                device.device_id
+            );
+            
+            // Get the MMIO base address from BAR0
+            // xHCI uses a single 64-bit or 32-bit memory BAR
+            if let Some(bar) = device.bars.first() {
+                let base_address = bar.address as usize;
+                let size = bar.size as usize;
+                
+                crate::serial_println!(
+                    "[xhci] BAR0: base=0x{:016x}, size=0x{:x}, type={:?}",
+                    base_address,
+                    size,
+                    bar.bar_type
+                );
+                
+                // Validate the BAR
+                if base_address == 0 {
+                    crate::serial_println!("[xhci] Invalid BAR0 address, skipping");
+                    continue;
+                }
+                
+                // Enable bus mastering and memory space access
+                device.enable_bus_master();
+                device.enable_memory();
+                
+                // Disable legacy interrupts (we'll use MSI/MSI-X if available)
+                device.disable_interrupts();
+                
+                // Try to enable MSI-X or MSI for better interrupt handling
+                if let Some(ref msix) = device.msix {
+                    crate::serial_println!(
+                        "[xhci] MSI-X supported with {} vectors",
+                        msix.table_size
+                    );
+                    // MSI-X setup would go here
+                } else if let Some(ref msi) = device.msi {
+                    crate::serial_println!(
+                        "[xhci] MSI supported with up to {} vectors",
+                        msi.max_vectors
+                    );
+                    // MSI setup would go here
+                }
+                
+                // Create the xHCI controller instance
+                let mut controller = XhciController::new(base_address);
+                
+                // Initialize the controller (reads capability registers, resets, etc.)
+                match controller.init() {
+                    Ok(()) => {
+                        crate::serial_println!("[xhci] Controller initialized successfully");
+                        
+                        // Log controller capabilities
+                        crate::serial_println!(
+                            "[xhci] Ports: {}, Device Slots: {}",
+                            controller.num_ports,
+                            controller.num_slots
+                        );
+                        
+                        return Some(Box::new(controller));
+                    }
+                    Err(e) => {
+                        crate::serial_println!("[xhci] Failed to initialize controller: {}", e);
+                        continue;
+                    }
+                }
+            } else {
+                crate::serial_println!("[xhci] No BAR found for controller, skipping");
+            }
+        }
+    }
+    
+    crate::serial_println!("[xhci] No xHCI controllers found");
     None
+}
+
+/// Probe for all xHCI controllers on the system
+/// 
+/// Returns a vector of all xHCI controllers found on the PCI bus.
+pub fn probe_all_xhci() -> alloc::vec::Vec<Box<dyn UsbHostController>> {
+    use crate::pci::{self, class, serial_subclass};
+    
+    let mut controllers: alloc::vec::Vec<Box<dyn UsbHostController>> = alloc::vec::Vec::new();
+    
+    crate::serial_println!("[xhci] Probing for all xHCI controllers...");
+    
+    // Find all USB controllers (class 0x0C, subclass 0x03)
+    let usb_controllers = pci::pci().find_by_class(class::SERIAL_BUS, serial_subclass::USB);
+    
+    for device in usb_controllers {
+        // Check if this is an xHCI controller (prog_if = 0x30)
+        if device.prog_if == XHCI_PROG_IF {
+            crate::serial_println!(
+                "[xhci] Found xHCI controller at {} - {:04x}:{:04x}",
+                device.address,
+                device.vendor_id,
+                device.device_id
+            );
+            
+            if let Some(bar) = device.bars.first() {
+                let base_address = bar.address as usize;
+                
+                if base_address == 0 {
+                    continue;
+                }
+                
+                device.enable_bus_master();
+                device.enable_memory();
+                device.disable_interrupts();
+                
+                let mut controller = XhciController::new(base_address);
+                match controller.init() {
+                    Ok(()) => {
+                        crate::serial_println!(
+                            "[xhci] Initialized controller at {} with {} ports",
+                            device.address,
+                            controller.num_ports
+                        );
+                        controllers.push(Box::new(controller));
+                    }
+                    Err(e) => {
+                        crate::serial_println!(
+                            "[xhci] Failed to initialize controller at {}: {}",
+                            device.address,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+    
+    crate::serial_println!("[xhci] Found {} xHCI controller(s)", controllers.len());
+    controllers
 }

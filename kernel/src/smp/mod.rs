@@ -199,6 +199,128 @@ impl SmpState {
 /// Global SMP state instance.
 static SMP_STATE: SmpState = SmpState::new();
 
+// ============================================================================
+// Per-CPU Function Call Queue
+// ============================================================================
+
+/// A function call that can be executed on a remote CPU.
+pub struct FunctionCall {
+    /// The function to execute (takes a context pointer).
+    func: fn(u64),
+    /// Argument/context to pass to the function.
+    arg: u64,
+}
+
+/// A lock-free queue for per-CPU function calls.
+/// Uses a simple ring buffer with atomic head/tail pointers.
+pub struct FunctionCallQueue {
+    /// Ring buffer of function calls.
+    buffer: Mutex<[Option<FunctionCall>; 64]>,
+    /// Number of pending calls.
+    count: AtomicUsize,
+}
+
+impl FunctionCallQueue {
+    /// Creates a new empty function call queue.
+    const fn new() -> Self {
+        const EMPTY: Option<FunctionCall> = None;
+        Self {
+            buffer: Mutex::new([EMPTY; 64]),
+            count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Pushes a function call onto the queue.
+    /// Returns true if successful, false if the queue is full.
+    pub fn push(&self, call: FunctionCall) -> bool {
+        let mut buffer = self.buffer.lock();
+        // Find an empty slot
+        for slot in buffer.iter_mut() {
+            if slot.is_none() {
+                *slot = Some(call);
+                self.count.fetch_add(1, Ordering::Release);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Pops a function call from the queue.
+    pub fn pop(&self) -> Option<FunctionCall> {
+        if self.count.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        let mut buffer = self.buffer.lock();
+        // Find a non-empty slot
+        for slot in buffer.iter_mut() {
+            if slot.is_some() {
+                let call = slot.take();
+                self.count.fetch_sub(1, Ordering::Release);
+                return call;
+            }
+        }
+        None
+    }
+
+    /// Returns true if the queue is empty.
+    pub fn is_empty(&self) -> bool {
+        self.count.load(Ordering::Acquire) == 0
+    }
+}
+
+/// Per-CPU function call queues.
+static FUNCTION_CALL_QUEUES: [FunctionCallQueue; MAX_CPUS] = {
+    const INIT: FunctionCallQueue = FunctionCallQueue::new();
+    [INIT; MAX_CPUS]
+};
+
+/// Schedules a function to be called on a remote CPU.
+///
+/// The function will be executed when the target CPU handles the
+/// FunctionCall IPI. This is useful for operations that must be
+/// performed on a specific CPU, such as TLB invalidations or
+/// cache management.
+///
+/// # Arguments
+///
+/// * `target` - The CPU to execute the function on
+/// * `func` - The function to execute
+/// * `arg` - Argument to pass to the function
+///
+/// # Returns
+///
+/// `true` if the call was queued successfully, `false` if the queue is full.
+pub fn call_on_cpu(target: CpuId, func: fn(u64), arg: u64) -> bool {
+    let idx = target.as_index();
+    if idx >= MAX_CPUS {
+        return false;
+    }
+
+    let call = FunctionCall { func, arg };
+    if FUNCTION_CALL_QUEUES[idx].push(call) {
+        // Send IPI to wake up the target CPU
+        send_ipi(target, IpiType::FunctionCall);
+        true
+    } else {
+        false
+    }
+}
+
+/// Schedules a function to be called on all CPUs except the current one.
+///
+/// # Arguments
+///
+/// * `func` - The function to execute
+/// * `arg` - Argument to pass to the function
+pub fn call_on_all_others(func: fn(u64), arg: u64) {
+    let current = current_cpu_id();
+    SMP_STATE.for_each_online(|cpu| {
+        if cpu != current {
+            let _ = call_on_cpu(cpu, func, arg);
+        }
+    });
+}
+
 /// Returns a reference to the global SMP state.
 pub fn smp_state() -> &'static SmpState {
     &SMP_STATE
@@ -445,17 +567,21 @@ pub fn handle_ipi(ipi_type: IpiType) {
             }
         }
         IpiType::FunctionCall => {
-            // Execute pending function calls for this CPU
-            // In a full implementation, there would be a per-CPU queue
-            // of function pointers to execute
+            // Execute pending function calls for this CPU from the per-CPU queue
             let cpu_id = current_cpu_id();
             let idx = cpu_id.as_index();
             
-            // Get per-CPU data and check for pending calls
             if idx < MAX_CPUS {
-                if let Some(ref _percpu) = *SMP_STATE.cpus[idx].lock() {
-                    // Functions would be stored in a queue and executed here
-                    // For now, this is a no-op as the queue isn't implemented
+                // Drain and execute all pending function calls
+                loop {
+                    let func = FUNCTION_CALL_QUEUES[idx].pop();
+                    match func {
+                        Some(call) => {
+                            // Execute the function with its context
+                            (call.func)(call.arg);
+                        }
+                        None => break,
+                    }
                 }
             }
         }

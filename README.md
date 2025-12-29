@@ -63,40 +63,51 @@ Splax OS is a **production-grade, capability-secure, distributed-first operating
 
 - Rust nightly toolchain
 - QEMU for testing
+- xorriso for ISO creation
 - (Optional) Cross-compilation toolchains for aarch64
 
 ### Setup
 
 ```bash
 # Clone the repository
-git clone https://github.com/splax/splax_os.git
+git clone https://github.com/splax-s/splax_os.git
 cd splax_os
 
-# Install Rust nightly
+# Install Rust nightly and components
 rustup override set nightly
 rustup component add rust-src llvm-tools-preview
 
-# Build for x86_64
-./scripts/build.sh x86_64
+# Build the kernel
+cargo build -p splax_kernel --bin splax_kernel --release \
+    --target x86_64-unknown-none \
+    -Zbuild-std=core,alloc \
+    -Zbuild-std-features=compiler-builtins-mem
 
-# Build for aarch64
-./scripts/build.sh aarch64
+# Create bootable ISO
+cp target/x86_64-unknown-none/release/splax_kernel target/iso/iso_root/boot/
+xorriso -as mkisofs -b boot/limine/limine-bios-cd.bin -no-emul-boot \
+    -boot-load-size 4 -boot-info-table --efi-boot boot/limine/limine-uefi-cd.bin \
+    -efi-boot-part --efi-boot-image --protective-msdos-label \
+    target/iso/iso_root -o target/iso/splax.iso
 
 # Run in QEMU
-./scripts/qemu.sh x86_64
+qemu-system-x86_64 -cdrom target/iso/splax.iso -m 256M -serial stdio -no-reboot
 ```
 
 ### Development
 
 ```bash
-# Check compilation
+# Check compilation (all crates)
 cargo check
 
-# Run tests
-./scripts/test.sh unit
-
 # Build in release mode
-./scripts/build.sh x86_64 --release
+cargo build -p splax_kernel --bin splax_kernel --release \
+    --target x86_64-unknown-none \
+    -Zbuild-std=core,alloc \
+    -Zbuild-std-features=compiler-builtins-mem
+
+# Run tests
+cargo test --workspace --exclude splax_kernel --exclude splax_bootloader
 ```
 
 ## Project Structure
@@ -133,42 +144,105 @@ splax_os/
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| **S-CORE Kernel** | ✅ Done | Boots on x86_64 and aarch64, VGA/UART output |
-| **x86_64 Support** | ✅ Done | IDT, GDT, serial, VGA, keyboard, paging |
+| **S-CORE Kernel** | ✅ Done | Boots on x86_64 and aarch64, full subsystem initialization |
+| **x86_64 Support** | ✅ Done | IDT, GDT, LAPIC, PIC, PIT, serial, VGA, keyboard, paging |
 | **aarch64 Support** | ✅ Done | GIC, PL011 UART, Generic Timer, MMU, exceptions |
-| **S-CAP** | ✅ Done | Capability tokens, grant/check/revoke, audit logging |
-| **Memory Manager** | ✅ Done | Frame allocator, no-overcommit, page tables |
-| **Scheduler** | ✅ Done | Priority-based, deterministic, 4 priority classes |
-| **S-LINK** | ✅ Done | IPC channels, message passing, capability transfer |
+| **S-CAP** | ✅ Done | Capability tokens, grant/check/revoke, recursive revocation, audit |
+| **Memory Manager** | ✅ Done | Frame allocator, heap (free-list), page tables, no overcommit |
+| **Scheduler** | ✅ Done | Priority-based, SMP-aware, per-CPU work queues, IPIs |
+| **S-LINK** | ✅ Done | IPC channels, zero-copy messaging, capability transfer |
 | **S-ATLAS** | ✅ Done | Service registry, discovery, health monitoring |
-| **S-GATE** | ✅ Done | TCP/HTTP gateway, routing, S-LINK integration |
-| **S-STORAGE** | ✅ Done | Content-addressed objects, deduplication |
-| **S-WAVE** | ✅ Done | WASM module loading, host functions, execution |
+| **S-GATE** | ✅ Done | TCP/HTTP gateway, routing, TLS, S-LINK integration |
+| **S-STORAGE** | ✅ Done | VFS, content-addressed objects, deduplication |
+| **S-WAVE** | ✅ Done | WASM module loading, bytecode interpreter, host functions |
 | **S-TERM** | ✅ Done | CLI commands, kernel shell integration |
-| **Testing** | ✅ Done | 30+ integration tests across all components |
-| **Documentation** | ✅ Done | Architecture docs, API reference |
+| **Network Stack** | ✅ Done | TCP/IP, UDP, ARP, ICMP, DNS, DHCP, SSH client, firewall, QoS |
+| **Network Drivers** | ✅ Done | VirtIO-net, E1000, RTL8139, WiFi framework |
+| **Block Layer** | ✅ Done | VirtIO-blk, NVMe, AHCI, partitions, I/O scheduler |
+| **Filesystems** | ✅ Done | VFS, RamFS, ext4 (read), FAT32, SplaxFS, ProcFS, SysFS, DevFS |
+| **Crypto** | ✅ Done | SHA-1/256/512, AES-256-CBC, ChaCha20, HMAC, HKDF, PBKDF2, RNG |
+| **Sound** | ✅ Done | AC97, Intel HDA, VirtIO-snd, AudioDevice trait |
+| **USB** | ✅ Done | xHCI host controller, HID (keyboard/mouse) |
+| **PCI** | ✅ Done | Bus enumeration, device discovery, BAR handling, MSI/MSI-X |
+| **GPU** | ✅ Done | Framebuffer, console, 2D primitives, text rendering |
+| **Documentation** | ✅ Done | Architecture docs, API reference, build instructions |
 
-### 🔄 In Progress
-| **aarch64** | 📋 Planned | ARM64 port |
+### 📋 Planned
+| **GUI (S-CANVAS)** | 📋 Planned | Windowing system, compositor |
+| **RISC-V Support** | 📋 Planned | Third architecture target |
 
 ## Running Splax OS
 
-### Quick Start
+### Prerequisites
+
+- Rust nightly toolchain with `rust-src` component
+- QEMU (x86_64 and optionally aarch64)
+- xorriso (for ISO creation)
+- Limine bootloader (included in `target/iso/`)
+
+### Building the Kernel
 
 ```bash
-# Build the kernel
-cargo build -p splax_kernel --bin splax_kernel \
+# Install Rust nightly and required components
+rustup override set nightly
+rustup component add rust-src llvm-tools-preview
+
+# Build for x86_64 (release mode)
+cargo build -p splax_kernel --bin splax_kernel --release \
     --target x86_64-unknown-none \
-    -Z build-std=core,alloc \
-    -Z build-std-features=compiler-builtins-mem \
-    --release
+    -Zbuild-std=core,alloc \
+    -Zbuild-std-features=compiler-builtins-mem
 
-# Create bootable ISO (requires i686-elf-grub)
-cp target/x86_64-unknown-none/release/splax_kernel target/iso/boot/
-i686-elf-grub-mkrescue -o target/splax.iso target/iso
+# Check for compilation errors
+cargo check
+```
 
-# Run in QEMU
-qemu-system-x86_64 -cdrom target/splax.iso -serial stdio -m 512M
+### Creating Bootable ISO
+
+```bash
+# Copy kernel to ISO structure
+cp target/x86_64-unknown-none/release/splax_kernel target/iso/iso_root/boot/
+
+# Create ISO with Limine bootloader
+xorriso -as mkisofs \
+    -b boot/limine/limine-bios-cd.bin \
+    -no-emul-boot -boot-load-size 4 -boot-info-table \
+    --efi-boot boot/limine/limine-uefi-cd.bin \
+    -efi-boot-part --efi-boot-image \
+    --protective-msdos-label \
+    target/iso/iso_root -o target/iso/splax.iso
+```
+
+### Running in QEMU
+
+```bash
+# Basic run with serial output
+qemu-system-x86_64 -cdrom target/iso/splax.iso -m 256M -serial stdio -no-reboot
+
+# With networking (E1000)
+qemu-system-x86_64 -cdrom target/iso/splax.iso -m 512M -serial stdio \
+    -device e1000,netdev=net0 -netdev user,id=net0
+
+# With VirtIO devices
+qemu-system-x86_64 -cdrom target/iso/splax.iso -m 512M -serial stdio \
+    -device virtio-net-pci,netdev=net0 -netdev user,id=net0 \
+    -drive file=disk.img,if=virtio,format=raw
+```
+
+### Quick Start (All-in-One)
+
+```bash
+# Build, create ISO, and run
+cargo build -p splax_kernel --bin splax_kernel --release \
+    --target x86_64-unknown-none \
+    -Zbuild-std=core,alloc \
+    -Zbuild-std-features=compiler-builtins-mem && \
+cp target/x86_64-unknown-none/release/splax_kernel target/iso/iso_root/boot/ && \
+xorriso -as mkisofs -b boot/limine/limine-bios-cd.bin -no-emul-boot \
+    -boot-load-size 4 -boot-info-table --efi-boot boot/limine/limine-uefi-cd.bin \
+    -efi-boot-part --efi-boot-image --protective-msdos-label \
+    target/iso/iso_root -o target/iso/splax.iso 2>/dev/null && \
+qemu-system-x86_64 -cdrom target/iso/splax.iso -m 256M -serial stdio -no-reboot
 ```
 
 ### Kernel Shell Commands
@@ -215,23 +289,27 @@ Once booted, use the interactive shell:
 - [x] S-TERM CLI
 - [x] Kernel shell integration
 
-### Phase 5: Polish & Ports (Weeks 17+) 🔄
+### Phase 5: Polish & Ports (Weeks 17+) ✅
 - [x] aarch64 port (GIC, UART, Timer, MMU, Exceptions)
-- [ ] SMP support
-- [ ] Network stack
-- [ ] Persistent storage
+- [x] SMP support (per-CPU work queues, IPIs)
+- [x] Full network stack (TCP/IP, UDP, DNS, SSH, WiFi framework)
+- [x] Block storage (VirtIO-blk, NVMe, AHCI)
+- [x] Filesystems (VFS, RamFS, ext4, FAT32, SplaxFS, ProcFS, SysFS, DevFS)
+- [x] Crypto (SHA-256/512, AES-256-CBC, ChaCha20, HMAC, HKDF, PBKDF2)
+- [x] Sound (AC97, HDA, VirtIO-snd)
+- [x] USB (xHCI, HID)
 - [ ] GUI (S-CANVAS)
 
-### Running on aarch64
+### Building for aarch64
 
 ```bash
 # Build for aarch64
-cargo kbuild-arm
+cargo build -p splax_kernel --bin splax_kernel_aarch64 --release \
+    --target aarch64-unknown-none \
+    -Zbuild-std=core,alloc \
+    -Zbuild-std-features=compiler-builtins-mem
 
-# Run in QEMU
-./scripts/qemu-aarch64.sh
-
-# Or manually:
+# Run in QEMU (virt machine with Cortex-A72)
 qemu-system-aarch64 -M virt -cpu cortex-a72 -m 512M \
     -kernel target/aarch64-unknown-none/release/splax_kernel_aarch64 \
     -nographic

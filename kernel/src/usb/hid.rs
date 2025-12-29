@@ -474,14 +474,82 @@ pub fn keyboard_count() -> usize {
 }
 
 /// Poll all keyboards (call from USB interrupt handler)
+/// 
+/// This function should be called periodically (e.g., from a timer interrupt)
+/// or when a USB interrupt indicates new data is available.
 pub fn poll_keyboards() {
-    // In a full implementation, this would:
-    // 1. Check each keyboard's interrupt endpoint
-    // 2. Read new reports
-    // 3. Call process_report() for each new report
-    //
-    // For now, this is a stub that would be connected to
-    // the USB subsystem's interrupt handling
+    let mut keyboards = USB_KEYBOARDS.lock();
+    
+    for keyboard in keyboards.iter_mut() {
+        if !keyboard.is_attached() {
+            continue;
+        }
+        
+        // Check if we have a USB controller to poll
+        // In a hardware scenario, we would:
+        // 1. Read from the interrupt endpoint using the xHCI/EHCI controller
+        // 2. Parse the 8-byte HID report
+        // 3. Process the report to generate key events
+        
+        // Poll the interrupt IN endpoint for new data
+        let mut report_buffer = [0u8; 8];
+        
+        // Use the USB subsystem to read from the interrupt endpoint
+        if let Some(subsystem) = crate::usb::get_usb_subsystem() {
+            let result = subsystem.interrupt_transfer_in(
+                keyboard.device_address,
+                keyboard.endpoint_in,
+                &mut report_buffer,
+            );
+            
+            match result {
+                super::TransferResult::Success(len) if len >= 8 => {
+                    // Parse and process the keyboard report
+                    if let Some(report) = KeyboardReport::from_bytes(&report_buffer) {
+                        keyboard.process_report(report);
+                        
+                        // Update LEDs if they changed
+                        let _ = update_keyboard_leds(keyboard);
+                    }
+                }
+                super::TransferResult::Timeout | super::TransferResult::NotResponding => {
+                    // No new data available, this is normal
+                }
+                _ => {
+                    // Other errors might indicate the device was disconnected
+                }
+            }
+        }
+    }
+}
+
+/// Update keyboard LEDs based on current state
+fn update_keyboard_leds(keyboard: &UsbKeyboard) -> Result<(), &'static str> {
+    if let Some(subsystem) = crate::usb::get_usb_subsystem() {
+        let led_byte = keyboard.leds.to_byte();
+        
+        // HID SET_REPORT request for output report (LEDs)
+        // bmRequestType: 0x21 (Host to device, class, interface)
+        // bRequest: 0x09 (SET_REPORT)
+        // wValue: 0x0200 (Report Type: Output, Report ID: 0)
+        // wIndex: interface number
+        // wLength: 1
+        let setup = super::SetupPacket::new(
+            0x21,  // Host to device, class, interface
+            0x09,  // SET_REPORT
+            0x0200, // Output report, report ID 0
+            keyboard.interface as u16,
+            1,
+        );
+        
+        let mut data = [led_byte];
+        match subsystem.control_transfer_out(keyboard.device_address, setup, &mut data) {
+            super::TransferResult::Success(_) => Ok(()),
+            _ => Err("Failed to set keyboard LEDs"),
+        }
+    } else {
+        Err("USB subsystem not available")
+    }
 }
 
 /// HID Report Descriptor Parser (for boot protocol keyboards)
@@ -586,24 +654,125 @@ impl HidReportDescriptor {
 }
 
 /// Set keyboard boot protocol (for HID keyboards)
-pub fn set_boot_protocol(_device_address: u8, _interface: u8) -> Result<(), &'static str> {
-    // In full implementation:
-    // Send SET_PROTOCOL request with protocol = 0 (Boot Protocol)
-    // This simplifies the keyboard report format
-    Ok(())
+/// 
+/// This sends a SET_PROTOCOL request to switch the keyboard to boot protocol mode.
+/// Boot protocol uses a fixed 8-byte report format which is simpler to parse.
+/// 
+/// # Arguments
+/// * `device_address` - USB device address (1-127)
+/// * `interface` - HID interface number
+pub fn set_boot_protocol(device_address: u8, interface: u8) -> Result<(), &'static str> {
+    if let Some(subsystem) = crate::usb::get_usb_subsystem() {
+        // HID SET_PROTOCOL request
+        // bmRequestType: 0x21 (Host to device, class, interface)
+        // bRequest: 0x0B (SET_PROTOCOL)
+        // wValue: 0x0000 (Boot Protocol = 0, Report Protocol = 1)
+        // wIndex: interface number
+        // wLength: 0
+        let setup = super::SetupPacket::new(
+            0x21,  // Host to device, class, interface
+            0x0B,  // SET_PROTOCOL
+            0x0000, // Boot Protocol
+            interface as u16,
+            0,
+        );
+        
+        match subsystem.control_transfer_out(device_address, setup, &mut []) {
+            super::TransferResult::Success(_) => {
+                crate::serial_println!("[hid] Set boot protocol on device {} interface {}", device_address, interface);
+                Ok(())
+            }
+            super::TransferResult::Stall => Err("Device stalled SET_PROTOCOL request"),
+            super::TransferResult::Timeout => Err("SET_PROTOCOL request timed out"),
+            _ => Err("Failed to set boot protocol"),
+        }
+    } else {
+        Err("USB subsystem not available")
+    }
 }
 
 /// Set keyboard idle rate
-pub fn set_idle(_device_address: u8, _interface: u8, _idle_rate: u8) -> Result<(), &'static str> {
-    // In full implementation:
-    // Send SET_IDLE request
-    // idle_rate = 0 means only report on change
-    Ok(())
+/// 
+/// This sends a SET_IDLE request to configure how often the keyboard sends reports.
+/// 
+/// # Arguments
+/// * `device_address` - USB device address (1-127)
+/// * `interface` - HID interface number
+/// * `idle_rate` - Idle rate in 4ms units (0 = report only on change, 1 = 4ms, etc.)
+///                 Duration = idle_rate * 4ms. Max duration = 1020ms (0xFF * 4ms)
+pub fn set_idle(device_address: u8, interface: u8, idle_rate: u8) -> Result<(), &'static str> {
+    if let Some(subsystem) = crate::usb::get_usb_subsystem() {
+        // HID SET_IDLE request
+        // bmRequestType: 0x21 (Host to device, class, interface)
+        // bRequest: 0x0A (SET_IDLE)
+        // wValue: (idle_rate << 8) | report_id (report_id = 0 for all reports)
+        // wIndex: interface number
+        // wLength: 0
+        let setup = super::SetupPacket::new(
+            0x21,  // Host to device, class, interface
+            0x0A,  // SET_IDLE
+            (idle_rate as u16) << 8, // idle_rate in high byte, report ID 0 in low byte
+            interface as u16,
+            0,
+        );
+        
+        match subsystem.control_transfer_out(device_address, setup, &mut []) {
+            super::TransferResult::Success(_) => {
+                crate::serial_println!("[hid] Set idle rate {} on device {} interface {}", idle_rate, device_address, interface);
+                Ok(())
+            }
+            super::TransferResult::Stall => {
+                // Some keyboards don't support SET_IDLE, which is acceptable
+                crate::serial_println!("[hid] Device {} does not support SET_IDLE (stalled)", device_address);
+                Ok(())
+            }
+            super::TransferResult::Timeout => Err("SET_IDLE request timed out"),
+            _ => Err("Failed to set idle rate"),
+        }
+    } else {
+        Err("USB subsystem not available")
+    }
 }
 
-/// Set keyboard LEDs
-pub fn set_leds(_device_address: u8, _interface: u8, _leds: KeyboardLeds) -> Result<(), &'static str> {
-    // In full implementation:
-    // Send SET_REPORT (Output) request with LED byte
-    Ok(())
+/// Set keyboard LEDs (Num Lock, Caps Lock, Scroll Lock, etc.)
+/// 
+/// This sends a SET_REPORT request with an output report containing the LED state.
+/// 
+/// # Arguments
+/// * `device_address` - USB device address (1-127)
+/// * `interface` - HID interface number
+/// * `leds` - LED state to set
+pub fn set_leds(device_address: u8, interface: u8, leds: KeyboardLeds) -> Result<(), &'static str> {
+    if let Some(subsystem) = crate::usb::get_usb_subsystem() {
+        let led_byte = leds.to_byte();
+        
+        // HID SET_REPORT request for output report (LEDs)
+        // bmRequestType: 0x21 (Host to device, class, interface)
+        // bRequest: 0x09 (SET_REPORT)
+        // wValue: (report_type << 8) | report_id
+        //         report_type: 1=Input, 2=Output, 3=Feature
+        //         report_id: 0 for keyboards without report IDs
+        // wIndex: interface number
+        // wLength: 1 (single byte for LED state)
+        let setup = super::SetupPacket::new(
+            0x21,  // Host to device, class, interface
+            0x09,  // SET_REPORT
+            0x0200, // Output report (type 2), report ID 0
+            interface as u16,
+            1,
+        );
+        
+        let mut data = [led_byte];
+        match subsystem.control_transfer_out(device_address, setup, &mut data) {
+            super::TransferResult::Success(_) => {
+                crate::serial_println!("[hid] Set LEDs 0x{:02x} on device {} interface {}", led_byte, device_address, interface);
+                Ok(())
+            }
+            super::TransferResult::Stall => Err("Device stalled SET_REPORT request"),
+            super::TransferResult::Timeout => Err("SET_REPORT request timed out"),
+            _ => Err("Failed to set keyboard LEDs"),
+        }
+    } else {
+        Err("USB subsystem not available")
+    }
 }

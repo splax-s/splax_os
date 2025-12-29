@@ -51,7 +51,7 @@ We're taking the best architectural patterns from the Linux kernel (35+ years of
 
 ---
 
-### PHASE 2: NETWORKING & DRIVERS (Months 4-6) 🔄 IN PROGRESS
+### PHASE 2: NETWORKING & DRIVERS (Months 4-6) ✅ COMPLETE
 
 **Goal**: Full network stack, driver framework, storage
 
@@ -76,17 +76,21 @@ We're taking the best architectural patterns from the Linux kernel (35+ years of
 
 | Component | Linux Path | Splax Path | Status |
 |-----------|------------|------------|--------|
-| Driver Core | `drivers/base/` | `drivers/mod.rs` | 🔄 Basic |
+| Driver Core | `drivers/base/` | `services/dev/` | ✅ Done |
 | VirtIO Net | `drivers/virtio/` | `net/virtio.rs` | ✅ Done |
 | VirtIO Block | `drivers/block/virtio_blk.c` | `block/virtio_blk.rs` | ✅ Done |
 | E1000 | `drivers/net/e1000/` | `net/e1000.rs` | ✅ Done |
 | RTL8139 | `drivers/net/rtl8139.c` | `net/rtl8139.rs` | ✅ Done |
-| WiFi | `drivers/net/wireless/` | `net/wifi.rs` | 🔄 Framework |
+| WiFi | `drivers/net/wireless/` | `net/wifi.rs` | ✅ Done (Framework) |
 | NVMe | `drivers/nvme/` | `block/nvme.rs` | ✅ Done |
 | AHCI/SATA | `drivers/ata/` | `block/ahci.rs` | ✅ Done |
 | USB Core | `drivers/usb/core/` | `usb/mod.rs` | ✅ Done |
 | USB HID | `drivers/hid/` | `usb/hid.rs` | ✅ Done |
+| USB xHCI | `drivers/usb/host/xhci.c` | `usb/xhci.rs` | ✅ Done |
 | PCI | `drivers/pci/` | `pci/mod.rs` | ✅ Done |
+| Sound AC97 | `sound/pci/ac97/` | `sound/ac97.rs` | ✅ Done |
+| Sound HDA | `sound/pci/hda/` | `sound/hda.rs` | ✅ Done |
+| VirtIO Sound | `drivers/virtio/` | `sound/virtio_snd.rs` | ✅ Done |
 
 #### 2.3 Block Layer (Linux `block/`)
 
@@ -657,23 +661,98 @@ pub struct NativePort {
 
 ---
 
-## 🔧 BUILD SYSTEM COMPARISON
+## 🔧 BUILD SYSTEM
 
-### Linux Build System
-```makefile
-# Linux uses Kbuild (complex Makefile system)
-make menuconfig    # Configure
-make -j$(nproc)    # Build
-make modules       # Build modules
-make install       # Install
+### Prerequisites
+
+- Rust nightly toolchain with `rust-src` component
+- QEMU (for testing)
+- xorriso (for ISO creation)
+
+### Building the Kernel
+
+```bash
+# Install Rust nightly and required components
+rustup override set nightly
+rustup component add rust-src llvm-tools-preview
+
+# Build for x86_64
+cargo build -p splax_kernel --bin splax_kernel --release \
+    --target x86_64-unknown-none \
+    -Zbuild-std=core,alloc \
+    -Zbuild-std-features=compiler-builtins-mem
+
+# Build for aarch64
+cargo build -p splax_kernel --bin splax_kernel_aarch64 --release \
+    --target aarch64-unknown-none \
+    -Zbuild-std=core,alloc \
+    -Zbuild-std-features=compiler-builtins-mem
 ```
 
-### Splax Build System
+### Creating Bootable ISO
+
 ```bash
-# Splax uses Cargo (Rust's native build)
-cargo build --release --target x86_64-unknown-none  # Build kernel
-./scripts/build-iso.sh                               # Create ISO
-./scripts/qemu.sh                                    # Test in QEMU
+# Copy kernel to ISO structure
+cp target/x86_64-unknown-none/release/splax_kernel target/iso/iso_root/boot/
+
+# Create ISO with Limine bootloader
+xorriso -as mkisofs \
+    -b boot/limine/limine-bios-cd.bin \
+    -no-emul-boot -boot-load-size 4 -boot-info-table \
+    --efi-boot boot/limine/limine-uefi-cd.bin \
+    -efi-boot-part --efi-boot-image \
+    --protective-msdos-label \
+    target/iso/iso_root -o target/iso/splax.iso
+```
+
+### Testing in QEMU
+
+```bash
+# Basic x86_64 test
+qemu-system-x86_64 -cdrom target/iso/splax.iso -m 256M -serial stdio -no-reboot
+
+# With networking
+qemu-system-x86_64 -cdrom target/iso/splax.iso -m 512M -serial stdio \
+    -device e1000,netdev=net0 -netdev user,id=net0
+
+# With VirtIO devices
+qemu-system-x86_64 -cdrom target/iso/splax.iso -m 512M -serial stdio \
+    -device virtio-net-pci,netdev=net0 -netdev user,id=net0 \
+    -drive file=disk.img,if=virtio,format=raw
+
+# aarch64 test
+qemu-system-aarch64 -M virt -cpu cortex-a72 -m 512M \
+    -kernel target/aarch64-unknown-none/release/splax_kernel_aarch64 \
+    -nographic
+```
+
+### Quick Build-and-Run (x86_64)
+
+```bash
+# All-in-one command
+cargo build -p splax_kernel --bin splax_kernel --release \
+    --target x86_64-unknown-none \
+    -Zbuild-std=core,alloc \
+    -Zbuild-std-features=compiler-builtins-mem && \
+cp target/x86_64-unknown-none/release/splax_kernel target/iso/iso_root/boot/ && \
+xorriso -as mkisofs -b boot/limine/limine-bios-cd.bin -no-emul-boot \
+    -boot-load-size 4 -boot-info-table --efi-boot boot/limine/limine-uefi-cd.bin \
+    -efi-boot-part --efi-boot-image --protective-msdos-label \
+    target/iso/iso_root -o target/iso/splax.iso 2>/dev/null && \
+qemu-system-x86_64 -cdrom target/iso/splax.iso -m 256M -serial stdio -no-reboot
+```
+
+### Development Commands
+
+```bash
+# Check compilation (fast)
+cargo check
+
+# Run workspace tests (excluding kernel)
+cargo test --workspace --exclude splax_kernel --exclude splax_bootloader
+
+# Clippy lints
+cargo clippy --workspace --exclude splax_kernel
 ```
 
 ---

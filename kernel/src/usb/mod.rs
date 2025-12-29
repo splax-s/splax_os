@@ -581,6 +581,64 @@ impl UsbSubsystem {
 /// Global USB subsystem instance
 pub static USB_SUBSYSTEM: Mutex<Option<UsbSubsystem>> = Mutex::new(None);
 
+/// Wrapper for USB subsystem access from HID module
+/// This provides safe access methods for interrupt and control transfers
+pub struct UsbSubsystemHandle;
+
+impl UsbSubsystemHandle {
+    /// Perform an interrupt IN transfer
+    pub fn interrupt_transfer_in(
+        &self,
+        device: u8,
+        endpoint: u8,
+        data: &mut [u8],
+    ) -> TransferResult {
+        let mut subsystem = USB_SUBSYSTEM.lock();
+        if let Some(ref mut usb) = *subsystem {
+            if let Some(controller) = usb.controllers.first_mut() {
+                controller.interrupt_transfer(device, endpoint, data, Direction::In)
+            } else {
+                TransferResult::HostError
+            }
+        } else {
+            TransferResult::HostError
+        }
+    }
+    
+    /// Perform a control transfer with OUT data stage
+    pub fn control_transfer_out(
+        &self,
+        device: u8,
+        setup: SetupPacket,
+        data: &mut [u8],
+    ) -> TransferResult {
+        let mut subsystem = USB_SUBSYSTEM.lock();
+        if let Some(ref mut usb) = *subsystem {
+            if let Some(controller) = usb.controllers.first_mut() {
+                if data.is_empty() {
+                    controller.control_transfer(device, setup, None)
+                } else {
+                    controller.control_transfer(device, setup, Some(data))
+                }
+            } else {
+                TransferResult::HostError
+            }
+        } else {
+            TransferResult::HostError
+        }
+    }
+}
+
+/// Get a handle to the USB subsystem for HID operations
+pub fn get_usb_subsystem() -> Option<UsbSubsystemHandle> {
+    let subsystem = USB_SUBSYSTEM.lock();
+    if subsystem.is_some() {
+        Some(UsbSubsystemHandle)
+    } else {
+        None
+    }
+}
+
 /// Initialize the USB subsystem
 pub fn init() -> Result<(), &'static str> {
     let mut subsystem = USB_SUBSYSTEM.lock();

@@ -478,13 +478,32 @@ impl CapabilityTable {
     }
 
     fn revoke_derived(&self, parent_token: CapabilityToken) {
-        let mut entries = self.entries.lock();
-        for entry in entries.values_mut() {
-            if entry.parent == Some(parent_token) && !entry.revoked {
-                entry.revoked = true;
-                // Note: In a full implementation, we'd recursively revoke
-                // This is simplified for the initial implementation
+        // Collect tokens to revoke (to avoid borrow issues during recursion)
+        let tokens_to_revoke: Vec<CapabilityToken> = {
+            let entries = self.entries.lock();
+            entries
+                .iter()
+                .filter_map(|(&token, entry)| {
+                    if entry.parent == Some(parent_token) && !entry.revoked {
+                        Some(token)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        // Revoke each child and recursively revoke its descendants
+        for child_token in tokens_to_revoke {
+            // Mark the child as revoked
+            {
+                let mut entries = self.entries.lock();
+                if let Some(entry) = entries.get_mut(&child_token) {
+                    entry.revoked = true;
+                }
             }
+            // Recursively revoke all descendants of this child
+            self.revoke_derived(child_token);
         }
     }
 

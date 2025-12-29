@@ -281,17 +281,50 @@ fn build_user_stack(
     // Align to 16 bytes
     stack.align(16);
 
-    // Push auxiliary vectors (simplified - just AT_NULL for now)
-    // In a full implementation, we'd push:
-    // - AT_PHDR: address of program headers
-    // - AT_PHENT: size of program header entry
-    // - AT_PHNUM: number of program headers
-    // - AT_PAGESZ: system page size
-    // - AT_ENTRY: entry point
-    // - AT_BASE: interpreter base (if dynamic)
-    // - AT_NULL: end marker
-    stack.push_u64(0); // AT_NULL value
-    stack.push_u64(0); // AT_NULL type
+    // Auxiliary vector types (from ELF ABI specification)
+    const AT_NULL: u64 = 0;   // End of auxiliary vector
+    const AT_PHDR: u64 = 3;   // Program headers address
+    const AT_PHENT: u64 = 4;  // Size of program header entry
+    const AT_PHNUM: u64 = 5;  // Number of program headers
+    const AT_PAGESZ: u64 = 6; // System page size
+    const AT_BASE: u64 = 7;   // Interpreter base address
+    const AT_ENTRY: u64 = 9;  // Entry point of program
+
+    // Push auxiliary vectors (in reverse order since stack grows down)
+    // AT_NULL marks the end of auxiliary vectors
+    stack.push_u64(0);         // AT_NULL value
+    stack.push_u64(AT_NULL);   // AT_NULL type
+
+    // AT_ENTRY: program entry point
+    stack.push_u64(_elf_info.entry);
+    stack.push_u64(AT_ENTRY);
+
+    // AT_PAGESZ: system page size (4 KiB)
+    stack.push_u64(4096);
+    stack.push_u64(AT_PAGESZ);
+
+    // AT_PHNUM: number of program headers
+    stack.push_u64(_elf_info.segments.len() as u64);
+    stack.push_u64(AT_PHNUM);
+
+    // AT_PHENT: size of program header entry (56 bytes for ELF64)
+    stack.push_u64(56);
+    stack.push_u64(AT_PHENT);
+
+    // AT_PHDR: program headers address (if available)
+    if let Some(phdr_vaddr) = _elf_info.phdr_vaddr {
+        stack.push_u64(phdr_vaddr);
+        stack.push_u64(AT_PHDR);
+    }
+
+    // AT_BASE: interpreter base address (for dynamic executables)
+    // Only push if there's an interpreter
+    if _elf_info.interp.is_some() {
+        // The interpreter base would be set during dynamic loading
+        // For now, use 0 as a placeholder (static executables don't need this)
+        stack.push_u64(0);
+        stack.push_u64(AT_BASE);
+    }
 
     // Push NULL terminator for envp
     stack.push_u64(0);
