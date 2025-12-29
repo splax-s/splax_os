@@ -9,6 +9,9 @@
 //! - Block I/O request queue
 //! - Sector-based read/write operations
 //! - Device registration and discovery
+//! - I/O scheduling (NoOp, Deadline, CFQ)
+//! - Bio layer for scatter-gather I/O
+//! - Partition table support (MBR/GPT)
 //!
 //! ## Architecture
 //!
@@ -17,9 +20,11 @@
 //! │            Filesystem (VFS)             │
 //! ├─────────────────────────────────────────┤
 //! │              Block Layer                │
+//! │  - Bio layer (scatter-gather)           │
 //! │  - Request queue                        │
 //! │  - I/O scheduling                       │
 //! │  - Device abstraction                   │
+//! │  - Partition handling                   │
 //! ├─────────────────────────────────────────┤
 //! │         Block Device Drivers            │
 //! │  - VirtIO-blk                           │
@@ -28,9 +33,12 @@
 //! └─────────────────────────────────────────┘
 //! ```
 
-pub mod virtio_blk;
-pub mod nvme;
 pub mod ahci;
+pub mod bio;
+pub mod nvme;
+pub mod partitions;
+pub mod scheduler;
+pub mod virtio_blk;
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;

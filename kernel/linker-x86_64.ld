@@ -6,10 +6,16 @@ SECTIONS
     /* Start at 1MB - where multiboot loaders typically load the kernel */
     . = 1M;
 
-    /* Multiboot header must be in the first 8KB */
-    .multiboot_header : ALIGN(8)
+    /* Multiboot header must be in the first 8KB - place it FIRST */
+    .multiboot_header : ALIGN(4)
     {
         KEEP(*(.multiboot_header))
+    }
+
+    /* GOT section after multiboot */
+    .got : ALIGN(8)
+    {
+        *(.got .got.*)
     }
 
     /* Text section */

@@ -1,0 +1,18 @@
+[package]
+name = "splax-gpu"
+version = "0.1.0"
+edition = "2024"
+authors = ["Splax Contributors"]
+description = "S-GPU userspace graphics service for Splax OS"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+
+[features]
+default = []
+# Hardware acceleration via VirtIO GPU
+virtio = []
+# Software-only rendering
+software = []

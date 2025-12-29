@@ -39,6 +39,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "splax-dev"
+version = "0.1.0"
+
+[[package]]
+name = "splax-gpu"
+version = "0.1.0"
+
+[[package]]
+name = "splax-net"
+version = "0.1.0"
+
+[[package]]
 name = "splax_atlas"
 version = "0.1.0"
 dependencies = [

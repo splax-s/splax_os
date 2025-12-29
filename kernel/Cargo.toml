@@ -32,3 +32,25 @@ profiling = []
 arch_x86_64 = []
 # aarch64 architecture support  
 arch_aarch64 = []
+
+# =============================================================================
+# Microkernel Mode Features
+# =============================================================================
+
+# Full microkernel mode - only S-CORE primitives (sched, mm, ipc, cap)
+# Disables all monolithic subsystems (net, usb, sound, gpu drivers)
+microkernel = []
+
+# Keep monolithic network stack in kernel (default: use S-NET service)
+monolithic_net = []
+# Keep monolithic USB drivers in kernel (default: use S-DEV service)
+monolithic_usb = []
+# Keep monolithic sound drivers in kernel (default: use S-DEV service)
+monolithic_sound = []
+# Keep monolithic GPU drivers in kernel (default: use S-GPU service)
+monolithic_gpu = []
+# Keep monolithic filesystem implementations (default: use S-STORAGE service)
+monolithic_fs = []
+
+# Hybrid mode - enable stubs for forwarding to userspace services
+hybrid = []

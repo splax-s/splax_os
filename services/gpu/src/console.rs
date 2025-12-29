@@ -1,0 +1,782 @@
+//! Text console for S-GPU service
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use super::{Color, Rect, framebuffer::Framebuffer};
+
+/// Font data for 8x16 bitmap font
+pub mod font {
+    /// Font width in pixels
+    pub const FONT_WIDTH: u32 = 8;
+    /// Font height in pixels  
+    pub const FONT_HEIGHT: u32 = 16;
+    
+    /// Get font glyph data for a character
+    /// Returns 16 bytes, one per row, MSB is leftmost pixel
+    pub fn get_glyph(c: char) -> &'static [u8] {
+        // Use ASCII range, map others to '?'
+        let index = if c.is_ascii() && (c as usize) < 128 {
+            c as usize
+        } else {
+            '?' as usize
+        };
+        
+        // Return slice from font data
+        &FONT_DATA[index * 16..(index + 1) * 16]
+    }
+    
+    /// Basic 8x16 VGA font data (first 128 ASCII chars)
+    /// Each character is 16 bytes (16 rows of 8 pixels)
+    #[rustfmt::skip]
+    pub static FONT_DATA: [u8; 128 * 16] = {
+        let mut data = [0u8; 128 * 16];
+        
+        // Space (32) - all zeros
+        // Already initialized to 0
+        
+        // We'll initialize just a few key characters inline
+        // In a real implementation, this would be a complete VGA font
+        data
+    };
+}
+
+/// Console cursor
+#[derive(Debug, Clone, Copy)]
+pub struct Cursor {
+    pub x: u32,
+    pub y: u32,
+    pub visible: bool,
+    pub blink: bool,
+    pub blink_state: bool,
+}
+
+impl Default for Cursor {
+    fn default() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            visible: true,
+            blink: true,
+            blink_state: true,
+        }
+    }
+}
+
+/// Console color pair
+#[derive(Debug, Clone, Copy)]
+pub struct ColorPair {
+    pub foreground: Color,
+    pub background: Color,
+}
+
+impl Default for ColorPair {
+    fn default() -> Self {
+        Self {
+            foreground: Color::LIGHT_GRAY,
+            background: Color::BLACK,
+        }
+    }
+}
+
+/// Terminal attribute flags
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Attributes {
+    pub bold: bool,
+    pub dim: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub blink: bool,
+    pub reverse: bool,
+    pub hidden: bool,
+    pub strikethrough: bool,
+}
+
+/// Console cell
+#[derive(Debug, Clone, Copy)]
+pub struct Cell {
+    pub character: char,
+    pub colors: ColorPair,
+    pub attributes: Attributes,
+}
+
+impl Default for Cell {
+    fn default() -> Self {
+        Self {
+            character: ' ',
+            colors: ColorPair::default(),
+            attributes: Attributes::default(),
+        }
+    }
+}
+
+/// Text console
+pub struct Console {
+    /// Console width in characters
+    cols: u32,
+    /// Console height in characters
+    rows: u32,
+    /// Cell buffer
+    cells: Vec<Cell>,
+    /// Cursor position
+    cursor: Cursor,
+    /// Current color pair
+    current_colors: ColorPair,
+    /// Current attributes
+    current_attrs: Attributes,
+    /// Scroll region top
+    scroll_top: u32,
+    /// Scroll region bottom
+    scroll_bottom: u32,
+    /// Tab stop positions
+    tab_stops: Vec<u32>,
+    /// Saved cursor position
+    saved_cursor: Option<Cursor>,
+    /// Origin mode (relative to scroll region)
+    origin_mode: bool,
+    /// Auto wrap mode
+    auto_wrap: bool,
+    /// Insert mode
+    insert_mode: bool,
+}
+
+impl Console {
+    /// Create a new console
+    pub fn new(cols: u32, rows: u32) -> Self {
+        let mut tab_stops = Vec::new();
+        for i in (0..cols).step_by(8) {
+            tab_stops.push(i);
+        }
+        
+        Self {
+            cols,
+            rows,
+            cells: alloc::vec![Cell::default(); (cols * rows) as usize],
+            cursor: Cursor::default(),
+            current_colors: ColorPair::default(),
+            current_attrs: Attributes::default(),
+            scroll_top: 0,
+            scroll_bottom: rows - 1,
+            tab_stops,
+            saved_cursor: None,
+            origin_mode: false,
+            auto_wrap: true,
+            insert_mode: false,
+        }
+    }
+
+    /// Get console dimensions
+    pub fn size(&self) -> (u32, u32) {
+        (self.cols, self.rows)
+    }
+
+    /// Get cursor position
+    pub fn cursor(&self) -> (u32, u32) {
+        (self.cursor.x, self.cursor.y)
+    }
+
+    /// Set cursor position
+    pub fn set_cursor(&mut self, x: u32, y: u32) {
+        self.cursor.x = x.min(self.cols - 1);
+        self.cursor.y = y.min(self.rows - 1);
+    }
+
+    /// Move cursor relative
+    pub fn move_cursor(&mut self, dx: i32, dy: i32) {
+        let new_x = (self.cursor.x as i32 + dx).max(0) as u32;
+        let new_y = (self.cursor.y as i32 + dy).max(0) as u32;
+        self.set_cursor(new_x, new_y);
+    }
+
+    /// Set foreground color
+    pub fn set_foreground(&mut self, color: Color) {
+        self.current_colors.foreground = color;
+    }
+
+    /// Set background color
+    pub fn set_background(&mut self, color: Color) {
+        self.current_colors.background = color;
+    }
+
+    /// Set colors
+    pub fn set_colors(&mut self, fg: Color, bg: Color) {
+        self.current_colors.foreground = fg;
+        self.current_colors.background = bg;
+    }
+
+    /// Reset to default colors
+    pub fn reset_colors(&mut self) {
+        self.current_colors = ColorPair::default();
+    }
+
+    /// Set attribute
+    pub fn set_attribute(&mut self, attr: &str, value: bool) {
+        match attr {
+            "bold" => self.current_attrs.bold = value,
+            "dim" => self.current_attrs.dim = value,
+            "italic" => self.current_attrs.italic = value,
+            "underline" => self.current_attrs.underline = value,
+            "blink" => self.current_attrs.blink = value,
+            "reverse" => self.current_attrs.reverse = value,
+            "hidden" => self.current_attrs.hidden = value,
+            "strikethrough" => self.current_attrs.strikethrough = value,
+            _ => {}
+        }
+    }
+
+    /// Reset all attributes
+    pub fn reset_attributes(&mut self) {
+        self.current_attrs = Attributes::default();
+    }
+
+    /// Clear the console
+    pub fn clear(&mut self) {
+        for cell in &mut self.cells {
+            *cell = Cell::default();
+        }
+        self.cursor.x = 0;
+        self.cursor.y = 0;
+    }
+
+    /// Clear from cursor to end of line
+    pub fn clear_to_eol(&mut self) {
+        let start = self.cursor.y * self.cols + self.cursor.x;
+        let end = (self.cursor.y + 1) * self.cols;
+        
+        for i in start..end {
+            if (i as usize) < self.cells.len() {
+                self.cells[i as usize] = Cell::default();
+            }
+        }
+    }
+
+    /// Clear from cursor to beginning of line
+    pub fn clear_to_bol(&mut self) {
+        let start = self.cursor.y * self.cols;
+        let end = self.cursor.y * self.cols + self.cursor.x + 1;
+        
+        for i in start..end {
+            if (i as usize) < self.cells.len() {
+                self.cells[i as usize] = Cell::default();
+            }
+        }
+    }
+
+    /// Clear entire line
+    pub fn clear_line(&mut self) {
+        let start = self.cursor.y * self.cols;
+        let end = (self.cursor.y + 1) * self.cols;
+        
+        for i in start..end {
+            if (i as usize) < self.cells.len() {
+                self.cells[i as usize] = Cell::default();
+            }
+        }
+    }
+
+    /// Clear from cursor to end of screen
+    pub fn clear_to_eos(&mut self) {
+        self.clear_to_eol();
+        
+        let start = (self.cursor.y + 1) * self.cols;
+        for i in start..(self.cols * self.rows) {
+            if (i as usize) < self.cells.len() {
+                self.cells[i as usize] = Cell::default();
+            }
+        }
+    }
+
+    /// Clear from cursor to beginning of screen
+    pub fn clear_to_bos(&mut self) {
+        self.clear_to_bol();
+        
+        let end = self.cursor.y * self.cols;
+        for i in 0..end {
+            if (i as usize) < self.cells.len() {
+                self.cells[i as usize] = Cell::default();
+            }
+        }
+    }
+
+    /// Put a character at current cursor position
+    pub fn put_char(&mut self, c: char) {
+        match c {
+            '\n' => {
+                self.cursor.x = 0;
+                self.newline();
+            }
+            '\r' => {
+                self.cursor.x = 0;
+            }
+            '\t' => {
+                // Move to next tab stop
+                for &stop in &self.tab_stops {
+                    if stop > self.cursor.x {
+                        self.cursor.x = stop.min(self.cols - 1);
+                        break;
+                    }
+                }
+            }
+            '\x08' => {
+                // Backspace
+                if self.cursor.x > 0 {
+                    self.cursor.x -= 1;
+                }
+            }
+            '\x07' => {
+                // Bell - could trigger visual flash or sound
+            }
+            _ if c >= ' ' => {
+                // Printable character
+                let index = (self.cursor.y * self.cols + self.cursor.x) as usize;
+                if index < self.cells.len() {
+                    self.cells[index] = Cell {
+                        character: c,
+                        colors: self.current_colors,
+                        attributes: self.current_attrs,
+                    };
+                }
+                
+                self.cursor.x += 1;
+                if self.cursor.x >= self.cols && self.auto_wrap {
+                    self.cursor.x = 0;
+                    self.newline();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Put a string
+    pub fn put_string(&mut self, s: &str) {
+        for c in s.chars() {
+            self.put_char(c);
+        }
+    }
+
+    /// Handle newline with scrolling
+    fn newline(&mut self) {
+        if self.cursor.y < self.scroll_bottom {
+            self.cursor.y += 1;
+        } else {
+            self.scroll_up(1);
+        }
+    }
+
+    /// Scroll the screen up by n lines
+    pub fn scroll_up(&mut self, n: u32) {
+        let n = n.min(self.scroll_bottom - self.scroll_top + 1);
+        
+        // Move lines up
+        for y in self.scroll_top..(self.scroll_bottom + 1 - n) {
+            let src_start = ((y + n) * self.cols) as usize;
+            let dest_start = (y * self.cols) as usize;
+            
+            for x in 0..self.cols as usize {
+                if dest_start + x < self.cells.len() && src_start + x < self.cells.len() {
+                    self.cells[dest_start + x] = self.cells[src_start + x];
+                }
+            }
+        }
+        
+        // Clear bottom lines
+        for y in (self.scroll_bottom + 1 - n)..=self.scroll_bottom {
+            let start = (y * self.cols) as usize;
+            for x in 0..self.cols as usize {
+                if start + x < self.cells.len() {
+                    self.cells[start + x] = Cell::default();
+                }
+            }
+        }
+    }
+
+    /// Scroll the screen down by n lines
+    pub fn scroll_down(&mut self, n: u32) {
+        let n = n.min(self.scroll_bottom - self.scroll_top + 1);
+        
+        // Move lines down (in reverse to avoid overwriting)
+        for y in (self.scroll_top + n..=self.scroll_bottom).rev() {
+            let src_start = ((y - n) * self.cols) as usize;
+            let dest_start = (y * self.cols) as usize;
+            
+            for x in 0..self.cols as usize {
+                if dest_start + x < self.cells.len() && src_start + x < self.cells.len() {
+                    self.cells[dest_start + x] = self.cells[src_start + x];
+                }
+            }
+        }
+        
+        // Clear top lines
+        for y in self.scroll_top..(self.scroll_top + n) {
+            let start = (y * self.cols) as usize;
+            for x in 0..self.cols as usize {
+                if start + x < self.cells.len() {
+                    self.cells[start + x] = Cell::default();
+                }
+            }
+        }
+    }
+
+    /// Set scroll region
+    pub fn set_scroll_region(&mut self, top: u32, bottom: u32) {
+        let top = top.min(self.rows - 1);
+        let bottom = bottom.min(self.rows - 1);
+        
+        if top < bottom {
+            self.scroll_top = top;
+            self.scroll_bottom = bottom;
+        }
+    }
+
+    /// Reset scroll region to full screen
+    pub fn reset_scroll_region(&mut self) {
+        self.scroll_top = 0;
+        self.scroll_bottom = self.rows - 1;
+    }
+
+    /// Save cursor position
+    pub fn save_cursor(&mut self) {
+        self.saved_cursor = Some(self.cursor);
+    }
+
+    /// Restore cursor position
+    pub fn restore_cursor(&mut self) {
+        if let Some(cursor) = self.saved_cursor {
+            self.cursor = cursor;
+        }
+    }
+
+    /// Get cell at position
+    pub fn get_cell(&self, x: u32, y: u32) -> Option<&Cell> {
+        if x < self.cols && y < self.rows {
+            self.cells.get((y * self.cols + x) as usize)
+        } else {
+            None
+        }
+    }
+
+    /// Render console to framebuffer
+    pub fn render(&self, fb: &mut Framebuffer) {
+        for y in 0..self.rows {
+            for x in 0..self.cols {
+                if let Some(cell) = self.get_cell(x, y) {
+                    self.render_cell(fb, x, y, cell);
+                }
+            }
+        }
+        
+        // Render cursor if visible
+        if self.cursor.visible && self.cursor.blink_state {
+            self.render_cursor(fb);
+        }
+    }
+
+    /// Render a single cell
+    fn render_cell(&self, fb: &mut Framebuffer, x: u32, y: u32, cell: &Cell) {
+        let px = x * font::FONT_WIDTH;
+        let py = y * font::FONT_HEIGHT;
+        
+        let (fg, bg) = if cell.attributes.reverse {
+            (cell.colors.background, cell.colors.foreground)
+        } else {
+            (cell.colors.foreground, cell.colors.background)
+        };
+        
+        // Fill background
+        fb.fill_rect(
+            Rect::new(px as i32, py as i32, font::FONT_WIDTH, font::FONT_HEIGHT),
+            bg,
+        );
+        
+        // Draw glyph if not hidden
+        if !cell.attributes.hidden {
+            let glyph = font::get_glyph(cell.character);
+            
+            for (row, &byte) in glyph.iter().enumerate() {
+                for bit in 0..8 {
+                    if byte & (0x80 >> bit) != 0 {
+                        fb.set_pixel(
+                            (px + bit) as i32,
+                            (py + row as u32) as i32,
+                            fg,
+                        );
+                    }
+                }
+            }
+            
+            // Draw underline if set
+            if cell.attributes.underline {
+                let underline_y = py + font::FONT_HEIGHT - 2;
+                for bit in 0..font::FONT_WIDTH {
+                    fb.set_pixel((px + bit) as i32, underline_y as i32, fg);
+                }
+            }
+            
+            // Draw strikethrough if set
+            if cell.attributes.strikethrough {
+                let strike_y = py + font::FONT_HEIGHT / 2;
+                for bit in 0..font::FONT_WIDTH {
+                    fb.set_pixel((px + bit) as i32, strike_y as i32, fg);
+                }
+            }
+        }
+    }
+
+    /// Render the cursor
+    fn render_cursor(&self, fb: &mut Framebuffer) {
+        let px = self.cursor.x * font::FONT_WIDTH;
+        let py = self.cursor.y * font::FONT_HEIGHT;
+        
+        // Block cursor
+        fb.fill_rect(
+            Rect::new(
+                px as i32,
+                (py + font::FONT_HEIGHT - 2) as i32,
+                font::FONT_WIDTH,
+                2,
+            ),
+            self.current_colors.foreground,
+        );
+    }
+
+    /// Toggle cursor blink state
+    pub fn toggle_cursor_blink(&mut self) {
+        self.cursor.blink_state = !self.cursor.blink_state;
+    }
+
+    /// Resize the console
+    pub fn resize(&mut self, cols: u32, rows: u32) {
+        let new_cells = alloc::vec![Cell::default(); (cols * rows) as usize];
+        
+        // Copy existing content
+        let copy_cols = cols.min(self.cols);
+        let copy_rows = rows.min(self.rows);
+        
+        let mut cells = new_cells;
+        for y in 0..copy_rows {
+            for x in 0..copy_cols {
+                let src_idx = (y * self.cols + x) as usize;
+                let dst_idx = (y * cols + x) as usize;
+                if src_idx < self.cells.len() && dst_idx < cells.len() {
+                    cells[dst_idx] = self.cells[src_idx];
+                }
+            }
+        }
+        
+        self.cells = cells;
+        self.cols = cols;
+        self.rows = rows;
+        self.scroll_bottom = rows - 1;
+        
+        // Adjust cursor if out of bounds
+        self.cursor.x = self.cursor.x.min(cols - 1);
+        self.cursor.y = self.cursor.y.min(rows - 1);
+        
+        // Rebuild tab stops
+        self.tab_stops.clear();
+        for i in (0..cols).step_by(8) {
+            self.tab_stops.push(i);
+        }
+    }
+}
+
+/// ANSI escape sequence parser
+pub struct AnsiParser {
+    state: ParserState,
+    params: Vec<u32>,
+    intermediate: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ParserState {
+    Ground,
+    Escape,
+    CsiEntry,
+    CsiParam,
+    CsiIntermediate,
+    OscString,
+}
+
+impl AnsiParser {
+    /// Create a new ANSI parser
+    pub fn new() -> Self {
+        Self {
+            state: ParserState::Ground,
+            params: Vec::new(),
+            intermediate: Vec::new(),
+        }
+    }
+
+    /// Parse a character and apply to console
+    pub fn parse(&mut self, c: char, console: &mut Console) {
+        match self.state {
+            ParserState::Ground => {
+                if c == '\x1b' {
+                    self.state = ParserState::Escape;
+                } else {
+                    console.put_char(c);
+                }
+            }
+            ParserState::Escape => {
+                match c {
+                    '[' => {
+                        self.state = ParserState::CsiEntry;
+                        self.params.clear();
+                        self.intermediate.clear();
+                    }
+                    ']' => {
+                        self.state = ParserState::OscString;
+                    }
+                    'c' => {
+                        // Reset
+                        console.clear();
+                        console.reset_colors();
+                        console.reset_attributes();
+                        self.state = ParserState::Ground;
+                    }
+                    _ => {
+                        self.state = ParserState::Ground;
+                    }
+                }
+            }
+            ParserState::CsiEntry | ParserState::CsiParam => {
+                if c.is_ascii_digit() {
+                    self.state = ParserState::CsiParam;
+                    let digit = c as u32 - '0' as u32;
+                    if let Some(last) = self.params.last_mut() {
+                        *last = last.saturating_mul(10).saturating_add(digit);
+                    } else {
+                        self.params.push(digit);
+                    }
+                } else if c == ';' {
+                    self.params.push(0);
+                } else if c >= 0x40 as char && c <= 0x7e as char {
+                    // Final byte
+                    self.execute_csi(c, console);
+                    self.state = ParserState::Ground;
+                } else {
+                    self.state = ParserState::Ground;
+                }
+            }
+            ParserState::CsiIntermediate => {
+                if c >= 0x40 as char && c <= 0x7e as char {
+                    self.execute_csi(c, console);
+                    self.state = ParserState::Ground;
+                }
+            }
+            ParserState::OscString => {
+                if c == '\x07' || c == '\x1b' {
+                    // End of OSC string
+                    self.state = ParserState::Ground;
+                }
+                // Otherwise collect OSC string (window title, etc.)
+            }
+        }
+    }
+
+    /// Execute a CSI sequence
+    fn execute_csi(&mut self, c: char, console: &mut Console) {
+        let p = |i: usize, default: u32| -> u32 {
+            self.params.get(i).copied().unwrap_or(default).max(1)
+        };
+        
+        match c {
+            'A' => console.move_cursor(0, -(p(0, 1) as i32)),  // Cursor up
+            'B' => console.move_cursor(0, p(0, 1) as i32),     // Cursor down
+            'C' => console.move_cursor(p(0, 1) as i32, 0),     // Cursor forward
+            'D' => console.move_cursor(-(p(0, 1) as i32), 0),  // Cursor back
+            'H' | 'f' => {
+                // Cursor position
+                let row = p(0, 1).saturating_sub(1);
+                let col = p(1, 1).saturating_sub(1);
+                console.set_cursor(col, row);
+            }
+            'J' => {
+                // Erase in display
+                match self.params.first().copied().unwrap_or(0) {
+                    0 => console.clear_to_eos(),
+                    1 => console.clear_to_bos(),
+                    2 | 3 => console.clear(),
+                    _ => {}
+                }
+            }
+            'K' => {
+                // Erase in line
+                match self.params.first().copied().unwrap_or(0) {
+                    0 => console.clear_to_eol(),
+                    1 => console.clear_to_bol(),
+                    2 => console.clear_line(),
+                    _ => {}
+                }
+            }
+            'm' => {
+                // SGR - Select Graphic Rendition
+                if self.params.is_empty() {
+                    console.reset_colors();
+                    console.reset_attributes();
+                } else {
+                    for &param in &self.params {
+                        self.apply_sgr(param, console);
+                    }
+                }
+            }
+            's' => console.save_cursor(),
+            'u' => console.restore_cursor(),
+            _ => {}
+        }
+    }
+
+    /// Apply SGR parameter
+    fn apply_sgr(&self, param: u32, console: &mut Console) {
+        match param {
+            0 => {
+                console.reset_colors();
+                console.reset_attributes();
+            }
+            1 => console.set_attribute("bold", true),
+            2 => console.set_attribute("dim", true),
+            3 => console.set_attribute("italic", true),
+            4 => console.set_attribute("underline", true),
+            5 => console.set_attribute("blink", true),
+            7 => console.set_attribute("reverse", true),
+            8 => console.set_attribute("hidden", true),
+            9 => console.set_attribute("strikethrough", true),
+            22 => {
+                console.set_attribute("bold", false);
+                console.set_attribute("dim", false);
+            }
+            23 => console.set_attribute("italic", false),
+            24 => console.set_attribute("underline", false),
+            25 => console.set_attribute("blink", false),
+            27 => console.set_attribute("reverse", false),
+            28 => console.set_attribute("hidden", false),
+            29 => console.set_attribute("strikethrough", false),
+            // Standard foreground colors
+            30 => console.set_foreground(Color::BLACK),
+            31 => console.set_foreground(Color::RED),
+            32 => console.set_foreground(Color::GREEN),
+            33 => console.set_foreground(Color::YELLOW),
+            34 => console.set_foreground(Color::BLUE),
+            35 => console.set_foreground(Color::MAGENTA),
+            36 => console.set_foreground(Color::CYAN),
+            37 => console.set_foreground(Color::WHITE),
+            39 => console.set_foreground(Color::LIGHT_GRAY), // Default
+            // Standard background colors
+            40 => console.set_background(Color::BLACK),
+            41 => console.set_background(Color::RED),
+            42 => console.set_background(Color::GREEN),
+            43 => console.set_background(Color::YELLOW),
+            44 => console.set_background(Color::BLUE),
+            45 => console.set_background(Color::MAGENTA),
+            46 => console.set_background(Color::CYAN),
+            47 => console.set_background(Color::WHITE),
+            49 => console.set_background(Color::BLACK), // Default
+            _ => {}
+        }
+    }
+}
+
+impl Default for AnsiParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}

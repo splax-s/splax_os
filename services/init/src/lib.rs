@@ -64,6 +64,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use spin::RwLock;
 
+pub mod microkernel;
+
+pub use microkernel::{CoreService, ServiceBootstrap, BootError, BootSummary};
+
 // =============================================================================
 // PROCESS SPAWNING
 // =============================================================================
@@ -680,6 +684,8 @@ pub enum InitError {
     ServiceNotFound,
     /// Dependency not met
     DependencyNotMet(String),
+    /// Circular dependency detected
+    DependencyCycle,
     /// Service already running
     AlreadyRunning,
     /// Service failed to start
@@ -697,6 +703,7 @@ impl core::fmt::Display for InitError {
         match self {
             InitError::ServiceNotFound => write!(f, "Service not found"),
             InitError::DependencyNotMet(s) => write!(f, "Dependency not met: {}", s),
+            InitError::DependencyCycle => write!(f, "Circular dependency detected"),
             InitError::AlreadyRunning => write!(f, "Service already running"),
             InitError::StartFailed => write!(f, "Failed to start service"),
             InitError::ExecFailed(path) => write!(f, "Failed to exec: {}", path),
@@ -773,10 +780,83 @@ pub fn register_builtin_services() {
     INIT.register(atlas);
 }
 
+/// Register microkernel core services
+fn register_microkernel_services() {
+    use microkernel::CoreService;
+    
+    for (idx, service) in CoreService::all_ordered().iter().enumerate() {
+        let id = ServiceId::new(100 + idx as u64);
+        let def = service.to_service_def(id);
+        INIT.register(def);
+    }
+}
+
+/// Boot the hybrid microkernel services
+/// 
+/// This function starts all core userspace services in the correct order,
+/// handling dependencies and parallel startup where possible.
+pub fn boot_microkernel() -> Result<BootSummary, InitError> {
+    use microkernel::{CoreService, ServiceBootstrap};
+    
+    // Register all microkernel services
+    register_microkernel_services();
+    
+    // Create bootstrap coordinator
+    let mut bootstrap = ServiceBootstrap::new();
+    
+    // Boot loop: start services as dependencies are satisfied
+    while !bootstrap.is_complete() {
+        let ready = bootstrap.next_to_start();
+        
+        if ready.is_empty() && !bootstrap.is_complete() {
+            // Deadlock - no services can start but we're not done
+            return Err(InitError::DependencyCycle);
+        }
+        
+        for service in ready {
+            bootstrap.mark_starting(service);
+            
+            // Get service ID from name
+            if let Some(id) = INIT.get_by_name(service.name()) {
+                match INIT.start(id) {
+                    Ok(()) => {
+                        bootstrap.mark_started(service);
+                    }
+                    Err(e) => {
+                        bootstrap.mark_failed(service, BootError::SpawnFailed);
+                        
+                        // Critical services cause boot failure
+                        if service.is_critical() {
+                            return Err(e);
+                        }
+                    }
+                }
+            } else {
+                bootstrap.mark_failed(service, BootError::NotFound);
+            }
+        }
+    }
+    
+    Ok(bootstrap.summary())
+}
+
 /// Initialize S-INIT (called as PID 1)
 pub fn init_main() -> ! {
     // Register built-in services
     register_builtin_services();
+    
+    // Boot microkernel services first
+    match boot_microkernel() {
+        Ok(summary) => {
+            // Log boot summary
+            // In production: serial_println!("Boot complete: {}/{} services", ...);
+            let _ = summary;
+        }
+        Err(_e) => {
+            // Critical failure - cannot continue
+            // In production: trigger kernel panic or recovery mode
+        }
+    }
     
     // Start boot sequence
     let _ = INIT.set_runlevel(Runlevel::Graphical);

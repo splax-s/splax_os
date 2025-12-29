@@ -35,21 +35,69 @@
 
 extern crate alloc;
 
-pub mod acpi;
+// =============================================================================
+// Core Microkernel Modules (Always Present)
+// These implement S-CORE: scheduling, memory, IPC, capabilities
+// =============================================================================
+
 pub mod arch;
-pub mod block;
 pub mod cap;
-pub mod fs;
-pub mod gpu;
 pub mod ipc;
 pub mod mm;
-pub mod net;
-pub mod pci;
-pub mod process;
 pub mod sched;
+pub mod process;
 pub mod smp;
-pub mod sound;
+pub mod crypto;
+
+// =============================================================================
+// Hardware Interface Modules (Required for Microkernel)
+// These provide minimal hardware access needed by S-CORE
+// =============================================================================
+
+pub mod acpi;
+pub mod pci;
+
+// =============================================================================
+// Block Layer (Required for S-STORAGE IPC)
+// =============================================================================
+
+pub mod block;
+
+// =============================================================================
+// Hybrid Microkernel Stubs (Forward to Userspace Services)
+// =============================================================================
+
+/// Device stub - forwards device operations to S-DEV userspace service
+#[cfg(any(feature = "hybrid", feature = "microkernel"))]
+pub mod dev_stub;
+
+// =============================================================================
+// Monolithic Subsystems (Disabled in Microkernel Mode)
+// In microkernel mode, these are replaced by userspace services
+// =============================================================================
+
+/// Filesystem support (monolithic mode, else use S-STORAGE service)
+#[cfg(not(feature = "microkernel"))]
+pub mod fs;
+
+/// GPU/Graphics support (monolithic mode, else use S-GPU service)
+#[cfg(any(not(feature = "microkernel"), feature = "monolithic_gpu"))]
+pub mod gpu;
+
+/// Network stack (monolithic mode, else use S-NET service)
+#[cfg(any(not(feature = "microkernel"), feature = "monolithic_net"))]
+pub mod net;
+
+/// USB drivers (monolithic mode, else use S-DEV service)
+#[cfg(any(not(feature = "microkernel"), feature = "monolithic_usb"))]
 pub mod usb;
+
+/// Sound drivers (monolithic mode, else use S-DEV service)
+#[cfg(any(not(feature = "microkernel"), feature = "monolithic_sound"))]
+pub mod sound;
+
+/// WASM runtime (userspace, kept for compatibility)
+#[cfg(not(feature = "microkernel"))]
 pub mod wasm;
 
 use core::sync::atomic::{AtomicBool, Ordering};

@@ -1,0 +1,12 @@
+[package]
+name = "splax-net"
+version = "0.1.0"
+edition = "2021"
+description = "S-NET: Splax OS Userspace Network Service"
+authors = ["Splax OS Team"]
+
+[dependencies]
+# Will depend on splax-link for IPC
+
+[lib]
+crate-type = ["lib"]

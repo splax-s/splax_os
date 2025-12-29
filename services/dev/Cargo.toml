@@ -1,0 +1,12 @@
+[package]
+name = "splax-dev"
+version = "0.1.0"
+edition = "2024"
+authors = ["Splax OS Team"]
+description = "S-DEV: Splax OS Device Driver Service"
+license = "MIT"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]

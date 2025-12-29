@@ -21,6 +21,13 @@
 //!
 //! These primitives form the foundation for the S-LINK service messaging
 //! layer. S-LINK adds service discovery and routing on top.
+//!
+//! ## Fast Path (Microkernel Optimization)
+//!
+//! The `fastpath` module provides optimized IPC for high-frequency operations
+//! in the hybrid microkernel architecture. See `fastpath.rs` for details.
+
+pub mod fastpath;
 
 use alloc::collections::BTreeMap;
 use alloc::vec;
@@ -411,6 +418,8 @@ pub enum IpcError {
     TooManyChannels,
     /// Invalid capability
     InvalidCapability,
+    /// Operation timed out
+    Timeout,
 }
 
 // =============================================================================

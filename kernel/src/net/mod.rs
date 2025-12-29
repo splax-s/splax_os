@@ -4,6 +4,7 @@
 //! - Device driver abstractions
 //! - Ethernet frame handling
 //! - IP, TCP, UDP protocol stacks
+//! - Traffic control / QoS
 //! - Integration with S-GATE for external access
 //!
 //! ## Architecture
@@ -17,6 +18,8 @@
 //! │    TCP      │     UDP     │    ICMP     │
 //! ├─────────────────────────────────────────┤
 //! │              IP Layer                   │
+//! ├─────────────────────────────────────────┤
+//! │         Traffic Control (QoS)           │
 //! ├─────────────────────────────────────────┤
 //! │              ARP Cache                  │
 //! ├─────────────────────────────────────────┤
@@ -43,6 +46,7 @@ pub mod socket;
 pub mod dns;
 pub mod ssh;
 pub mod firewall;
+pub mod qos;
 
 // Network device drivers
 #[cfg(target_arch = "x86_64")]
@@ -54,6 +58,12 @@ pub mod rtl8139;
 
 // Wireless (WiFi) support
 pub mod wifi;
+
+// =============================================================================
+// Microkernel Stub (forwards to S-NET userspace service)
+// =============================================================================
+#[cfg(any(feature = "hybrid", feature = "microkernel"))]
+pub mod stub;
 
 // Re-exports
 pub use device::{NetworkDevice, NetworkDeviceInfo, NetworkError};
