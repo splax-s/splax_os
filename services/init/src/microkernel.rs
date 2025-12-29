@@ -322,17 +322,17 @@ pub mod capabilities {
     }
     
     /// Capability for filesystem access
-    pub const CAP_FS: u64 = 0xCAP1_0000_0000_0001;
+    pub const CAP_FS: u64 = 0xCA01_0000_0000_0001;
     /// Capability for block device access
-    pub const CAP_BLOCK: u64 = 0xCAP1_0000_0000_0002;
+    pub const CAP_BLOCK: u64 = 0xCA01_0000_0000_0002;
     /// Capability for network access
-    pub const CAP_NET: u64 = 0xCAP1_0000_0000_0003;
+    pub const CAP_NET: u64 = 0xCA01_0000_0000_0003;
     /// Capability for device driver access
-    pub const CAP_DEV: u64 = 0xCAP1_0000_0000_0004;
+    pub const CAP_DEV: u64 = 0xCA01_0000_0000_0004;
     /// Capability for graphics access
-    pub const CAP_GPU: u64 = 0xCAP1_0000_0000_0005;
+    pub const CAP_GPU: u64 = 0xCA01_0000_0000_0005;
     /// Capability for IPC channel creation
-    pub const CAP_IPC: u64 = 0xCAP1_0000_0000_0006;
+    pub const CAP_IPC: u64 = 0xCA01_0000_0000_0006;
 }
 
 #[cfg(test)]
