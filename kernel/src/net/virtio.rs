@@ -9,7 +9,7 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use spin::Mutex;
 
 use super::device::{NetworkDevice, NetworkDeviceInfo, NetworkError};
@@ -70,6 +70,33 @@ pub struct VirtioNetHeader {
 
 impl VirtioNetHeader {
     pub const SIZE: usize = 10;
+}
+
+/// Device statistics with atomic counters.
+pub struct DeviceStats {
+    pub tx_packets: AtomicU64,
+    pub tx_bytes: AtomicU64,
+    pub tx_errors: AtomicU64,
+    pub tx_dropped: AtomicU64,
+    pub rx_packets: AtomicU64,
+    pub rx_bytes: AtomicU64,
+    pub rx_errors: AtomicU64,
+    pub rx_dropped: AtomicU64,
+}
+
+impl DeviceStats {
+    pub const fn new() -> Self {
+        Self {
+            tx_packets: AtomicU64::new(0),
+            tx_bytes: AtomicU64::new(0),
+            tx_errors: AtomicU64::new(0),
+            tx_dropped: AtomicU64::new(0),
+            rx_packets: AtomicU64::new(0),
+            rx_bytes: AtomicU64::new(0),
+            rx_errors: AtomicU64::new(0),
+            rx_dropped: AtomicU64::new(0),
+        }
+    }
 }
 
 /// VirtIO descriptor flags.
@@ -295,6 +322,8 @@ pub struct VirtioNetDevice {
     tx_count: AtomicU16,
     /// RX packets received counter
     rx_count: AtomicU16,
+    /// Device statistics
+    stats: DeviceStats,
 }
 
 impl VirtioNetDevice {
@@ -311,6 +340,7 @@ impl VirtioNetDevice {
             initialized: AtomicBool::new(false),
             tx_count: AtomicU16::new(0),
             rx_count: AtomicU16::new(0),
+            stats: DeviceStats::new(),
         }
     }
     
@@ -579,6 +609,14 @@ impl NetworkDevice for VirtioNetDevice {
             mtu: self.mtu,
             link_speed: 1000,
             link_up: self.link_up.load(Ordering::SeqCst),
+            tx_packets: self.stats.tx_packets.load(Ordering::Relaxed),
+            tx_bytes: self.stats.tx_bytes.load(Ordering::Relaxed),
+            tx_errors: self.stats.tx_errors.load(Ordering::Relaxed),
+            tx_dropped: self.stats.tx_dropped.load(Ordering::Relaxed),
+            rx_packets: self.stats.rx_packets.load(Ordering::Relaxed),
+            rx_bytes: self.stats.rx_bytes.load(Ordering::Relaxed),
+            rx_errors: self.stats.rx_errors.load(Ordering::Relaxed),
+            rx_dropped: self.stats.rx_dropped.load(Ordering::Relaxed),
         }
     }
     

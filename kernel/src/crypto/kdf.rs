@@ -8,7 +8,7 @@
 //! - **PBKDF2**: Password-Based Key Derivation Function 2 (RFC 8018)
 
 use alloc::vec::Vec;
-use super::mac::{Mac, HmacSha256, HmacSha512};
+use super::mac::{Mac, HmacSha1, HmacSha256, HmacSha512};
 
 // ============================================================================
 // HKDF (RFC 5869)
@@ -197,6 +197,67 @@ impl Pbkdf2 {
             };
 
             // XOR into result
+            for (r, u_byte) in result.iter_mut().zip(u.iter()) {
+                *r ^= u_byte;
+            }
+        }
+
+        result
+    }
+
+    /// Derives a key from a password using PBKDF2-HMAC-SHA1 (for WPA)
+    pub fn derive_sha1(
+        password: &[u8],
+        salt: &[u8],
+        iterations: u32,
+        key_length: usize,
+    ) -> Result<Vec<u8>, Pbkdf2Error> {
+        if iterations == 0 {
+            return Err(Pbkdf2Error::InvalidIterations);
+        }
+
+        if key_length == 0 {
+            return Err(Pbkdf2Error::InvalidKeyLength);
+        }
+
+        let hash_len = 20; // SHA-1 output
+        let block_count = (key_length + hash_len - 1) / hash_len;
+
+        let mut derived_key = Vec::with_capacity(key_length);
+
+        for block_num in 1..=block_count {
+            let block = Self::f_sha1(password, salt, iterations, block_num as u32);
+            derived_key.extend_from_slice(&block);
+        }
+
+        derived_key.truncate(key_length);
+        Ok(derived_key)
+    }
+
+    /// F function for SHA1: XOR of all HMAC iterations
+    fn f_sha1(password: &[u8], salt: &[u8], iterations: u32, block_num: u32) -> [u8; 20] {
+        let mut u = {
+            let mut hmac = HmacSha1::new(password);
+            hmac.update(salt);
+            hmac.update(&block_num.to_be_bytes());
+            let result = hmac.finalize();
+            let mut arr = [0u8; 20];
+            let copy_len = core::cmp::min(result.len(), 20);
+            arr[..copy_len].copy_from_slice(&result[..copy_len]);
+            arr
+        };
+
+        let mut result = u;
+
+        for _ in 1..iterations {
+            u = {
+                let mac_result = HmacSha1::mac(password, &u);
+                let mut arr = [0u8; 20];
+                let copy_len = core::cmp::min(mac_result.len(), 20);
+                arr[..copy_len].copy_from_slice(&mac_result[..copy_len]);
+                arr
+            };
+
             for (r, u_byte) in result.iter_mut().zip(u.iter()) {
                 *r ^= u_byte;
             }

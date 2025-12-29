@@ -78,6 +78,23 @@ mod timer_mode {
 /// LVT mask bit.
 const LVT_MASKED: u32 = 1 << 16;
 
+/// Port I/O functions for PIT access
+#[inline]
+unsafe fn outb(port: u16, value: u8) {
+    unsafe {
+        core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nostack, preserves_flags));
+    }
+}
+
+#[inline]
+unsafe fn inb(port: u16) -> u8 {
+    let value: u8;
+    unsafe {
+        core::arch::asm!("in al, dx", out("al") value, in("dx") port, options(nostack, preserves_flags));
+    }
+    value
+}
+
 /// Local APIC driver.
 pub struct LocalApic {
     base: u64,
@@ -286,9 +303,43 @@ pub fn init() {
         LAPIC.init();
     }
 
-    // Calibrate timer (simplified - assumes ~100MHz bus)
-    // In a real OS, this would use PIT or HPET for calibration
-    TIMER_FREQ.store(100_000_000, Ordering::Relaxed);
+    // Calibrate timer using PIT (Programmable Interval Timer)
+    // PIT runs at 1.193182 MHz
+    const PIT_FREQUENCY: u64 = 1193182;
+    const CALIBRATION_MS: u64 = 10; // Calibrate over 10ms
+    const PIT_DIVISOR: u16 = ((PIT_FREQUENCY * CALIBRATION_MS) / 1000) as u16;
+    
+    // Program PIT channel 2 for one-shot mode
+    unsafe {
+        // Set up PIT channel 2
+        outb(0x61, inb(0x61) & 0xFC);
+        outb(0x43, 0xB0); // Channel 2, lobyte/hibyte, one-shot
+        outb(0x42, (PIT_DIVISOR & 0xFF) as u8);
+        outb(0x42, (PIT_DIVISOR >> 8) as u8);
+        
+        // Gate on channel 2
+        outb(0x61, inb(0x61) | 0x01);
+        
+        // Set APIC timer to max count
+        LAPIC.write(regs::TIMER_DIVIDE, 0x0B); // Divide by 1
+        LAPIC.write(regs::TIMER_INIT, 0xFFFFFFFF);
+        
+        // Wait for PIT to count down (poll OUT bit)
+        while inb(0x61) & 0x20 == 0 {
+            core::hint::spin_loop();
+        }
+        
+        // Stop APIC timer and read count
+        let lvt = LAPIC.read(regs::TIMER_LVT);
+        LAPIC.write(regs::TIMER_LVT, lvt | (1 << 16)); // Mask timer
+        let elapsed = 0xFFFFFFFF - LAPIC.read(regs::TIMER_CURRENT);
+        
+        // Calculate frequency: elapsed ticks in CALIBRATION_MS
+        let timer_freq = (elapsed as u64 * 1000) / CALIBRATION_MS;
+        TIMER_FREQ.store(timer_freq, Ordering::Relaxed);
+        
+        crate::serial_println!("[lapic] Timer calibrated: {} Hz", timer_freq);
+    }
 
     LAPIC_INITIALIZED.store(true, Ordering::Release);
 }

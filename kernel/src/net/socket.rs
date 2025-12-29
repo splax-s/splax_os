@@ -64,6 +64,12 @@ impl From<SocketAddr> for UdpEndpoint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SocketHandle(pub usize);
 
+impl core::fmt::Display for SocketHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Socket state.
 enum SocketInner {
     /// TCP stream.
@@ -271,11 +277,29 @@ pub fn send(handle: SocketHandle, data: &[u8]) -> Result<usize, NetworkError> {
     
     match &socket.inner {
         SocketInner::TcpStream {
-            connection_key: Some(_key),
+            connection_key: Some(key),
             ..
         } => {
-            // In a real implementation, this would queue data for transmission
-            Ok(data.len())
+            let key = *key;
+            drop(table);
+            
+            // Queue data for transmission via TCP state
+            let mut state = tcp_state().lock();
+            if let Some(conn) = state.connection_mut(key) {
+                if let Some(segment) = conn.send(data) {
+                    // Transmit the segment through the network interface
+                    drop(state);
+                    if let Err(e) = super::transmit_tcp_segment(&key, &segment) {
+                        return Err(e);
+                    }
+                    Ok(data.len())
+                } else {
+                    // Connection not in established state
+                    Err(NetworkError::NotConnected)
+                }
+            } else {
+                Err(NetworkError::NotConnected)
+            }
         }
         SocketInner::TcpStream {
             connection_key: None,
@@ -289,17 +313,31 @@ pub fn send(handle: SocketHandle, data: &[u8]) -> Result<usize, NetworkError> {
 pub fn recv(handle: SocketHandle, buf: &mut [u8]) -> Result<usize, NetworkError> {
     let table = SOCKET_TABLE.lock();
     let socket = table.get(handle).ok_or(NetworkError::InvalidSocket)?;
+    let non_blocking = socket.non_blocking;
     
     match &socket.inner {
         SocketInner::TcpStream {
-            connection_key: Some(_key),
+            connection_key: Some(key),
             ..
         } => {
-            // In a real implementation, this would read from receive buffer
-            if socket.non_blocking {
-                Err(NetworkError::WouldBlock)
+            let key = *key;
+            drop(table);
+            
+            // Read from TCP connection receive buffer
+            let mut state = tcp_state().lock();
+            if let Some(conn) = state.connection_mut(key) {
+                let bytes_read = conn.read(buf);
+                if bytes_read > 0 {
+                    Ok(bytes_read)
+                } else if non_blocking {
+                    Err(NetworkError::WouldBlock)
+                } else {
+                    // In blocking mode, we'd wait for data
+                    // For now, return 0 to indicate no data available
+                    Ok(0)
+                }
             } else {
-                Ok(0) // No data available
+                Err(NetworkError::NotConnected)
             }
         }
         SocketInner::TcpStream {

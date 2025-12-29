@@ -863,11 +863,20 @@ static ALLOCATOR: StubAllocator = StubAllocator;
 /// Entry point (placeholder - would be called by runtime).
 #[no_mangle]
 pub extern "C" fn main() -> i32 {
-    // In a real implementation, this would:
-    // 1. Initialize shell
-    // 2. Read input from terminal service
-    // 3. Execute commands
-    // 4. Print output
+    // Initialize shell instance
+    let shell = Shell::new();
+    
+    // Main shell loop
+    loop {
+        // Display prompt (would go to terminal service)
+        // Read line from stdin (terminal service provides input)
+        // Parse and execute command
+        // Display output
+        
+        // For now, return success (runtime provides event loop)
+        break;
+    }
+    
     0
 }
 

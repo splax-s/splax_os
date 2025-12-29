@@ -259,6 +259,11 @@ impl UdpState {
             socket.queue_message(remote, data);
         }
     }
+    
+    /// Returns an iterator over bound ports.
+    pub fn bound_ports(&self) -> impl Iterator<Item = u16> + '_ {
+        self.sockets.keys().copied()
+    }
 }
 
 /// Static UDP state.

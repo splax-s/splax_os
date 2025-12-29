@@ -210,6 +210,9 @@ pub enum ConnState {
     Invalid,
 }
 
+/// Alias for ConnState for compatibility.
+pub type ConnectionState = ConnState;
+
 /// ICMP type/code match.
 #[derive(Debug, Clone, Copy)]
 pub struct IcmpMatch {
@@ -377,6 +380,12 @@ impl Rule {
     /// Builder: set comment.
     pub fn comment(mut self, text: &str) -> Self {
         self.comment = Some(String::from(text));
+        self
+    }
+
+    /// Builder: set connection state match.
+    pub fn state(mut self, conn_state: ConnState) -> Self {
+        self.state = Some(conn_state);
         self
     }
 }
@@ -921,8 +930,19 @@ pub fn init() {
             .comment("Allow ICMP")
     );
     
-    // Allow established connections
-    // (In a real implementation, this would check connection state)
+    // Allow established connections by checking TCP state
+    // The connection tracker will mark packets from known connections
+    fw.add_input_rule(
+        Rule::new(fw.next_rule_id(), Action::Accept)
+            .state(ConnectionState::Established)
+            .comment("Allow established connections")
+    );
+    
+    fw.add_input_rule(
+        Rule::new(fw.next_rule_id(), Action::Accept)
+            .state(ConnectionState::Related)
+            .comment("Allow related connections")
+    );
     
     crate::serial_println!("[firewall] Initialized with default rules");
 }

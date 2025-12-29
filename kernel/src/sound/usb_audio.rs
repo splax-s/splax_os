@@ -361,6 +361,59 @@ pub struct AudioFormat {
     pub sample_rates: Vec<u32>,
 }
 
+/// Unit type for audio topology
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitType {
+    /// Input terminal
+    InputTerminal,
+    /// Output terminal
+    OutputTerminal,
+    /// Feature unit (volume, mute, etc.)
+    FeatureUnit,
+    /// Mixer unit
+    MixerUnit,
+    /// Selector unit
+    SelectorUnit,
+    /// Processing unit
+    ProcessingUnit,
+    /// Extension unit
+    ExtensionUnit,
+}
+
+/// Audio unit in the device topology
+#[derive(Debug, Clone)]
+pub struct AudioUnit {
+    /// Unit ID
+    pub unit_id: u8,
+    /// Unit type
+    pub unit_type: UnitType,
+    /// Terminal type (for terminals)
+    pub terminal_type: u16,
+    /// Number of channels
+    pub num_channels: u8,
+    /// Source IDs this unit connects to
+    pub source_ids: Vec<u8>,
+}
+
+/// Stream format descriptor
+#[derive(Debug, Clone)]
+pub struct StreamFormat {
+    /// Interface number
+    pub interface: u8,
+    /// Terminal link
+    pub terminal_link: u8,
+    /// Format tag
+    pub format_tag: u16,
+    /// Number of channels
+    pub channels: u8,
+    /// Sample size in bits
+    pub sample_size: u8,
+    /// Supported sample rates
+    pub sample_rates: Vec<u32>,
+    /// Endpoint address
+    pub endpoint: u8,
+}
+
 /// USB Audio Stream
 pub struct UsbAudioStream {
     /// Stream ID
@@ -381,6 +434,18 @@ pub struct UsbAudioStream {
     state: StreamState,
     /// Audio format
     format: AudioFormat,
+    /// Audio buffer
+    buffer: Vec<u8>,
+    /// Buffer write position
+    buffer_write_pos: usize,
+    /// Buffer read position
+    buffer_read_pos: usize,
+    /// Buffer position (legacy)
+    buffer_pos: usize,
+    /// Bytes per frame
+    bytes_per_frame: usize,
+    /// Whether stream is active
+    active: bool,
 }
 
 impl UsbAudioStream {
@@ -402,6 +467,12 @@ impl UsbAudioStream {
                 bit_resolution: 16,
                 sample_rates: Vec::new(),
             },
+            buffer: Vec::new(),
+            buffer_write_pos: 0,
+            buffer_read_pos: 0,
+            buffer_pos: 0,
+            bytes_per_frame: 0,
+            active: false,
         }
     }
 }
@@ -427,6 +498,8 @@ pub struct UsbAudioDevice {
     device_id: DeviceId,
     /// USB device address
     usb_address: u8,
+    /// USB device address (alias for usb_address)
+    device_address: u8,
     /// UAC version
     uac_version: UacVersion,
     /// Vendor ID
@@ -441,6 +514,16 @@ pub struct UsbAudioDevice {
     output_terminals: Vec<AudioTerminal>,
     /// Feature units
     feature_units: Vec<FeatureUnit>,
+    /// Audio units in the topology
+    units: Vec<AudioUnit>,
+    /// Stream formats
+    stream_formats: Vec<StreamFormat>,
+    /// Active streams (for isochronous transfer tracking)
+    streams: Vec<UsbAudioStream>,
+    /// Control interface number
+    control_interface: u8,
+    /// Feature unit ID for volume control
+    feature_unit: Option<u8>,
     /// Playback streams
     playback_streams: Vec<UsbAudioStream>,
     /// Capture streams
@@ -467,6 +550,7 @@ impl UsbAudioDevice {
         Self {
             device_id,
             usb_address,
+            device_address: usb_address,
             uac_version: UacVersion::Uac1,
             vendor_id,
             product_id,
@@ -474,6 +558,11 @@ impl UsbAudioDevice {
             input_terminals: Vec::new(),
             output_terminals: Vec::new(),
             feature_units: Vec::new(),
+            units: Vec::new(),
+            stream_formats: Vec::new(),
+            streams: Vec::new(),
+            control_interface: 0,
+            feature_unit: None,
             playback_streams: Vec::new(),
             capture_streams: Vec::new(),
             next_stream_id: AtomicU32::new(1),
@@ -484,40 +573,298 @@ impl UsbAudioDevice {
     }
 
     /// Parse audio control descriptors
-    fn parse_ac_descriptors(&mut self, _descriptors: &[u8]) -> Result<(), AudioError> {
-        // In a real implementation, this would:
-        // 1. Parse AC header to get topology
-        // 2. Parse input/output terminals
-        // 3. Parse feature units
-        // 4. Parse mixer/selector/processing units
-        // 5. Build audio path graph
+    fn parse_ac_descriptors(&mut self, descriptors: &[u8]) -> Result<(), AudioError> {
+        let mut offset = 0;
+        
+        while offset < descriptors.len() {
+            if offset + 2 > descriptors.len() {
+                break;
+            }
+            
+            let length = descriptors[offset] as usize;
+            if length < 2 || offset + length > descriptors.len() {
+                break;
+            }
+            
+            let desc_subtype = descriptors[offset + 2];
+            
+            match desc_subtype {
+                ac_descriptor::HEADER => {
+                    // Parse AC header - contains total length and interface numbers
+                    if length >= 8 {
+                        let total_length = u16::from_le_bytes([
+                            descriptors[offset + 5],
+                            descriptors[offset + 6],
+                        ]);
+                        let num_interfaces = descriptors[offset + 7];
+                        
+                        #[cfg(target_arch = "x86_64")]
+                        {
+                            use core::fmt::Write;
+                            if let Some(mut serial) = crate::arch::x86_64::serial::SERIAL.try_lock() {
+                                let _ = writeln!(serial, "[usb-audio] AC Header: {} bytes, {} interfaces", 
+                                    total_length, num_interfaces);
+                            }
+                        }
+                    }
+                }
+                ac_descriptor::INPUT_TERMINAL => {
+                    // Input terminal (microphone, line in, etc.)
+                    if length >= 12 {
+                        let terminal_id = descriptors[offset + 3];
+                        let terminal_type = u16::from_le_bytes([
+                            descriptors[offset + 4],
+                            descriptors[offset + 5],
+                        ]);
+                        let num_channels = descriptors[offset + 7];
+                        
+                        self.units.push(AudioUnit {
+                            unit_id: terminal_id,
+                            unit_type: UnitType::InputTerminal,
+                            terminal_type,
+                            num_channels,
+                            source_ids: Vec::new(),
+                        });
+                    }
+                }
+                ac_descriptor::OUTPUT_TERMINAL => {
+                    // Output terminal (speaker, headphone, etc.)
+                    if length >= 9 {
+                        let terminal_id = descriptors[offset + 3];
+                        let terminal_type = u16::from_le_bytes([
+                            descriptors[offset + 4],
+                            descriptors[offset + 5],
+                        ]);
+                        let source_id = descriptors[offset + 7];
+                        
+                        self.units.push(AudioUnit {
+                            unit_id: terminal_id,
+                            unit_type: UnitType::OutputTerminal,
+                            terminal_type,
+                            num_channels: 0,
+                            source_ids: alloc::vec![source_id],
+                        });
+                    }
+                }
+                ac_descriptor::FEATURE_UNIT => {
+                    // Feature unit (volume, mute, etc.)
+                    if length >= 7 {
+                        let unit_id = descriptors[offset + 3];
+                        let source_id = descriptors[offset + 4];
+                        
+                        self.units.push(AudioUnit {
+                            unit_id,
+                            unit_type: UnitType::FeatureUnit,
+                            terminal_type: 0,
+                            num_channels: 0,
+                            source_ids: alloc::vec![source_id],
+                        });
+                        
+                        // Store feature unit for volume control
+                        self.feature_unit = Some(unit_id);
+                    }
+                }
+                ac_descriptor::MIXER_UNIT => {
+                    // Mixer unit
+                    if length >= 10 {
+                        let unit_id = descriptors[offset + 3];
+                        let num_inputs = descriptors[offset + 4] as usize;
+                        let mut source_ids = Vec::new();
+                        
+                        for i in 0..num_inputs {
+                            if offset + 5 + i < descriptors.len() {
+                                source_ids.push(descriptors[offset + 5 + i]);
+                            }
+                        }
+                        
+                        self.units.push(AudioUnit {
+                            unit_id,
+                            unit_type: UnitType::MixerUnit,
+                            terminal_type: 0,
+                            num_channels: 0,
+                            source_ids,
+                        });
+                    }
+                }
+                _ => {
+                    // Other descriptors - skip
+                }
+            }
+            
+            offset += length;
+        }
+        
         Ok(())
     }
 
     /// Parse audio streaming descriptors
-    fn parse_as_descriptors(&mut self, _interface: u8, _descriptors: &[u8]) -> Result<(), AudioError> {
-        // In a real implementation, this would:
-        // 1. Parse AS general descriptor
-        // 2. Parse format type descriptor
-        // 3. Parse endpoint descriptors
-        // 4. Store supported formats and endpoints
+    fn parse_as_descriptors(&mut self, interface: u8, descriptors: &[u8]) -> Result<(), AudioError> {
+        let mut offset = 0;
+        let mut current_format: Option<StreamFormat> = None;
+        
+        while offset < descriptors.len() {
+            if offset + 2 > descriptors.len() {
+                break;
+            }
+            
+            let length = descriptors[offset] as usize;
+            if length < 2 || offset + length > descriptors.len() {
+                break;
+            }
+            
+            let desc_type = descriptors[offset + 1];
+            
+            // Audio Streaming interface descriptor (CS_INTERFACE)
+            if desc_type == 0x24 && length >= 7 {
+                let subtype = descriptors[offset + 2];
+                
+                match subtype {
+                    0x01 => {
+                        // AS_GENERAL
+                        let terminal_link = descriptors[offset + 3];
+                        let format_tag = u16::from_le_bytes([
+                            descriptors[offset + 5],
+                            descriptors[offset + 6],
+                        ]);
+                        
+                        current_format = Some(StreamFormat {
+                            interface,
+                            terminal_link,
+                            format_tag,
+                            channels: 2,
+                            sample_size: 16,
+                            sample_rates: Vec::new(),
+                            endpoint: 0,
+                        });
+                    }
+                    0x02 => {
+                        // FORMAT_TYPE
+                        if let Some(ref mut fmt) = current_format {
+                            if length >= 8 {
+                                fmt.channels = descriptors[offset + 4];
+                                fmt.sample_size = descriptors[offset + 6];
+                                
+                                // Parse sample rates (discrete or continuous)
+                                let freq_type = descriptors[offset + 7];
+                                if freq_type == 0 {
+                                    // Continuous - min and max
+                                    if length >= 14 {
+                                        let min_freq = u32::from_le_bytes([
+                                            descriptors[offset + 8],
+                                            descriptors[offset + 9],
+                                            descriptors[offset + 10],
+                                            0,
+                                        ]);
+                                        let max_freq = u32::from_le_bytes([
+                                            descriptors[offset + 11],
+                                            descriptors[offset + 12],
+                                            descriptors[offset + 13],
+                                            0,
+                                        ]);
+                                        // Add common rates in range
+                                        for rate in [8000, 11025, 16000, 22050, 32000, 44100, 48000, 96000] {
+                                            if rate >= min_freq && rate <= max_freq {
+                                                fmt.sample_rates.push(rate);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Discrete rates
+                                    for i in 0..freq_type as usize {
+                                        let rate_offset = offset + 8 + i * 3;
+                                        if rate_offset + 3 <= descriptors.len() {
+                                            let rate = u32::from_le_bytes([
+                                                descriptors[rate_offset],
+                                                descriptors[rate_offset + 1],
+                                                descriptors[rate_offset + 2],
+                                                0,
+                                            ]);
+                                            fmt.sample_rates.push(rate);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            
+            // Endpoint descriptor
+            if desc_type == 0x05 && length >= 7 {
+                let ep_addr = descriptors[offset + 2];
+                if let Some(ref mut fmt) = current_format {
+                    fmt.endpoint = ep_addr;
+                }
+            }
+            
+            offset += length;
+        }
+        
+        // Store the format if valid
+        if let Some(fmt) = current_format {
+            if fmt.endpoint != 0 && !fmt.sample_rates.is_empty() {
+                self.stream_formats.push(fmt);
+            }
+        }
+        
         Ok(())
     }
 
     /// Send control request to audio unit
     fn control_request(
         &self,
-        _request: u8,
-        _unit_id: u8,
-        _control: u8,
-        _channel: u8,
-        _data: &[u8],
+        request: u8,
+        unit_id: u8,
+        control: u8,
+        channel: u8,
+        data: &[u8],
     ) -> Result<Vec<u8>, AudioError> {
-        // In a real implementation, this would:
-        // 1. Build USB control transfer
-        // 2. Send to audio control interface
-        // 3. Return response data
-        Ok(Vec::new())
+        use crate::usb::{USB_SUBSYSTEM, SetupPacket};
+        
+        let is_get = request == request::GET_CUR || request == request::GET_MIN 
+                  || request == request::GET_MAX || request == request::GET_RES;
+        
+        let request_type = if is_get {
+            0xA1 // Device-to-host, class, interface
+        } else {
+            0x21 // Host-to-device, class, interface
+        };
+        
+        // wValue = control selector (high) | channel number (low)
+        let w_value = ((control as u16) << 8) | (channel as u16);
+        // wIndex = unit ID (high) | interface (low)
+        let w_index = ((unit_id as u16) << 8) | (self.control_interface as u16);
+        
+        let setup = SetupPacket {
+            request_type,
+            request,
+            value: w_value,
+            index: w_index,
+            length: if is_get { 2 } else { data.len() as u16 },
+        };
+        
+        let mut usb_guard = USB_SUBSYSTEM.lock();
+        let usb = usb_guard.as_mut().ok_or(AudioError::DeviceError)?;
+        
+        if is_get {
+            let mut response = alloc::vec![0u8; 2];
+            match usb.control_transfer(self.device_address, setup, Some(&mut response)) {
+                crate::usb::TransferResult::Success(len) => {
+                    response.truncate(len);
+                    Ok(response)
+                }
+                _ => Err(AudioError::DeviceError),
+            }
+        } else {
+            // For SET requests, we need to send data
+            // The USB stack takes mutable reference, so clone the data
+            let mut send_data = data.to_vec();
+            match usb.control_transfer(self.device_address, setup, Some(&mut send_data)) {
+                crate::usb::TransferResult::Success(_) => Ok(Vec::new()),
+                _ => Err(AudioError::DeviceError),
+            }
+        }
     }
 
     /// Get volume from feature unit
@@ -581,36 +928,113 @@ impl UsbAudioDevice {
     }
 
     /// Set sample rate (UAC 1.0)
-    fn set_sample_rate_uac1(&self, _endpoint: u8, _rate: u32) -> Result<(), AudioError> {
+    fn set_sample_rate_uac1(&self, endpoint: u8, rate: u32) -> Result<(), AudioError> {
+        use crate::usb::{USB_SUBSYSTEM, SetupPacket};
+        
         // UAC 1.0 uses endpoint SET_CUR for sample rate
         // Frequency is 3 bytes, little endian
-        Ok(())
+        let freq_bytes = [
+            (rate & 0xFF) as u8,
+            ((rate >> 8) & 0xFF) as u8,
+            ((rate >> 16) & 0xFF) as u8,
+        ];
+        
+        let setup = SetupPacket {
+            request_type: 0x22, // Host-to-device, class, endpoint
+            request: request::SET_CUR,
+            value: 0x0100, // Sampling Frequency Control
+            index: endpoint as u16,
+            length: 3,
+        };
+        
+        let mut data = freq_bytes.to_vec();
+        let mut usb_guard = USB_SUBSYSTEM.lock();
+        let usb = usb_guard.as_mut().ok_or(AudioError::DeviceError)?;
+        match usb.control_transfer(self.device_address, setup, Some(&mut data)) {
+            crate::usb::TransferResult::Success(_) => Ok(()),
+            _ => Err(AudioError::DeviceError),
+        }
     }
 
     /// Set sample rate (UAC 2.0)
-    fn set_sample_rate_uac2(&self, _clock_id: u8, _rate: u32) -> Result<(), AudioError> {
+    fn set_sample_rate_uac2(&self, clock_id: u8, rate: u32) -> Result<(), AudioError> {
         // UAC 2.0 uses clock source control
+        let rate_bytes = rate.to_le_bytes();
+        self.control_request(
+            request::SET_CUR,
+            clock_id,
+            0x01, // CS_SAM_FREQ_CONTROL
+            0,
+            &rate_bytes,
+        )?;
         Ok(())
     }
 
     /// Select alternate setting for streaming interface
-    fn select_alternate(&self, _interface: u8, _alternate: u8) -> Result<(), AudioError> {
+    fn select_alternate(&self, interface: u8, alternate: u8) -> Result<(), AudioError> {
+        use crate::usb::{USB_SUBSYSTEM, SetupPacket};
+        
         // USB SET_INTERFACE request
-        Ok(())
+        let setup = SetupPacket {
+            request_type: 0x01, // Host-to-device, standard, interface
+            request: 0x0B, // SET_INTERFACE
+            value: alternate as u16,
+            index: interface as u16,
+            length: 0,
+        };
+        
+        let mut usb_guard = USB_SUBSYSTEM.lock();
+        let usb = usb_guard.as_mut().ok_or(AudioError::DeviceError)?;
+        match usb.control_transfer(self.device_address, setup, None) {
+            crate::usb::TransferResult::Success(_) => Ok(()),
+            _ => Err(AudioError::DeviceError),
+        }
     }
 
     /// Start isochronous transfer
-    fn start_isoc_transfer(&self, _endpoint: u8) -> Result<(), AudioError> {
-        // In a real implementation:
-        // 1. Allocate transfer buffers
-        // 2. Submit URBs to USB host controller
-        // 3. Set up completion callbacks
+    fn start_isoc_transfer(&mut self, endpoint: u8) -> Result<(), AudioError> {
+        // Calculate buffer size based on sample rate and format
+        // bytes_per_frame = sample_rate / 1000 * channels * bytes_per_sample
+        // USB sends 1 packet per frame (1ms for full-speed, 125µs for high-speed)
+        
+        let sample_rate = 48000u32;
+        let channels = 2u32;
+        let bytes_per_sample = 2u32; // 16-bit
+        let bytes_per_frame = sample_rate * channels * bytes_per_sample / 1000;
+        
+        // Allocate ring buffer for audio data (enough for ~50ms)
+        let buffer_frames = 50;
+        let buffer_size = (bytes_per_frame as usize) * buffer_frames;
+        
+        // Store buffer info in the stream state
+        if let Some(stream) = self.streams.iter_mut().find(|s| s.endpoint == endpoint) {
+            stream.buffer = alloc::vec![0u8; buffer_size];
+            stream.buffer_pos = 0;
+            stream.bytes_per_frame = bytes_per_frame as usize;
+            stream.active = true;
+        }
+        
+        // Enable the endpoint by selecting the appropriate alternate setting
+        // (alternate 0 is typically zero-bandwidth, alternate 1+ have actual endpoints)
+        if let Some(fmt) = self.stream_formats.iter().find(|f| f.endpoint == endpoint) {
+            self.select_alternate(fmt.interface, 1)?;
+        }
+        
         Ok(())
     }
 
     /// Stop isochronous transfer
-    fn stop_isoc_transfer(&self, _endpoint: u8) -> Result<(), AudioError> {
-        // Cancel pending URBs
+    fn stop_isoc_transfer(&mut self, endpoint: u8) -> Result<(), AudioError> {
+        // Select alternate setting 0 (zero bandwidth) to stop transfers
+        if let Some(fmt) = self.stream_formats.iter().find(|f| f.endpoint == endpoint) {
+            self.select_alternate(fmt.interface, 0)?;
+        }
+        
+        // Mark stream as inactive
+        if let Some(stream) = self.streams.iter_mut().find(|s| s.endpoint == endpoint) {
+            stream.active = false;
+        }
+        
         Ok(())
     }
 
@@ -752,21 +1176,27 @@ impl AudioDevice for UsbAudioDevice {
     fn close_stream(&mut self, stream_id: StreamId) -> Result<(), AudioError> {
         // Find and remove stream
         if let Some(pos) = self.playback_streams.iter().position(|s| s.id == stream_id) {
-            let stream = &self.playback_streams[pos];
-            if stream.state == StreamState::Running {
-                self.stop_isoc_transfer(stream.endpoint)?;
+            let (is_running, endpoint, interface) = {
+                let stream = &self.playback_streams[pos];
+                (stream.state == StreamState::Running, stream.endpoint, stream.interface)
+            };
+            if is_running {
+                self.stop_isoc_transfer(endpoint)?;
             }
-            self.select_alternate(stream.interface, 0)?;
+            self.select_alternate(interface, 0)?;
             self.playback_streams.remove(pos);
             return Ok(());
         }
 
         if let Some(pos) = self.capture_streams.iter().position(|s| s.id == stream_id) {
-            let stream = &self.capture_streams[pos];
-            if stream.state == StreamState::Running {
-                self.stop_isoc_transfer(stream.endpoint)?;
+            let (is_running, endpoint, interface) = {
+                let stream = &self.capture_streams[pos];
+                (stream.state == StreamState::Running, stream.endpoint, stream.interface)
+            };
+            if is_running {
+                self.stop_isoc_transfer(endpoint)?;
             }
-            self.select_alternate(stream.interface, 0)?;
+            self.select_alternate(interface, 0)?;
             self.capture_streams.remove(pos);
             return Ok(());
         }
@@ -905,19 +1335,70 @@ impl AudioDevice for UsbAudioDevice {
         Err(AudioError::StreamNotFound)
     }
 
-    fn write(&mut self, _stream_id: StreamId, _data: &[u8]) -> Result<usize, AudioError> {
-        // In a real implementation:
-        // 1. Copy data to isochronous transfer buffer
-        // 2. Submit URB if not already pending
-        // 3. Return bytes written
-        Ok(0)
+    fn write(&mut self, stream_id: StreamId, data: &[u8]) -> Result<usize, AudioError> {
+        // Find the playback stream
+        let stream = self.playback_streams.iter_mut()
+            .find(|s| s.id == stream_id)
+            .ok_or(AudioError::StreamNotFound)?;
+        
+        if stream.state != StreamState::Running {
+            return Err(AudioError::StreamNotRunning);
+        }
+        
+        // Calculate available space in the ring buffer
+        let buffer_size = stream.buffer.len();
+        let write_pos = stream.buffer_write_pos;
+        let read_pos = stream.buffer_read_pos;
+        
+        let available = if write_pos >= read_pos {
+            buffer_size - (write_pos - read_pos) - 1
+        } else {
+            read_pos - write_pos - 1
+        };
+        
+        let to_write = data.len().min(available);
+        
+        // Copy data to ring buffer
+        for i in 0..to_write {
+            let pos = (write_pos + i) % buffer_size;
+            stream.buffer[pos] = data[i];
+        }
+        
+        stream.buffer_write_pos = (write_pos + to_write) % buffer_size;
+        Ok(to_write)
     }
 
-    fn read(&mut self, _stream_id: StreamId, _data: &mut [u8]) -> Result<usize, AudioError> {
-        // In a real implementation:
-        // 1. Copy from completed isochronous transfer buffer
-        // 2. Return bytes read
-        Ok(0)
+    fn read(&mut self, stream_id: StreamId, data: &mut [u8]) -> Result<usize, AudioError> {
+        // Find the capture stream
+        let stream = self.capture_streams.iter_mut()
+            .find(|s| s.id == stream_id)
+            .ok_or(AudioError::StreamNotFound)?;
+        
+        if stream.state != StreamState::Running {
+            return Err(AudioError::StreamNotRunning);
+        }
+        
+        // Calculate available data in the ring buffer
+        let buffer_size = stream.buffer.len();
+        let write_pos = stream.buffer_write_pos;
+        let read_pos = stream.buffer_read_pos;
+        
+        let available = if write_pos >= read_pos {
+            write_pos - read_pos
+        } else {
+            buffer_size - read_pos + write_pos
+        };
+        
+        let to_read = data.len().min(available);
+        
+        // Copy data from ring buffer
+        for i in 0..to_read {
+            let pos = (read_pos + i) % buffer_size;
+            data[i] = stream.buffer[pos];
+        }
+        
+        stream.buffer_read_pos = (read_pos + to_read) % buffer_size;
+        Ok(to_read)
     }
 
     fn available_write(&self, stream_id: StreamId) -> Result<usize, AudioError> {
@@ -985,11 +1466,61 @@ pub fn is_audio_device(class: u8, subclass: u8, _protocol: u8) -> bool {
 
 /// Probe for USB audio devices
 pub fn probe() -> Option<Box<dyn AudioDevice>> {
-    // In a real implementation:
-    // 1. Enumerate USB devices
-    // 2. Check for audio class interfaces
-    // 3. Parse audio descriptors
-    // 4. Create device instance
+    use crate::usb::USB_SUBSYSTEM;
+    
+    let usb_guard = USB_SUBSYSTEM.lock();
+    let usb = usb_guard.as_ref()?;
+    
+    // Iterate through connected USB devices
+    for device in usb.devices() {
+        // Check if this is an audio class device (using public fields)
+        let class = device.device_class;
+        let subclass = device.device_subclass;
+        
+        if is_audio_device(class, subclass, 0) {
+            let product_name = device.product.clone()
+                .unwrap_or_else(|| String::from("USB Audio Device"));
+            let audio_device = UsbAudioDevice::new(
+                crate::sound::NEXT_DEVICE_ID.fetch_add(1, core::sync::atomic::Ordering::SeqCst),
+                device.address,
+                device.vendor_id,
+                device.product_id,
+                product_name,
+            );
+            
+            // If we found valid streams, return the device
+            // Note: Full descriptor parsing requires additional USB infrastructure
+            if !audio_device.stream_formats.is_empty() {
+                return Some(Box::new(audio_device));
+            }
+            
+            // Return even without parsing (device was detected as audio class)
+            return Some(Box::new(audio_device));
+        }
+        
+        // Also check interface-level class (composite devices)
+        for config in &device.configurations {
+            for interface in &config.interfaces {
+                if interface.class == USB_CLASS_AUDIO && interface.subclass == subclass::AUDIO_CONTROL {
+                    let product_name = device.product.clone()
+                        .unwrap_or_else(|| String::from("USB Audio Device"));
+                    let mut audio_device = UsbAudioDevice::new(
+                        crate::sound::NEXT_DEVICE_ID.fetch_add(1, core::sync::atomic::Ordering::SeqCst),
+                        device.address,
+                        device.vendor_id,
+                        device.product_id,
+                        product_name,
+                    );
+                    
+                    audio_device.control_interface = interface.number;
+                    
+                    // Return the audio device
+                    return Some(Box::new(audio_device));
+                }
+            }
+        }
+    }
+    
     None
 }
 

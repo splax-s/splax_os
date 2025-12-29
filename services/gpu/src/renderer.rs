@@ -24,6 +24,39 @@ fn isqrt(n: i32) -> i32 {
     x
 }
 
+/// Approximate sine using Taylor series (for no_std)
+fn sinf(x: f32) -> f32 {
+    // Normalize to [-PI, PI]
+    const PI: f32 = 3.14159265358979323846;
+    const TWO_PI: f32 = 2.0 * PI;
+    let mut x = x;
+    while x > PI { x -= TWO_PI; }
+    while x < -PI { x += TWO_PI; }
+    
+    // Taylor series: sin(x) ≈ x - x³/3! + x⁵/5! - x⁷/7!
+    let x2 = x * x;
+    let x3 = x2 * x;
+    let x5 = x3 * x2;
+    let x7 = x5 * x2;
+    x - x3 / 6.0 + x5 / 120.0 - x7 / 5040.0
+}
+
+/// Approximate cosine using Taylor series (for no_std)
+fn cosf(x: f32) -> f32 {
+    // cos(x) = sin(x + PI/2)
+    sinf(x + 1.5707963267948966)
+}
+
+/// Minimum of two floats
+fn fminf(a: f32, b: f32) -> f32 {
+    if a < b { a } else { b }
+}
+
+/// Maximum of two floats
+fn fmaxf(a: f32, b: f32) -> f32 {
+    if a > b { a } else { b }
+}
+
 /// Blend mode for drawing operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendMode {
@@ -544,8 +577,85 @@ impl Renderer {
             if sprite.rotation == 0.0 && sprite.scale_x == 1.0 && sprite.scale_y == 1.0 {
                 self.draw_texture_rect(fb, texture, sprite.src_rect, sprite.x, sprite.y);
             } else {
-                // TODO: Implement rotation and scaling
-                self.draw_texture_rect(fb, texture, sprite.src_rect, sprite.x, sprite.y);
+                // Handle rotation and scaling using inverse transform sampling
+                self.draw_transformed_sprite(fb, texture, sprite);
+            }
+        }
+    }
+    
+    /// Draw a sprite with rotation and/or scaling applied
+    fn draw_transformed_sprite(&self, fb: &mut Framebuffer, texture: &Texture, sprite: &Sprite) {
+        let src = sprite.src_rect;
+        
+        // Calculate scaled dimensions
+        let scaled_width = (src.width as f32 * sprite.scale_x) as i32;
+        let scaled_height = (src.height as f32 * sprite.scale_y) as i32;
+        
+        // Calculate rotation center (relative to sprite position)
+        let cx = scaled_width as f32 / 2.0;
+        let cy = scaled_height as f32 / 2.0;
+        
+        // Precompute rotation values
+        let cos_r = cosf(sprite.rotation);
+        let sin_r = sinf(sprite.rotation);
+        
+        // Calculate bounding box of rotated sprite
+        let corners = [
+            (-cx, -cy),
+            (cx, -cy),
+            (-cx, cy),
+            (cx, cy),
+        ];
+        
+        let mut min_x = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut min_y = f32::MAX;
+        let mut max_y = f32::MIN;
+        
+        for (px, py) in corners {
+            let rx = px * cos_r - py * sin_r;
+            let ry = px * sin_r + py * cos_r;
+            min_x = fminf(min_x, rx);
+            max_x = fmaxf(max_x, rx);
+            min_y = fminf(min_y, ry);
+            max_y = fmaxf(max_y, ry);
+        }
+        
+        // Destination center
+        let dest_cx = sprite.x + cx as i32;
+        let dest_cy = sprite.y + cy as i32;
+        
+        // Iterate over the bounding box
+        let start_x = dest_cx + min_x as i32;
+        let end_x = dest_cx + max_x as i32;
+        let start_y = dest_cy + min_y as i32;
+        let end_y = dest_cy + max_y as i32;
+        
+        for py in start_y..=end_y {
+            for px in start_x..=end_x {
+                // Transform destination pixel back to source coordinates
+                let dx = px as f32 - dest_cx as f32;
+                let dy = py as f32 - dest_cy as f32;
+                
+                // Inverse rotation
+                let sx = dx * cos_r + dy * sin_r + cx;
+                let sy = -dx * sin_r + dy * cos_r + cy;
+                
+                // Inverse scaling to get texture coordinates
+                let tx = sx / sprite.scale_x;
+                let ty = sy / sprite.scale_y;
+                
+                // Check if within source rectangle
+                if tx >= 0.0 && tx < src.width as f32 && ty >= 0.0 && ty < src.height as f32 {
+                    let tex_x = src.x as u32 + tx as u32;
+                    let tex_y = src.y as u32 + ty as u32;
+                    
+                    if let Some(color) = texture.get_pixel(tex_x, tex_y) {
+                        if self.in_clip(px, py) {
+                            self.blend_pixel(fb, px, py, color);
+                        }
+                    }
+                }
             }
         }
     }

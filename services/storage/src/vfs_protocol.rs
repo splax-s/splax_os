@@ -340,6 +340,8 @@ pub enum VfsError {
     InvalidHandle = 17,
     /// Name too long
     NameTooLong = 18,
+    /// Cross-device link (cannot rename across mount points)
+    CrossDevice = 19,
 }
 
 /// Filesystem statistics

@@ -658,6 +658,64 @@ impl PciDevice {
             _ => "Unknown",
         }
     }
+    
+    // ========== BDF (Bus/Device/Function) Accessors ==========
+    
+    /// Returns the PCI bus number.
+    pub fn bus(&self) -> u8 {
+        self.address.bus
+    }
+    
+    /// Returns the PCI slot (device) number.
+    pub fn slot(&self) -> u8 {
+        self.address.device
+    }
+    
+    /// Returns the PCI function number.
+    pub fn function(&self) -> u8 {
+        self.address.function
+    }
+    
+    // ========== Vendor/Device ID Accessors ==========
+    
+    /// Returns the vendor ID.
+    pub fn vendor_id(&self) -> u16 {
+        self.vendor_id
+    }
+    
+    /// Returns the device ID.
+    pub fn device_id(&self) -> u16 {
+        self.device_id
+    }
+    
+    // ========== Class Information Accessors ==========
+    
+    /// Returns the class code.
+    pub fn class_code(&self) -> u8 {
+        self.class_code
+    }
+    
+    /// Returns the subclass code.
+    pub fn subclass(&self) -> u8 {
+        self.subclass
+    }
+    
+    /// Returns the programming interface.
+    pub fn prog_if(&self) -> u8 {
+        self.prog_if
+    }
+    
+    // ========== Command Register Accessors ==========
+    
+    /// Returns the current value of the command register.
+    pub fn command(&self) -> u16 {
+        config_read16(self.address, reg::COMMAND)
+    }
+    
+    /// Sets the command register value.
+    pub fn set_command(&self, value: u16) {
+        config_write16(self.address, reg::COMMAND, value);
+    }
 }
 
 /// PCI subsystem.
@@ -755,6 +813,20 @@ static PCI: spin::Once<PciSubsystem> = spin::Once::new();
 /// Gets the global PCI subsystem.
 pub fn pci() -> &'static PciSubsystem {
     PCI.call_once(|| PciSubsystem::new())
+}
+
+/// Returns an iterator over all discovered PCI devices.
+///
+/// This is a convenience function that calls `pci().devices()`.
+pub fn enumerate_devices() -> Vec<PciDevice> {
+    pci().devices()
+}
+
+/// Finds a PCI device by vendor and device ID.
+///
+/// This is a convenience function that calls `pci().find_device()`.
+pub fn find_device(vendor: u16, device: u16) -> Option<PciDevice> {
+    pci().find_device(vendor, device)
 }
 
 /// Initializes the PCI subsystem.

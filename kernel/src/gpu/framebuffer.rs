@@ -379,11 +379,49 @@ pub static FRAMEBUFFER: Mutex<Option<Framebuffer>> = Mutex::new(None);
 /// Detects framebuffer from bootloader info
 /// Returns None if no framebuffer is available
 pub fn detect_framebuffer() -> Option<FramebufferInfo> {
-    // In a real implementation, this would query the bootloader
-    // (e.g., Limine, GRUB multiboot2, or UEFI GOP) for framebuffer info.
-    // For now, we return None to indicate no framebuffer detected.
-    // The bootloader integration code should call init() directly
-    // with the framebuffer info.
+    // Try to detect framebuffer from Limine bootloader
+    #[cfg(feature = "limine")]
+    {
+        use crate::boot::limine;
+        if let Some(fb_response) = limine::framebuffer_response() {
+            if fb_response.framebuffer_count > 0 {
+                let fb = &fb_response.framebuffers[0];
+                return Some(FramebufferInfo {
+                    base_addr: fb.address as usize,
+                    width: fb.width as u32,
+                    height: fb.height as u32,
+                    pitch: fb.pitch as u32,
+                    bits_per_pixel: fb.bpp as u8,
+                    pixel_format: match (fb.red_mask_shift, fb.blue_mask_shift) {
+                        (0, 16) => PixelFormat::Rgb,
+                        (16, 0) => PixelFormat::Bgr,
+                        _ => PixelFormat::Bgr, // Default
+                    },
+                });
+            }
+        }
+    }
+    
+    // Try to detect from Multiboot2 info
+    #[cfg(feature = "multiboot2")]
+    {
+        use crate::boot::multiboot2;
+        if let Some(fb_tag) = multiboot2::framebuffer_tag() {
+            return Some(FramebufferInfo {
+                base_addr: fb_tag.address as usize,
+                width: fb_tag.width,
+                height: fb_tag.height,
+                pitch: fb_tag.pitch,
+                bits_per_pixel: fb_tag.bpp,
+                pixel_format: match fb_tag.framebuffer_type {
+                    1 => PixelFormat::Rgb, // Direct RGB
+                    _ => PixelFormat::Bgr,
+                },
+            });
+        }
+    }
+    
+    // Fallback: Check for VGA text mode address (no graphics)
     None
 }
 

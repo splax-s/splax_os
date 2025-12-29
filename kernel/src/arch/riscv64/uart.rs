@@ -165,6 +165,49 @@ pub fn puts(s: &str) {
     }
 }
 
+/// Input buffer for shell/console
+const INPUT_BUFFER_SIZE: usize = 256;
+static INPUT_BUFFER: Mutex<InputBuffer> = Mutex::new(InputBuffer::new());
+
+struct InputBuffer {
+    data: [u8; INPUT_BUFFER_SIZE],
+    head: usize,
+    tail: usize,
+}
+
+impl InputBuffer {
+    const fn new() -> Self {
+        Self {
+            data: [0; INPUT_BUFFER_SIZE],
+            head: 0,
+            tail: 0,
+        }
+    }
+    
+    fn push(&mut self, ch: u8) -> bool {
+        let next = (self.head + 1) % INPUT_BUFFER_SIZE;
+        if next == self.tail {
+            return false; // Buffer full
+        }
+        self.data[self.head] = ch;
+        self.head = next;
+        true
+    }
+    
+    fn pop(&mut self) -> Option<u8> {
+        if self.tail == self.head {
+            return None; // Buffer empty
+        }
+        let ch = self.data[self.tail];
+        self.tail = (self.tail + 1) % INPUT_BUFFER_SIZE;
+        Some(ch)
+    }
+    
+    fn is_empty(&self) -> bool {
+        self.head == self.tail
+    }
+}
+
 /// Handle UART interrupt
 pub fn handle_interrupt() {
     // Read all available characters
@@ -176,8 +219,22 @@ pub fn handle_interrupt() {
             putchar(ch);
         }
         
-        // TODO: Add to input buffer for shell
+        // Add to input buffer for shell/console
+        let mut buf = INPUT_BUFFER.lock();
+        if !buf.push(ch) {
+            // Buffer full - drop the character
+        }
     }
+}
+
+/// Read a character from the input buffer (for shell)
+pub fn read_input() -> Option<u8> {
+    INPUT_BUFFER.lock().pop()
+}
+
+/// Check if there's input available
+pub fn has_input() -> bool {
+    !INPUT_BUFFER.lock().is_empty()
 }
 
 /// Implement core::fmt::Write for UART

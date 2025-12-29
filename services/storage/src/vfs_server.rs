@@ -563,6 +563,127 @@ impl VfsServer {
         mount.fs.unlink(parent_ino, name)
     }
 
+    /// Rename a file or directory
+    pub fn rename(&self, old_path: &str, new_path: &str) -> Result<(), VfsError> {
+        let (old_mount_idx, old_relative) = self.resolve_mount(old_path)?;
+        let (new_mount_idx, new_relative) = self.resolve_mount(new_path)?;
+
+        // Cannot rename across mount points
+        if old_mount_idx != new_mount_idx {
+            return Err(VfsError::CrossDevice);
+        }
+
+        let mounts = self.mounts.read();
+        let mount = &mounts[old_mount_idx];
+
+        if mount.read_only {
+            return Err(VfsError::ReadOnlyFs);
+        }
+
+        let old_parent_path = Self::parent_path(&old_relative);
+        let old_name = Self::basename(&old_relative);
+        let new_parent_path = Self::parent_path(&new_relative);
+        let new_name = Self::basename(&new_relative);
+
+        let fs = &mount.fs;
+
+        // Resolve old parent
+        let old_parent_ino = if old_parent_path.is_empty() || old_parent_path == "/" {
+            fs.root_ino()
+        } else {
+            let mut curr = fs.root_ino();
+            for comp in old_parent_path.split('/').filter(|s| !s.is_empty()) {
+                curr = fs.lookup(curr, comp)?;
+            }
+            curr
+        };
+
+        // Resolve new parent
+        let new_parent_ino = if new_parent_path.is_empty() || new_parent_path == "/" {
+            fs.root_ino()
+        } else {
+            let mut curr = fs.root_ino();
+            for comp in new_parent_path.split('/').filter(|s| !s.is_empty()) {
+                curr = fs.lookup(curr, comp)?;
+            }
+            curr
+        };
+
+        fs.rename(old_parent_ino, old_name, new_parent_ino, new_name)
+    }
+
+    /// Create a symbolic link
+    pub fn symlink(&self, target: &str, link_path: &str) -> Result<(), VfsError> {
+        let (mount_idx, relative) = self.resolve_mount(link_path)?;
+        let mounts = self.mounts.read();
+        let mount = &mounts[mount_idx];
+
+        if mount.read_only {
+            return Err(VfsError::ReadOnlyFs);
+        }
+
+        let parent_path = Self::parent_path(&relative);
+        let name = Self::basename(&relative);
+
+        let parent_ino = if parent_path.is_empty() || parent_path == "/" {
+            mount.fs.root_ino()
+        } else {
+            let mut curr = mount.fs.root_ino();
+            for comp in parent_path.split('/').filter(|s| !s.is_empty()) {
+                curr = mount.fs.lookup(curr, comp)?;
+            }
+            curr
+        };
+
+        mount.fs.symlink(parent_ino, name, target)?;
+        Ok(())
+    }
+
+    /// Read the target of a symbolic link
+    pub fn readlink(&self, path: &str) -> Result<String, VfsError> {
+        let (mount_idx, ino) = self.resolve_path(path)?;
+        let mounts = self.mounts.read();
+        let fs = &mounts[mount_idx].fs;
+
+        // Verify it's a symlink
+        let attr = fs.getattr(ino)?;
+        if attr.file_type != VfsFileType::Symlink {
+            return Err(VfsError::InvalidArgument);
+        }
+
+        fs.readlink(ino)
+    }
+
+    /// Truncate a file to a specified length
+    pub fn truncate(&self, path: &str, length: u64) -> Result<(), VfsError> {
+        let (mount_idx, ino) = self.resolve_path(path)?;
+        let mounts = self.mounts.read();
+        let mount = &mounts[mount_idx];
+
+        if mount.read_only {
+            return Err(VfsError::ReadOnlyFs);
+        }
+
+        // Verify it's a regular file
+        let attr = mount.fs.getattr(ino)?;
+        if attr.file_type != VfsFileType::Regular {
+            return Err(VfsError::IsADirectory);
+        }
+
+        mount.fs.truncate(ino, length)
+    }
+
+    /// Sync a file handle to disk
+    pub fn sync_handle(&self, handle: FileHandle) -> Result<(), VfsError> {
+        let open_files = self.open_files.lock();
+        let file = open_files.get(&handle).ok_or(VfsError::BadHandle)?;
+        let mount_idx = file.mount_idx;
+        drop(open_files);
+
+        let mounts = self.mounts.read();
+        mounts[mount_idx].fs.sync()
+    }
+
     /// Seek in file
     pub fn seek(&self, handle: FileHandle, offset: i64, whence: SeekFrom) -> Result<u64, VfsError> {
         let mut open_files = self.open_files.lock();
@@ -698,43 +819,53 @@ impl VfsServer {
 
             VfsRequest::Rename {
                 request_id,
-                old_path: _,
-                new_path: _,
-            } => {
-                // TODO: Implement rename
-                VfsResponse::error(request_id, VfsError::NotSupported)
-            }
+                old_path,
+                new_path,
+            } => match self.rename(&old_path, &new_path) {
+                Ok(()) => VfsResponse::ok(request_id),
+                Err(e) => VfsResponse::error(request_id, e),
+            },
 
             VfsRequest::Symlink {
                 request_id,
-                target: _,
-                link_path: _,
-            } => {
-                // TODO: Implement symlink
-                VfsResponse::error(request_id, VfsError::NotSupported)
-            }
+                target,
+                link_path,
+            } => match self.symlink(&target, &link_path) {
+                Ok(()) => VfsResponse::ok(request_id),
+                Err(e) => VfsResponse::error(request_id, e),
+            },
 
-            VfsRequest::Readlink { request_id, path: _ } => {
-                // TODO: Implement readlink
-                VfsResponse::error(request_id, VfsError::NotSupported)
-            }
+            VfsRequest::Readlink { request_id, path } => match self.readlink(&path) {
+                Ok(target) => VfsResponse::Link { request_id, target },
+                Err(e) => VfsResponse::error(request_id, e),
+            },
 
             VfsRequest::Truncate {
                 request_id,
-                path: _,
-                length: _,
-            } => {
-                // TODO: Implement truncate
-                VfsResponse::error(request_id, VfsError::NotSupported)
-            }
+                path,
+                length,
+            } => match self.truncate(&path, length) {
+                Ok(()) => VfsResponse::ok(request_id),
+                Err(e) => VfsResponse::error(request_id, e),
+            },
 
             VfsRequest::Sync {
                 request_id,
-                handle: _,
-            } => {
-                // TODO: Implement sync
-                VfsResponse::ok(request_id)
-            }
+                handle,
+            } => match handle {
+                Some(h) => match self.sync_handle(h) {
+                    Ok(()) => VfsResponse::ok(request_id),
+                    Err(e) => VfsResponse::error(request_id, e),
+                },
+                None => {
+                    // Global sync - sync all mounted filesystems
+                    let mounts = self.mounts.read();
+                    for mount in mounts.iter() {
+                        let _ = mount.fs.sync();
+                    }
+                    VfsResponse::ok(request_id)
+                }
+            },
 
             VfsRequest::Seek {
                 request_id,

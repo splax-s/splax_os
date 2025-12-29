@@ -66,8 +66,8 @@ pub fn handle_interrupt() {
     // Clear pending interrupt by setting next timer
     set_next_timer();
     
-    // Call scheduler tick
-    // TODO: crate::sched::timer_tick();
+    // Call scheduler tick for preemption
+    crate::sched::timer_tick();
 }
 
 /// Sleep for approximately `ms` milliseconds

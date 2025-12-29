@@ -91,27 +91,35 @@ impl core::fmt::Display for Ipv4Address {
 /// IPv4 packet header.
 #[derive(Debug, Clone)]
 pub struct Ipv4Packet {
-    /// Version and IHL (combined).
-    pub version_ihl: u8,
-    /// Type of Service.
-    pub tos: u8,
-    /// Total length.
+    /// IP version (always 4 for IPv4).
+    pub version: u8,
+    /// Internet Header Length (in 32-bit words, minimum 5).
+    pub ihl: u8,
+    /// Differentiated Services Code Point (6 bits).
+    pub dscp: u8,
+    /// Explicit Congestion Notification (2 bits).
+    pub ecn: u8,
+    /// Total length of packet (header + payload).
     pub total_length: u16,
-    /// Identification.
+    /// Identification for fragment reassembly.
     pub identification: u16,
-    /// Flags and fragment offset.
-    pub flags_fragment: u16,
+    /// Flags (3 bits: Reserved, Don't Fragment, More Fragments).
+    pub flags: u8,
+    /// Fragment offset (13 bits, in 8-byte units).
+    pub fragment_offset: u16,
     /// Time to Live.
     pub ttl: u8,
-    /// Protocol.
+    /// Protocol number (e.g., TCP=6, UDP=17, ICMP=1).
     pub protocol: u8,
     /// Header checksum.
-    pub checksum: u16,
+    pub header_checksum: u16,
     /// Source address.
     pub src_addr: Ipv4Address,
     /// Destination address.
     pub dest_addr: Ipv4Address,
-    /// Payload.
+    /// IP options (variable length, up to 40 bytes).
+    pub options: Vec<u8>,
+    /// Payload data.
     pub payload: Vec<u8>,
 }
 
@@ -131,20 +139,24 @@ impl Ipv4Packet {
         let total_length = (Self::MIN_HEADER_SIZE + payload.len()) as u16;
         
         let mut packet = Self {
-            version_ihl: 0x45, // IPv4, IHL=5 (20 bytes)
-            tos: 0,
+            version: 4,
+            ihl: 5, // 5 * 4 = 20 bytes (minimum header)
+            dscp: 0,
+            ecn: 0,
             total_length,
             identification: 0,
-            flags_fragment: 0x4000, // Don't fragment
+            flags: 0x02, // Don't Fragment flag
+            fragment_offset: 0,
             ttl: Self::DEFAULT_TTL,
             protocol,
-            checksum: 0,
+            header_checksum: 0,
             src_addr,
             dest_addr,
+            options: Vec::new(),
             payload,
         };
         
-        packet.checksum = packet.compute_checksum();
+        packet.header_checksum = packet.compute_checksum();
         packet
     }
     
@@ -156,58 +168,91 @@ impl Ipv4Packet {
         
         let version_ihl = data[0];
         let version = version_ihl >> 4;
-        let ihl = (version_ihl & 0x0F) as usize * 4;
+        let ihl = version_ihl & 0x0F;
+        let header_len = (ihl as usize) * 4;
         
         // Must be IPv4
-        if version != 4 || ihl < Self::MIN_HEADER_SIZE {
+        if version != 4 || header_len < Self::MIN_HEADER_SIZE {
             return None;
         }
         
         let total_length = u16::from_be_bytes([data[2], data[3]]) as usize;
         
-        if data.len() < total_length || total_length < ihl {
+        if data.len() < total_length || total_length < header_len {
             return None;
         }
         
         let tos = data[1];
+        let dscp = tos >> 2;
+        let ecn = tos & 0x03;
         let identification = u16::from_be_bytes([data[4], data[5]]);
         let flags_fragment = u16::from_be_bytes([data[6], data[7]]);
+        let flags = ((flags_fragment >> 13) & 0x07) as u8;
+        let fragment_offset = flags_fragment & 0x1FFF;
         let ttl = data[8];
         let protocol = data[9];
-        let checksum = u16::from_be_bytes([data[10], data[11]]);
+        let header_checksum = u16::from_be_bytes([data[10], data[11]]);
         let src_addr = Ipv4Address::from_bytes(&data[12..16])?;
         let dest_addr = Ipv4Address::from_bytes(&data[16..20])?;
-        let payload = data[ihl..total_length].to_vec();
+        
+        // Parse options if header is larger than minimum
+        let options = if header_len > Self::MIN_HEADER_SIZE {
+            data[Self::MIN_HEADER_SIZE..header_len].to_vec()
+        } else {
+            Vec::new()
+        };
+        
+        let payload = data[header_len..total_length].to_vec();
         
         Some(Self {
-            version_ihl,
-            tos,
+            version,
+            ihl,
+            dscp,
+            ecn,
             total_length: total_length as u16,
             identification,
-            flags_fragment,
+            flags,
+            fragment_offset,
             ttl,
             protocol,
-            checksum,
+            header_checksum,
             src_addr,
             dest_addr,
+            options,
             payload,
         })
     }
     
     /// Serializes the packet to bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(Self::MIN_HEADER_SIZE + self.payload.len());
+        let header_len = Self::MIN_HEADER_SIZE + self.options.len();
+        let mut bytes = Vec::with_capacity(header_len + self.payload.len());
         
-        bytes.push(self.version_ihl);
-        bytes.push(self.tos);
+        // Version + IHL
+        let version_ihl = (self.version << 4) | self.ihl;
+        bytes.push(version_ihl);
+        
+        // DSCP + ECN (Type of Service)
+        let tos = (self.dscp << 2) | (self.ecn & 0x03);
+        bytes.push(tos);
+        
         bytes.extend_from_slice(&self.total_length.to_be_bytes());
         bytes.extend_from_slice(&self.identification.to_be_bytes());
-        bytes.extend_from_slice(&self.flags_fragment.to_be_bytes());
+        
+        // Flags + Fragment Offset
+        let flags_fragment = ((self.flags as u16) << 13) | (self.fragment_offset & 0x1FFF);
+        bytes.extend_from_slice(&flags_fragment.to_be_bytes());
+        
         bytes.push(self.ttl);
         bytes.push(self.protocol);
-        bytes.extend_from_slice(&self.checksum.to_be_bytes());
+        bytes.extend_from_slice(&self.header_checksum.to_be_bytes());
         bytes.extend_from_slice(&self.src_addr.0);
         bytes.extend_from_slice(&self.dest_addr.0);
+        
+        // Options (if any)
+        bytes.extend_from_slice(&self.options);
+        
+        // Payload
         bytes.extend_from_slice(&self.payload);
         
         bytes
@@ -215,11 +260,15 @@ impl Ipv4Packet {
     
     /// Computes the header checksum.
     fn compute_checksum(&self) -> u16 {
-        let header = [
-            ((self.version_ihl as u16) << 8) | (self.tos as u16),
+        let version_ihl = (self.version << 4) | self.ihl;
+        let tos = (self.dscp << 2) | (self.ecn & 0x03);
+        let flags_fragment = ((self.flags as u16) << 13) | (self.fragment_offset & 0x1FFF);
+        
+        let mut header = alloc::vec![
+            ((version_ihl as u16) << 8) | (tos as u16),
             self.total_length,
             self.identification,
-            self.flags_fragment,
+            flags_fragment,
             ((self.ttl as u16) << 8) | (self.protocol as u16),
             0, // Checksum placeholder
             u16::from_be_bytes([self.src_addr.0[0], self.src_addr.0[1]]),
@@ -228,12 +277,22 @@ impl Ipv4Packet {
             u16::from_be_bytes([self.dest_addr.0[2], self.dest_addr.0[3]]),
         ];
         
+        // Include options in checksum calculation
+        let mut i = 0;
+        while i + 1 < self.options.len() {
+            header.push(u16::from_be_bytes([self.options[i], self.options[i + 1]]));
+            i += 2;
+        }
+        if i < self.options.len() {
+            header.push((self.options[i] as u16) << 8);
+        }
+        
         internet_checksum(&header)
     }
     
     /// Verifies the checksum.
     pub fn verify_checksum(&self) -> bool {
-        self.compute_checksum() == self.checksum
+        self.compute_checksum() == self.header_checksum
     }
 }
 

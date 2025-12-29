@@ -309,6 +309,10 @@ pub enum AudioError {
     AlreadyRunning,
     /// Stream already stopped
     AlreadyStopped,
+    /// Stream not running
+    StreamNotRunning,
+    /// Device error
+    DeviceError,
 }
 
 // =============================================================================
@@ -626,6 +630,9 @@ impl PcmStream {
 
 /// Global audio core instance
 pub static AUDIO_CORE: Mutex<AudioCore> = Mutex::new(AudioCore::new());
+
+/// Next device ID counter for audio devices
+pub static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Initializes the audio subsystem
 pub fn init() {

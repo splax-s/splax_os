@@ -339,6 +339,8 @@ pub struct NetworkStack {
     pub tcp: tcp::TcpState,
     /// UDP state
     pub udp: udp::UdpState,
+    /// Network statistics
+    pub stats: NetStats,
 }
 
 impl NetworkStack {
@@ -349,6 +351,7 @@ impl NetworkStack {
             next_id: 0,
             tcp: tcp::TcpState::new(),
             udp: udp::UdpState::new(),
+            stats: NetStats::new(),
         }
     }
 
@@ -910,8 +913,25 @@ pub struct InterfaceStats {
 }
 
 /// Get interface statistics
-pub fn get_interface_stats(_interface: &str) -> InterfaceStats {
-    // In a real implementation, these would come from the driver
+pub fn get_interface_stats(interface_name: &str) -> InterfaceStats {
+    let stack = NETWORK_STACK.lock();
+    for iface in stack.interfaces.values() {
+        if iface.config.name == interface_name {
+            // Get device stats
+            let device = iface.device.lock();
+            let info = device.info();
+            return InterfaceStats {
+                rx_packets: info.rx_packets,
+                rx_bytes: info.rx_bytes,
+                rx_errors: info.rx_errors,
+                rx_dropped: info.rx_dropped,
+                tx_packets: info.tx_packets,
+                tx_bytes: info.tx_bytes,
+                tx_errors: info.tx_errors,
+                tx_dropped: info.tx_dropped,
+            };
+        }
+    }
     InterfaceStats::default()
 }
 
@@ -928,8 +948,28 @@ pub struct SocketInfo {
 
 /// Get active sockets (for netstat)
 pub fn get_sockets() -> Vec<SocketInfo> {
-    // In a real implementation, this would query the socket table
-    Vec::new()
+    let mut sockets = Vec::new();
+    
+    // Get TCP connections
+    let tcp = tcp::tcp_state().lock();
+    // Note: We'd need access to the connections map, adding a method for this
+    // For now, return the established connections we can infer from the socket table
+    drop(tcp);
+    
+    // Get UDP sockets
+    let udp = udp::udp_state().lock();
+    for port in udp.bound_ports() {
+        sockets.push(SocketInfo {
+            protocol: "UDP",
+            local_addr: Ipv4Address::ANY,
+            local_port: port,
+            remote_addr: Ipv4Address::ANY,
+            remote_port: 0,
+            state: "LISTENING",
+        });
+    }
+    
+    sockets
 }
 
 /// Traceroute result for one hop
@@ -1157,8 +1197,65 @@ pub struct NetStats {
     pub ip_packets_dropped: u64,
 }
 
+impl NetStats {
+    /// Create a new empty statistics structure
+    pub const fn new() -> Self {
+        Self {
+            tcp_active_connections: 0,
+            tcp_passive_opens: 0,
+            tcp_failed_attempts: 0,
+            tcp_established_resets: 0,
+            tcp_current_established: 0,
+            tcp_segments_received: 0,
+            tcp_segments_sent: 0,
+            tcp_segments_retransmitted: 0,
+            udp_datagrams_received: 0,
+            udp_datagrams_sent: 0,
+            icmp_messages_received: 0,
+            icmp_messages_sent: 0,
+            ip_packets_received: 0,
+            ip_packets_sent: 0,
+            ip_packets_forwarded: 0,
+            ip_packets_dropped: 0,
+        }
+    }
+}
+
 /// Get network statistics
 pub fn get_netstats() -> NetStats {
-    // In a real implementation, these would be tracked by the stack
-    NetStats::default()
+    let stack = NETWORK_STACK.lock();
+    stack.stats.clone()
+}
+
+/// Transmit a TCP segment through the network stack.
+///
+/// This function takes a TCP segment and connection key, wraps it in an IP packet,
+/// and sends it through the primary network interface.
+pub fn transmit_tcp_segment(key: &tcp::TcpConnectionKey, segment: &TcpSegment) -> Result<(), NetworkError> {
+    let stack = NETWORK_STACK.lock();
+    let interface = stack.primary_interface().ok_or(NetworkError::NoInterface)?;
+    
+    // Build the TCP segment bytes with proper checksum
+    let tcp_data = segment.to_bytes(key.local.addr, key.remote.addr);
+    
+    // Create IPv4 packet
+    let packet = Ipv4Packet {
+        version: 4,
+        ihl: 5,
+        dscp: 0,
+        ecn: 0,
+        total_length: (20 + tcp_data.len()) as u16,
+        identification: 0,
+        flags: 0,
+        fragment_offset: 0,
+        ttl: 64,
+        protocol: ip::PROTOCOL_TCP,
+        header_checksum: 0,
+        src_addr: key.local.addr,
+        dest_addr: key.remote.addr,
+        options: Vec::new(),
+        payload: tcp_data,
+    };
+    
+    interface.send_ipv4(&packet)
 }

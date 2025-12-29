@@ -368,15 +368,233 @@ impl DnsResolver {
         Err(NetworkError::DnsError)
     }
     
-    /// Send a DNS query and wait for response (mock implementation)
-    fn send_query(&self, _query: &DnsQuery) -> Result<DnsResponse, NetworkError> {
-        // In a real implementation, this would:
-        // 1. Send UDP packet to DNS server on port 53
-        // 2. Wait for response with timeout
-        // 3. Parse the response
+    /// Send a DNS query and wait for response
+    fn send_query(&self, query: &DnsQuery) -> Result<DnsResponse, NetworkError> {
+        use crate::net::udp::{udp_state, UdpEndpoint, UdpDatagram};
+        use crate::net::{NETWORK_STACK, ip};
         
-        // For now, return an error indicating DNS is not yet implemented
-        Err(NetworkError::DnsError)
+        // Build the DNS query packet
+        let packet = query.build_packet();
+        
+        // Allocate an ephemeral port for the response
+        let local_port = udp_state().lock().allocate_port();
+        let local_addr = {
+            let stack = NETWORK_STACK.lock();
+            stack.primary_interface()
+                .map(|iface| iface.config.ipv4_addr)
+                .unwrap_or(Ipv4Address::new(10, 0, 2, 15))
+        };
+        
+        // Bind the UDP socket
+        let _ = udp_state().lock().bind(local_port, local_addr);
+        
+        // Create UDP datagram
+        let datagram = UdpDatagram::new(
+            local_port,
+            DNS_PORT,
+            packet.clone(),
+        );
+        
+        // Send via network stack
+        {
+            let stack = NETWORK_STACK.lock();
+            if let Some(interface) = stack.primary_interface() {
+                let udp_bytes = datagram.to_bytes(local_addr, query.server);
+                let ip_packet = crate::net::Ipv4Packet {
+                    version: 4,
+                    ihl: 5,
+                    dscp: 0,
+                    ecn: 0,
+                    total_length: (20 + udp_bytes.len()) as u16,
+                    identification: query.id,
+                    flags: 0,
+                    fragment_offset: 0,
+                    ttl: 64,
+                    protocol: ip::PROTOCOL_UDP,
+                    header_checksum: 0,
+                    src_addr: local_addr,
+                    dest_addr: query.server,
+                    options: Vec::new(),
+                    payload: udp_bytes,
+                };
+                interface.send_ipv4(&ip_packet)?;
+            } else {
+                return Err(NetworkError::NoInterface);
+            }
+        }
+        
+        // Wait for response with timeout
+        // Approximate: 1 cycle ≈ 0.5ns on 2GHz CPU, so timeout in cycles
+        let timeout_cycles = (self.timeout_ms as u64) * 2_000_000; // ~2GHz assumption
+        let start = crate::arch::read_cycle_counter();
+        
+        loop {
+            // Poll for incoming packets
+            {
+                let stack = NETWORK_STACK.lock();
+                stack.poll();
+            }
+            
+            // Check for response in UDP socket
+            if let Some(response_data) = udp_state().lock().socket(local_port).and_then(|s| s.recv()) {
+                // Parse DNS response
+                if let Some(response) = self.parse_response(&response_data.data, query) {
+                    // Unbind the socket
+                    let _ = udp_state().lock().unbind(local_port);
+                    return Ok(response);
+                }
+            }
+            
+            // Check timeout
+            let elapsed = crate::arch::read_cycle_counter().saturating_sub(start);
+            if elapsed >= timeout_cycles {
+                // Unbind the socket
+                let _ = udp_state().lock().unbind(local_port);
+                return Err(NetworkError::TimedOut);
+            }
+            
+            // Yield CPU briefly
+            core::hint::spin_loop();
+        }
+    }
+    
+    /// Parse a DNS response packet
+    fn parse_response(&self, data: &[u8], query: &DnsQuery) -> Option<DnsResponse> {
+        if data.len() < 12 {
+            return None;
+        }
+        
+        let header = DnsHeader::parse(data)?;
+        
+        // Verify this is a response to our query
+        if header.id != query.id || !header.flags.qr {
+            return None;
+        }
+        
+        let mut offset = 12;
+        
+        // Skip questions
+        let mut questions = Vec::new();
+        for _ in 0..header.qdcount {
+            let (name, new_offset) = self.parse_name(data, offset)?;
+            offset = new_offset;
+            if offset + 4 > data.len() { return None; }
+            let qtype = u16::from_be_bytes([data[offset], data[offset + 1]]);
+            let _qclass = u16::from_be_bytes([data[offset + 2], data[offset + 3]]);
+            offset += 4;
+            
+            if let Some(rtype) = self.u16_to_record_type(qtype) {
+                questions.push(DnsQuestion::new(&name, rtype));
+            }
+        }
+        
+        // Parse answers
+        let mut answers = Vec::new();
+        for _ in 0..header.ancount {
+            if let Some((record, new_offset)) = self.parse_record(data, offset) {
+                answers.push(record);
+                offset = new_offset;
+            } else {
+                break;
+            }
+        }
+        
+        Some(DnsResponse {
+            header,
+            questions,
+            answers,
+            authorities: Vec::new(),
+            additional: Vec::new(),
+            query_time_ms: 0,
+            server: query.server,
+        })
+    }
+    
+    /// Parse a domain name from DNS wire format
+    fn parse_name(&self, data: &[u8], mut offset: usize) -> Option<(String, usize)> {
+        let mut name = String::new();
+        let mut jumped = false;
+        let mut return_offset = 0;
+        
+        loop {
+            if offset >= data.len() { return None; }
+            
+            let len = data[offset] as usize;
+            
+            if len == 0 {
+                offset += 1;
+                break;
+            }
+            
+            // Compression pointer
+            if (len & 0xC0) == 0xC0 {
+                if offset + 1 >= data.len() { return None; }
+                let pointer = ((len & 0x3F) as usize) << 8 | data[offset + 1] as usize;
+                if !jumped {
+                    return_offset = offset + 2;
+                    jumped = true;
+                }
+                offset = pointer;
+                continue;
+            }
+            
+            offset += 1;
+            if offset + len > data.len() { return None; }
+            
+            if !name.is_empty() {
+                name.push('.');
+            }
+            if let Ok(label) = core::str::from_utf8(&data[offset..offset + len]) {
+                name.push_str(label);
+            }
+            offset += len;
+        }
+        
+        Some((name, if jumped { return_offset } else { offset }))
+    }
+    
+    /// Parse a resource record
+    fn parse_record(&self, data: &[u8], offset: usize) -> Option<(DnsRecord, usize)> {
+        let (name, mut offset) = self.parse_name(data, offset)?;
+        
+        if offset + 10 > data.len() { return None; }
+        
+        let rtype = u16::from_be_bytes([data[offset], data[offset + 1]]);
+        let rclass = u16::from_be_bytes([data[offset + 2], data[offset + 3]]);
+        let ttl = u32::from_be_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]]);
+        let rdlength = u16::from_be_bytes([data[offset + 8], data[offset + 9]]) as usize;
+        offset += 10;
+        
+        if offset + rdlength > data.len() { return None; }
+        let rdata = data[offset..offset + rdlength].to_vec();
+        offset += rdlength;
+        
+        let record = DnsRecord {
+            name,
+            rtype: self.u16_to_record_type(rtype).unwrap_or(RecordType::A),
+            rclass,
+            ttl,
+            rdata,
+        };
+        
+        Some((record, offset))
+    }
+    
+    /// Convert u16 to RecordType
+    fn u16_to_record_type(&self, value: u16) -> Option<RecordType> {
+        match value {
+            1 => Some(RecordType::A),
+            2 => Some(RecordType::NS),
+            5 => Some(RecordType::CNAME),
+            6 => Some(RecordType::SOA),
+            12 => Some(RecordType::PTR),
+            15 => Some(RecordType::MX),
+            16 => Some(RecordType::TXT),
+            28 => Some(RecordType::AAAA),
+            33 => Some(RecordType::SRV),
+            255 => Some(RecordType::ANY),
+            _ => None,
+        }
     }
 }
 

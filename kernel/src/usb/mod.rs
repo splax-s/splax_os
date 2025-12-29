@@ -561,10 +561,25 @@ impl UsbSubsystem {
             .filter(|d| d.device_class == class as u8)
             .collect()
     }
+
+    /// Perform a control transfer to a device
+    pub fn control_transfer(
+        &mut self,
+        device: u8,
+        setup: SetupPacket,
+        data: Option<&mut [u8]>,
+    ) -> TransferResult {
+        // Find the controller that manages this device and perform the transfer
+        if let Some(controller) = self.controllers.first_mut() {
+            controller.control_transfer(device, setup, data)
+        } else {
+            TransferResult::HostError
+        }
+    }
 }
 
 /// Global USB subsystem instance
-static USB_SUBSYSTEM: Mutex<Option<UsbSubsystem>> = Mutex::new(None);
+pub static USB_SUBSYSTEM: Mutex<Option<UsbSubsystem>> = Mutex::new(None);
 
 /// Initialize the USB subsystem
 pub fn init() -> Result<(), &'static str> {

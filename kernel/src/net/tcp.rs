@@ -550,6 +550,16 @@ impl TcpState {
         
         key
     }
+
+    /// Gets a mutable reference to a connection.
+    pub fn connection_mut(&mut self, key: TcpConnectionKey) -> Option<&mut TcpConnection> {
+        self.connections.get_mut(&key)
+    }
+
+    /// Gets an immutable reference to a connection.
+    pub fn connection(&self, key: TcpConnectionKey) -> Option<&TcpConnection> {
+        self.connections.get(&key)
+    }
 }
 
 /// Static TCP state.
@@ -595,4 +605,169 @@ pub fn handle_packet(ip_packet: &Ipv4Packet) {
             listener.backlog.push(conn);
         }
     }
+}
+
+// =============================================================================
+// Public Module-Level TCP API
+// =============================================================================
+
+use super::socket::{SocketAddr, SocketHandle};
+
+/// Socket handle to connection key mapping.
+static SOCKET_CONNECTIONS: Mutex<BTreeMap<usize, TcpConnectionKey>> = Mutex::new(BTreeMap::new());
+
+/// Next socket handle ID.
+static NEXT_SOCKET_ID: Mutex<usize> = Mutex::new(1);
+
+/// Allocates a new socket handle.
+fn allocate_socket_handle() -> SocketHandle {
+    let mut next_id = NEXT_SOCKET_ID.lock();
+    let handle = SocketHandle(*next_id);
+    *next_id += 1;
+    handle
+}
+
+/// Binds a TCP socket to a local address for listening.
+///
+/// # Arguments
+/// * `addr` - The local address and port to bind to
+///
+/// # Returns
+/// A socket handle on success, or a NetworkError on failure.
+pub fn tcp_bind(addr: SocketAddr) -> Result<SocketHandle, NetworkError> {
+    let mut state = TCP_STATE.lock();
+    state.bind(addr.port, addr.addr)?;
+    
+    let handle = allocate_socket_handle();
+    // For listening sockets, we store the port in the connection map
+    // using a special key format
+    let listen_key = TcpConnectionKey {
+        local: TcpEndpoint::new(addr.addr, addr.port),
+        remote: TcpEndpoint::new(Ipv4Address::ANY, 0),
+    };
+    
+    SOCKET_CONNECTIONS.lock().insert(handle.0, listen_key);
+    
+    Ok(handle)
+}
+
+/// Connects to a remote TCP endpoint.
+///
+/// # Arguments
+/// * `addr` - The remote address and port to connect to
+///
+/// # Returns
+/// A socket handle on success, or a NetworkError on failure.
+pub fn tcp_connect(addr: SocketAddr) -> Result<SocketHandle, NetworkError> {
+    let mut state = TCP_STATE.lock();
+    
+    // Use default local address (would be configured interface address)
+    let local_addr = Ipv4Address([0, 0, 0, 0]); // INADDR_ANY - kernel will select
+    let remote = TcpEndpoint::new(addr.addr, addr.port);
+    
+    let key = state.connect(local_addr, remote);
+    
+    let handle = allocate_socket_handle();
+    SOCKET_CONNECTIONS.lock().insert(handle.0, key);
+    
+    Ok(handle)
+}
+
+/// Sends data over a TCP connection.
+///
+/// # Arguments
+/// * `handle` - The socket handle for the connection
+/// * `data` - The data to send
+///
+/// # Returns
+/// The number of bytes sent on success, or a NetworkError on failure.
+pub fn tcp_send(handle: SocketHandle, data: &[u8]) -> Result<usize, NetworkError> {
+    let connections = SOCKET_CONNECTIONS.lock();
+    let key = connections.get(&handle.0)
+        .ok_or(NetworkError::InvalidSocket)?;
+    
+    let mut state = TCP_STATE.lock();
+    let conn = state.connection_mut(*key)
+        .ok_or(NetworkError::NotConnected)?;
+    
+    if conn.state != TcpConnectionState::Established {
+        return Err(NetworkError::NotConnected);
+    }
+    
+    // Queue data for sending
+    conn.send_buffer.extend_from_slice(data);
+    
+    // Create segment (would be sent via network interface)
+    if let Some(_segment) = conn.send(data) {
+        // In a real implementation, this would be sent via the network device
+    }
+    
+    Ok(data.len())
+}
+
+/// Receives data from a TCP connection.
+///
+/// # Arguments
+/// * `handle` - The socket handle for the connection
+/// * `buffer` - The buffer to receive data into
+///
+/// # Returns
+/// The number of bytes received on success, or a NetworkError on failure.
+pub fn tcp_recv(handle: SocketHandle, buffer: &mut [u8]) -> Result<usize, NetworkError> {
+    let connections = SOCKET_CONNECTIONS.lock();
+    let key = connections.get(&handle.0)
+        .ok_or(NetworkError::InvalidSocket)?;
+    
+    let mut state = TCP_STATE.lock();
+    let conn = state.connection_mut(*key)
+        .ok_or(NetworkError::NotConnected)?;
+    
+    // Check if connection is in a valid state for receiving
+    match conn.state {
+        TcpConnectionState::Established |
+        TcpConnectionState::FinWait1 |
+        TcpConnectionState::FinWait2 |
+        TcpConnectionState::CloseWait => {}
+        TcpConnectionState::Closed => return Err(NetworkError::NotConnected),
+        _ => {}
+    }
+    
+    let bytes_read = conn.read(buffer);
+    
+    if bytes_read == 0 && conn.state == TcpConnectionState::CloseWait {
+        // Connection closed by peer
+        return Err(NetworkError::ConnectionClosed);
+    }
+    
+    Ok(bytes_read)
+}
+
+/// Closes a TCP connection.
+///
+/// # Arguments
+/// * `handle` - The socket handle to close
+///
+/// # Returns
+/// Ok(()) on success, or a NetworkError on failure.
+pub fn tcp_close(handle: SocketHandle) -> Result<(), NetworkError> {
+    let mut connections = SOCKET_CONNECTIONS.lock();
+    let key = connections.remove(&handle.0)
+        .ok_or(NetworkError::InvalidSocket)?;
+    
+    // Check if this is a listening socket (remote port == 0)
+    if key.remote.port == 0 {
+        // Remove listener
+        let mut state = TCP_STATE.lock();
+        state.listeners.remove(&key.local.port);
+        return Ok(());
+    }
+    
+    // Close the connection
+    let mut state = TCP_STATE.lock();
+    if let Some(conn) = state.connection_mut(key) {
+        let _segment = conn.close();
+        // In a real implementation, the FIN segment would be sent
+    }
+    
+    Ok(())
 }

@@ -945,15 +945,57 @@ pub fn next_nvme_name() -> String {
 
 /// Probes for NVMe devices via PCI
 pub fn probe_devices() {
+    use crate::pci;
+    
     crate::serial_println!("[nvme] Probing for NVMe devices...");
     
-    // In a real implementation, we would:
-    // 1. Enumerate PCI devices
-    // 2. Find devices with class 0x01, subclass 0x08, prog-if 0x02
-    // 3. Initialize each NVMe controller
+    // NVMe devices have class 0x01 (Mass Storage), subclass 0x08 (NVM), prog-if 0x02 (NVMe)
+    const NVME_CLASS: u8 = 0x01;
+    const NVME_SUBCLASS: u8 = 0x08;
+    const NVME_PROG_IF: u8 = 0x02;
     
-    // For now, we just log that probing was attempted
-    crate::serial_println!("[nvme] NVMe driver loaded (waiting for PCI enumeration)");
+    // Enumerate PCI devices looking for NVMe controllers
+    for device in pci::enumerate_devices() {
+        if device.class_code() == NVME_CLASS 
+           && device.subclass() == NVME_SUBCLASS 
+           && device.prog_if() == NVME_PROG_IF 
+        {
+            crate::serial_println!("[nvme] Found NVMe controller at {:02x}:{:02x}.{}", 
+                device.bus(), device.slot(), device.function());
+            
+            // Read BAR0 for MMIO base address
+            let bar0 = match device.bar(0) {
+                Some(bar) => bar,
+                None => {
+                    crate::serial_println!("[nvme] BAR0 not found, skipping device");
+                    continue;
+                }
+            };
+            
+            // The Bar struct already contains the decoded address and type info
+            // bar0.address is already the base address with type bits masked out
+            // bar0.bar_type indicates if it's 32-bit, 64-bit, or I/O
+            let mmio_base = bar0.address;
+            
+            if mmio_base == 0 {
+                crate::serial_println!("[nvme] Invalid BAR0, skipping device");
+                continue;
+            }
+            
+            // Enable bus mastering and memory space
+            let cmd = device.command();
+            device.set_command(cmd | 0x06); // Memory Space + Bus Master
+            
+            // Initialize the controller
+            if let Err(e) = init_controller(mmio_base) {
+                crate::serial_println!("[nvme] Failed to initialize controller: {:?}", e);
+            } else {
+                crate::serial_println!("[nvme] Controller initialized at {:#x}", mmio_base);
+            }
+        }
+    }
+    
+    crate::serial_println!("[nvme] NVMe probe complete");
 }
 
 /// Initializes an NVMe controller at the given MMIO address

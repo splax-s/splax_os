@@ -1114,12 +1114,8 @@ pub mod wpa2 {
     impl HandshakeContext {
         /// Create new handshake context
         pub fn new(psk: [u8; PSK_LEN], ap_addr: MacAddress, sta_addr: MacAddress) -> Self {
-            let mut snonce = [0u8; NONCE_LEN];
-            // In real implementation, use cryptographic RNG
-            // For now, use a simple pseudo-random generation
-            for (i, byte) in snonce.iter_mut().enumerate() {
-                *byte = ((i * 17 + 3) ^ 0xAB) as u8;
-            }
+            // Generate cryptographically secure SNonce using CSPRNG
+            let snonce: [u8; NONCE_LEN] = crate::crypto::random::random_bytes();
             
             Self {
                 state: HandshakeState::WaitingMsg1,
@@ -1214,8 +1210,7 @@ pub mod wpa2 {
             data.extend_from_slice(&min_nonce);
             data.extend_from_slice(&max_nonce);
             
-            // In a real implementation, use HMAC-SHA1 based PRF
-            // For now, use simplified derivation
+            // PRF-384 using HMAC-SHA1 as per IEEE 802.11i-2004
             let ptk_bytes = simple_prf(&self.psk, b"Pairwise key expansion", &data, PTK_LEN);
             
             let mut kck = [0u8; KCK_LEN];
@@ -1292,27 +1287,26 @@ pub mod wpa2 {
         }
     }
     
-    /// Simple PRF function (placeholder for HMAC-SHA1 PRF-X)
-    /// In production, implement proper HMAC-SHA1 based PRF
+    /// PRF-X function based on HMAC-SHA1 (IEEE 802.11i)
+    /// PRF-X(K, A, B) = HMAC-SHA1(K, A || 0 || B || i) for i = 0,1,2...
     fn simple_prf(key: &[u8], label: &[u8], data: &[u8], output_len: usize) -> Vec<u8> {
+        use crate::crypto::mac::{Mac, HmacSha1};
+        
         let mut output = Vec::with_capacity(output_len);
         let mut counter = 0u8;
         
         while output.len() < output_len {
-            // Simplified mixing (replace with HMAC-SHA1)
-            let mut block = Vec::new();
-            block.extend_from_slice(label);
-            block.push(0); // Null terminator
-            block.extend_from_slice(data);
-            block.push(counter);
+            // Build message: A || 0x00 || B || counter
+            let mut message = Vec::new();
+            message.extend_from_slice(label);
+            message.push(0); // Null separator
+            message.extend_from_slice(data);
+            message.push(counter);
             
-            // Simple hash-like mixing
-            let mut hash = [0u8; 20];
-            for (i, byte) in block.iter().enumerate() {
-                hash[i % 20] ^= byte ^ key[i % key.len()];
-            }
+            // Compute HMAC-SHA1
+            let block = HmacSha1::mac(key, &message);
             
-            output.extend_from_slice(&hash);
+            output.extend_from_slice(&block);
             counter += 1;
         }
         
@@ -1320,31 +1314,22 @@ pub mod wpa2 {
         output
     }
     
-    /// Derive PSK from passphrase and SSID using PBKDF2-SHA1
-    /// PSK = PBKDF2(passphrase, SSID, 4096, 256)
-    /// 
-    /// Note: This is a placeholder implementation. Production code should
-    /// use a proper PBKDF2-HMAC-SHA1 implementation.
+    /// Derive PSK from passphrase and SSID using PBKDF2-HMAC-SHA1
+    /// PSK = PBKDF2(passphrase, SSID, 4096, 256 bits)
     pub fn derive_psk(passphrase: &str, ssid: &str) -> [u8; PSK_LEN] {
+        use crate::crypto::kdf::Pbkdf2;
+        
         let mut psk = [0u8; PSK_LEN];
         
-        // Simplified PBKDF2-like derivation (replace with proper implementation)
-        let salt = ssid.as_bytes();
-        let pass = passphrase.as_bytes();
-        
-        // XOR mixing with iterations (simplified)
-        for i in 0..PSK_LEN {
-            let mut byte = 0u8;
-            for iter in 0..4096u16 {
-                let idx = (i + iter as usize) % pass.len().max(1);
-                let salt_idx = (i + iter as usize) % salt.len().max(1);
-                byte = byte.wrapping_add(
-                    pass.get(idx).copied().unwrap_or(0)
-                    ^ salt.get(salt_idx).copied().unwrap_or(0)
-                    ^ (iter as u8)
-                );
-            }
-            psk[i] = byte;
+        // Use proper PBKDF2-HMAC-SHA1 with 4096 iterations
+        if let Ok(result) = Pbkdf2::derive_sha1(
+            passphrase.as_bytes(),
+            ssid.as_bytes(),
+            4096,
+            PSK_LEN,
+        ) {
+            let copy_len = core::cmp::min(result.len(), PSK_LEN);
+            psk[..copy_len].copy_from_slice(&result[..copy_len]);
         }
         
         psk

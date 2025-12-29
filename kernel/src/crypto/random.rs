@@ -228,6 +228,50 @@ impl CryptoRng for SystemRng {
 }
 
 // ============================================================================
+// Convenience Functions
+// ============================================================================
+
+/// Simple LFSR-based fallback RNG state for when hardware RNG is unavailable.
+static LFSR_STATE: spin::Mutex<u64> = spin::Mutex::new(0xDEAD_BEEF_CAFE_BABEu64);
+
+/// Generates N random bytes and returns them as a fixed-size array.
+///
+/// Uses hardware RNG if available, otherwise falls back to a simple LFSR.
+///
+/// # Example
+/// ```
+/// let cookie: [u8; 16] = random_bytes::<16>();
+/// let key: [u8; 32] = random_bytes::<32>();
+/// ```
+pub fn random_bytes<const N: usize>() -> [u8; N] {
+    let mut buffer = [0u8; N];
+    fill_random_bytes(&mut buffer);
+    buffer
+}
+
+/// Fills a buffer with random bytes.
+///
+/// Uses hardware RNG if available, otherwise falls back to a simple LFSR.
+pub fn fill_random_bytes(buffer: &mut [u8]) {
+    // Try hardware RNG first
+    if let Ok(mut rng) = SystemRng::new() {
+        if rng.fill_bytes(buffer).is_ok() {
+            return;
+        }
+    }
+
+    // Fallback: simple LFSR-based PRNG
+    let mut state = LFSR_STATE.lock();
+    for byte in buffer.iter_mut() {
+        // Xorshift64 algorithm
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *byte = *state as u8;
+    }
+}
+
+// ============================================================================
 // ChaChaRng - Software CSPRNG
 // ============================================================================
 

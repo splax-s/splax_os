@@ -4,11 +4,12 @@
 //!
 //! ## Implementations
 //!
+//! - **HMAC-SHA1**: HMAC with SHA-1 (legacy, for WPA)
 //! - **HMAC-SHA256**: HMAC with SHA-256
 //! - **HMAC-SHA512**: HMAC with SHA-512
 
 use alloc::vec::Vec;
-use super::hash::{Hash, Sha256, Sha512};
+use super::hash::{Hash, Sha1, Sha256, Sha512};
 
 /// MAC trait
 pub trait Mac {
@@ -106,6 +107,76 @@ impl Mac for HmacSha256 {
 
         // Outer hash
         let mut outer = Sha256::new();
+        outer.update(&self.outer_key_pad);
+        outer.update(&inner_hash);
+        outer.finalize()
+    }
+}
+
+// ============================================================================
+// HMAC-SHA1 (legacy, required for WPA)
+// ============================================================================
+
+/// HMAC-SHA1 (legacy, for WPA compatibility)
+pub struct HmacSha1 {
+    inner: Sha1,
+    outer_key_pad: [u8; 64],
+}
+
+impl HmacSha1 {
+    const BLOCK_SIZE: usize = 64;
+    
+    /// Compute MAC in one shot (for simple_prf compatibility)
+    pub fn compute(&self, data: &[u8]) -> Vec<u8> {
+        let mut h = Self::new(&[0u8; 0]); // Placeholder
+        h.update(data);
+        h.finalize()
+    }
+}
+
+impl Mac for HmacSha1 {
+    const OUTPUT_SIZE: usize = 20;
+
+    fn new(key: &[u8]) -> Self {
+        let key_block = if key.len() > Self::BLOCK_SIZE {
+            let hash = Sha1::hash(key);
+            let mut block = [0u8; 64];
+            let copy_len = core::cmp::min(hash.len(), 64);
+            block[..copy_len].copy_from_slice(&hash[..copy_len]);
+            block
+        } else {
+            let mut block = [0u8; 64];
+            block[..key.len()].copy_from_slice(key);
+            block
+        };
+
+        let mut inner_key_pad = [0x36u8; 64];
+        for (i, byte) in key_block.iter().enumerate() {
+            inner_key_pad[i] ^= byte;
+        }
+
+        let mut outer_key_pad = [0x5cu8; 64];
+        for (i, byte) in key_block.iter().enumerate() {
+            outer_key_pad[i] ^= byte;
+        }
+
+        let mut inner = Sha1::new();
+        inner.update(&inner_key_pad);
+
+        Self {
+            inner,
+            outer_key_pad,
+        }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        self.inner.update(data);
+    }
+
+    fn finalize(self) -> Vec<u8> {
+        let inner_hash = self.inner.finalize();
+
+        let mut outer = Sha1::new();
         outer.update(&self.outer_key_pad);
         outer.update(&inner_hash);
         outer.finalize()

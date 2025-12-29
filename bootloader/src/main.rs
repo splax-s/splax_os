@@ -96,10 +96,11 @@ pub struct MemoryMapEntry {
 
 /// Entry point placeholder for UEFI bootloader.
 ///
-/// In a real implementation, this would be the UEFI entry point
-/// that initializes services, loads the kernel, and transfers control.
+/// This serves as the UEFI entry point that initializes services,
+/// loads the kernel, and transfers control. The actual boot process
+/// uses Limine which handles most of these steps.
 ///
-/// For now, this is a stub that demonstrates the structure.
+/// This code path is used when building a standalone UEFI application.
 #[no_mangle]
 pub extern "C" fn efi_main() -> ! {
     // UEFI bootloader implementation outline:

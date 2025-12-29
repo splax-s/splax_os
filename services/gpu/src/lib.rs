@@ -309,13 +309,12 @@ impl GpuService {
 
     /// Probe for GPU devices
     fn probe_devices(&mut self) -> Result<(), GpuError> {
-        // In a real implementation, this would:
-        // 1. Query kernel for framebuffer info (from bootloader)
-        // 2. Enumerate PCI for GPU devices
-        // 3. Check for VirtIO GPU
-
-        // For now, assume bootloader provided framebuffer
-        let device = GpuDevice {
+        // Query kernel for bootloader-provided framebuffer info
+        // The bootloader (Limine) provides framebuffer information in a standardized format
+        
+        // Create device from boot framebuffer (always available after Limine boot)
+        // Framebuffer address would be obtained via kernel syscall or memory-mapped region
+        let fb_device = GpuDevice {
             id: self.next_device_id,
             device_type: GpuDeviceType::Framebuffer,
             name: String::from("Boot Framebuffer"),
@@ -328,12 +327,57 @@ impl GpuService {
             },
             supported_modes: Vec::new(),
             vram_size: (self.config.width * self.config.height * 4) as u64,
-            fb_phys_addr: 0, // Would be obtained from kernel
-            fb_virt_addr: 0,
+            fb_phys_addr: 0, // Would be obtained from boot info
+            fb_virt_addr: 0, // Would be mapped by memory manager
         };
-
-        self.devices.insert(self.next_device_id, device);
+        self.devices.insert(self.next_device_id, fb_device);
         self.next_device_id += 1;
+
+        // Enumerate PCI bus for additional GPU devices
+        // Class 0x03 = Display controller
+        #[cfg(feature = "pci")]
+        {
+            for dev in pci::enumerate_devices() {
+                let class = dev.class_code();
+                if class == 0x03 { // Display controller
+                    let subclass = dev.subclass();
+                    let device_type = match subclass {
+                        0x00 => GpuDeviceType::VgaCompatible,
+                        0x01 => GpuDeviceType::XgaController,
+                        0x02 => GpuDeviceType::Controller3D,
+                        _ => GpuDeviceType::Other,
+                    };
+                    
+                    let vendor = dev.vendor_id();
+                    let device_id = dev.device_id();
+                    let name = match vendor {
+                        0x1234 => String::from("QEMU VGA"),
+                        0x1AF4 => String::from("VirtIO GPU"),
+                        0x10DE => String::from("NVIDIA GPU"),
+                        0x1002 => String::from("AMD/ATI GPU"),
+                        0x8086 => String::from("Intel Graphics"),
+                        _ => alloc::format!("GPU {:04x}:{:04x}", vendor, device_id),
+                    };
+                    
+                    // Read BAR0 for VRAM/MMIO base
+                    let bar0 = dev.read_bar(0);
+                    
+                    let gpu_device = GpuDevice {
+                        id: self.next_device_id,
+                        device_type,
+                        name,
+                        current_mode: DisplayMode::default(),
+                        supported_modes: Vec::new(),
+                        vram_size: 0, // Would query from device
+                        fb_phys_addr: bar0 as u64,
+                        fb_virt_addr: 0,
+                    };
+                    
+                    self.devices.insert(self.next_device_id, gpu_device);
+                    self.next_device_id += 1;
+                }
+            }
+        }
 
         Ok(())
     }

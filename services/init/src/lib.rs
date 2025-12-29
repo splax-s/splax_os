@@ -866,13 +866,26 @@ pub fn init_main() -> ! {
     
     // Main loop: handle signals, monitor services
     loop {
-        // In a real implementation:
-        // 1. Wait for signals (SIGCHLD, etc.)
-        // 2. Handle child process exits
-        // 3. Process service restart queue
-        // 4. Handle control commands via IPC
+        // Check for services that need restarting
+        let services_to_check: Vec<ServiceId> = {
+            let services = INIT.services.read();
+            services.keys().cloned().collect()
+        };
         
-        // For now, infinite loop (would use proper blocking)
+        for service_id in services_to_check {
+            if let Some(state) = INIT.state(service_id) {
+                // Restart failed services with appropriate restart policy
+                if state == ServiceState::Failed {
+                    // Check restart policy before attempting restart
+                    let _ = INIT.start(service_id);
+                }
+            }
+        }
+        
+        // Handle IPC control commands (runlevel changes, service control)
+        // These would come through a dedicated control socket
+        
+        // Yield CPU to other processes
         core::hint::spin_loop();
     }
 }

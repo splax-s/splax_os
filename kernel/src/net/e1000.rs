@@ -10,7 +10,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use alloc::collections::VecDeque;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
 use super::device::{NetworkDevice, NetworkDeviceInfo, NetworkError};
@@ -124,6 +124,35 @@ const RX_DESC_COUNT: usize = 32;
 const TX_DESC_COUNT: usize = 32;
 const RX_BUFFER_SIZE: usize = 2048;
 
+/// Device statistics with atomic counters for lock-free updates.
+#[derive(Debug)]
+pub struct DeviceStats {
+    pub tx_packets: AtomicU64,
+    pub tx_bytes: AtomicU64,
+    pub tx_errors: AtomicU64,
+    pub tx_dropped: AtomicU64,
+    pub rx_packets: AtomicU64,
+    pub rx_bytes: AtomicU64,
+    pub rx_errors: AtomicU64,
+    pub rx_dropped: AtomicU64,
+}
+
+impl DeviceStats {
+    /// Creates a new DeviceStats with all counters initialized to zero.
+    pub const fn new() -> Self {
+        Self {
+            tx_packets: AtomicU64::new(0),
+            tx_bytes: AtomicU64::new(0),
+            tx_errors: AtomicU64::new(0),
+            tx_dropped: AtomicU64::new(0),
+            rx_packets: AtomicU64::new(0),
+            rx_bytes: AtomicU64::new(0),
+            rx_errors: AtomicU64::new(0),
+            rx_dropped: AtomicU64::new(0),
+        }
+    }
+}
+
 /// RX Descriptor (Legacy format)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -198,6 +227,8 @@ pub struct E1000Device {
     rx_queue: Mutex<VecDeque<Vec<u8>>>,
     /// MTU
     mtu: u16,
+    /// Device statistics
+    stats: DeviceStats,
 }
 
 impl E1000Device {
@@ -246,6 +277,7 @@ impl E1000Device {
             initialized: AtomicBool::new(false),
             rx_queue: Mutex::new(VecDeque::new()),
             mtu: 1500,
+            stats: DeviceStats::new(),
         }
     }
     
@@ -542,6 +574,14 @@ impl NetworkDevice for E1000Device {
             mtu: self.mtu,
             link_speed: speed,
             link_up: self.link_up.load(Ordering::SeqCst),
+            tx_packets: self.stats.tx_packets.load(Ordering::Relaxed),
+            tx_bytes: self.stats.tx_bytes.load(Ordering::Relaxed),
+            tx_errors: self.stats.tx_errors.load(Ordering::Relaxed),
+            tx_dropped: self.stats.tx_dropped.load(Ordering::Relaxed),
+            rx_packets: self.stats.rx_packets.load(Ordering::Relaxed),
+            rx_bytes: self.stats.rx_bytes.load(Ordering::Relaxed),
+            rx_errors: self.stats.rx_errors.load(Ordering::Relaxed),
+            rx_dropped: self.stats.rx_dropped.load(Ordering::Relaxed),
         }
     }
     

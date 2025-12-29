@@ -223,6 +223,143 @@ impl Hash for Sha256 {
 }
 
 // ============================================================================
+// SHA-1 (for WPA compatibility - not recommended for new designs)
+// ============================================================================
+
+/// SHA-1 hasher (legacy, required for WPA)
+pub struct Sha1 {
+    state: [u32; 5],
+    buffer: [u8; 64],
+    buffer_len: usize,
+    total_len: u64,
+}
+
+impl Sha1 {
+    const H: [u32; 5] = [
+        0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0,
+    ];
+
+    fn compress(&mut self, block: &[u8]) {
+        debug_assert_eq!(block.len(), 64);
+
+        let mut w = [0u32; 80];
+        for (i, chunk) in block.chunks(4).enumerate() {
+            w[i] = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        }
+
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+
+        let mut a = self.state[0];
+        let mut b = self.state[1];
+        let mut c = self.state[2];
+        let mut d = self.state[3];
+        let mut e = self.state[4];
+
+        for i in 0..80 {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5a827999u32),
+                20..=39 => (b ^ c ^ d, 0x6ed9eba1u32),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8f1bbcdcu32),
+                _ => (b ^ c ^ d, 0xca62c1d6u32),
+            };
+
+            let temp = a.rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(w[i]);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+
+        self.state[0] = self.state[0].wrapping_add(a);
+        self.state[1] = self.state[1].wrapping_add(b);
+        self.state[2] = self.state[2].wrapping_add(c);
+        self.state[3] = self.state[3].wrapping_add(d);
+        self.state[4] = self.state[4].wrapping_add(e);
+    }
+}
+
+impl Hash for Sha1 {
+    const OUTPUT_SIZE: usize = 20;
+
+    fn new() -> Self {
+        Self {
+            state: Self::H,
+            buffer: [0; 64],
+            buffer_len: 0,
+            total_len: 0,
+        }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        let mut offset = 0;
+
+        if self.buffer_len > 0 {
+            let to_copy = core::cmp::min(64 - self.buffer_len, data.len());
+            self.buffer[self.buffer_len..self.buffer_len + to_copy].copy_from_slice(&data[..to_copy]);
+            self.buffer_len += to_copy;
+            offset = to_copy;
+
+            if self.buffer_len == 64 {
+                let block = self.buffer;
+                self.compress(&block);
+                self.buffer_len = 0;
+            }
+        }
+
+        while offset + 64 <= data.len() {
+            self.compress(&data[offset..offset + 64]);
+            offset += 64;
+        }
+
+        if offset < data.len() {
+            let remaining = data.len() - offset;
+            self.buffer[..remaining].copy_from_slice(&data[offset..]);
+            self.buffer_len = remaining;
+        }
+
+        self.total_len += data.len() as u64;
+    }
+
+    fn finalize(mut self) -> Vec<u8> {
+        let total_bits = self.total_len * 8;
+
+        self.buffer[self.buffer_len] = 0x80;
+        self.buffer_len += 1;
+
+        if self.buffer_len > 56 {
+            for i in self.buffer_len..64 {
+                self.buffer[i] = 0;
+            }
+            let block = self.buffer;
+            self.compress(&block);
+            self.buffer_len = 0;
+        }
+
+        for i in self.buffer_len..56 {
+            self.buffer[i] = 0;
+        }
+
+        self.buffer[56..64].copy_from_slice(&total_bits.to_be_bytes());
+
+        let block = self.buffer;
+        self.compress(&block);
+
+        let mut output = Vec::with_capacity(20);
+        for word in &self.state {
+            output.extend_from_slice(&word.to_be_bytes());
+        }
+        output
+    }
+}
+
+// ============================================================================
 // SHA-512
 // ============================================================================
 

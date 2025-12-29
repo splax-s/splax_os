@@ -21,6 +21,8 @@ pub enum NetworkError {
     ConnectionRefused,
     /// Connection reset
     ConnectionReset,
+    /// Connection closed by peer
+    ConnectionClosed,
     /// Connection timeout
     Timeout,
     /// Address in use
@@ -57,6 +59,12 @@ pub enum NetworkError {
     PortUnreachable,
     /// Already connected/running
     AlreadyConnected,
+    /// Invalid data received
+    InvalidData,
+    /// Operation timed out
+    TimedOut,
+    /// Socket error
+    SocketError,
 }
 
 /// Network device information.
@@ -72,6 +80,22 @@ pub struct NetworkDeviceInfo {
     pub link_speed: u32,
     /// Link is up
     pub link_up: bool,
+    /// Transmitted packets count
+    pub tx_packets: u64,
+    /// Transmitted bytes count
+    pub tx_bytes: u64,
+    /// Transmit errors count
+    pub tx_errors: u64,
+    /// Dropped transmit packets count
+    pub tx_dropped: u64,
+    /// Received packets count
+    pub rx_packets: u64,
+    /// Received bytes count
+    pub rx_bytes: u64,
+    /// Receive errors count
+    pub rx_errors: u64,
+    /// Dropped receive packets count
+    pub rx_dropped: u64,
 }
 
 /// Network device trait.
@@ -122,6 +146,14 @@ impl NetworkDevice for LoopbackDevice {
             mtu: 65535,
             link_speed: 0,
             link_up: true,
+            tx_packets: 0,
+            tx_bytes: 0,
+            tx_errors: 0,
+            tx_dropped: 0,
+            rx_packets: 0,
+            rx_bytes: 0,
+            rx_errors: 0,
+            rx_dropped: 0,
         }
     }
     

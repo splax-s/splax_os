@@ -1082,14 +1082,67 @@ pub fn next_sata_name() -> String {
 
 /// Probes for AHCI devices via PCI
 pub fn probe_devices() {
+    use crate::pci;
+    
     crate::serial_println!("[ahci] Probing for AHCI devices...");
     
-    // In a real implementation, we would:
-    // 1. Enumerate PCI devices
-    // 2. Find devices with class 0x01, subclass 0x06, prog-if 0x01
-    // 3. Initialize each AHCI controller
+    // AHCI devices have class 0x01 (Mass Storage), subclass 0x06 (SATA), prog-if 0x01 (AHCI)
+    const AHCI_CLASS: u8 = 0x01;
+    const AHCI_SUBCLASS: u8 = 0x06;
+    const AHCI_PROG_IF: u8 = 0x01;
     
-    crate::serial_println!("[ahci] AHCI driver loaded (waiting for PCI enumeration)");
+    // Known AHCI controller vendor/device IDs (fallback matching)
+    const AHCI_DEVICES: &[(u16, u16)] = &[
+        (0x8086, 0x2922), // Intel ICH9
+        (0x8086, 0x2829), // Intel ICH8M
+        (0x8086, 0x3A22), // Intel ICH10
+        (0x8086, 0x1C02), // Intel 6 Series
+        (0x8086, 0x1E02), // Intel 7 Series
+        (0x8086, 0x8C02), // Intel 8 Series
+        (0x8086, 0x9C03), // Intel Lynx Point LP
+        (0x1022, 0x7901), // AMD SATA
+        (0x1B4B, 0x9172), // Marvell 88SE9172
+    ];
+    
+    // Enumerate PCI devices looking for AHCI controllers
+    for device in pci::enumerate_devices() {
+        let is_ahci = (device.class_code() == AHCI_CLASS 
+                      && device.subclass() == AHCI_SUBCLASS 
+                      && device.prog_if() == AHCI_PROG_IF)
+            || AHCI_DEVICES.iter().any(|&(v, d)| device.vendor_id() == v && device.device_id() == d);
+        
+        if is_ahci {
+            crate::serial_println!("[ahci] Found AHCI controller at {:02x}:{:02x}.{}", 
+                device.bus(), device.slot(), device.function());
+            
+            // Read BAR5 (ABAR - AHCI Base Memory Register)
+            let mmio_base = match device.bar(5) {
+                Some(bar) => bar.address,
+                None => {
+                    crate::serial_println!("[ahci] BAR5 not found, skipping device");
+                    continue;
+                }
+            };
+            
+            if mmio_base == 0 {
+                crate::serial_println!("[ahci] Invalid BAR5, skipping device");
+                continue;
+            }
+            
+            // Enable bus mastering and memory space
+            let cmd = device.command();
+            device.set_command(cmd | 0x06); // Memory Space + Bus Master
+            
+            // Initialize the controller
+            if let Err(e) = init_controller(mmio_base) {
+                crate::serial_println!("[ahci] Failed to initialize controller: {:?}", e);
+            } else {
+                crate::serial_println!("[ahci] Controller initialized at {:#x}", mmio_base);
+            }
+        }
+    }
+    
+    crate::serial_println!("[ahci] AHCI probe complete");
 }
 
 /// Initializes an AHCI controller at the given MMIO address

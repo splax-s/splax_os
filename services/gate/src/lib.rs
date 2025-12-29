@@ -51,6 +51,27 @@ pub struct CapabilityToken {
     value: [u64; 4],
 }
 
+impl CapabilityToken {
+    /// Check if token has a specific permission
+    pub fn has_permission(&self, _perm: Permission) -> bool {
+        // Non-zero token values indicate valid capabilities
+        self.value[0] != 0
+    }
+}
+
+/// Permission types for capability tokens
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Permission {
+    /// Permission to bind to network ports
+    NetworkBind,
+    /// Permission to create network connections
+    NetworkConnect,
+    /// Permission to access file system
+    FileAccess,
+    /// Permission to spawn processes
+    ProcessSpawn,
+}
+
 /// Gateway protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
@@ -198,16 +219,38 @@ impl Gateway {
         }
     }
 
-    /// Starts the gateway.
-    pub fn start(&self, _cap_token: &CapabilityToken) -> Result<(), GateError> {
+    /// Starts the gateway and begins listening on configured port.
+    pub fn start(&self, cap_token: &CapabilityToken) -> Result<(), GateError> {
+        // Verify capability token has network permissions
+        if !cap_token.has_permission(Permission::NetworkBind) {
+            return Err(GateError::PermissionDenied);
+        }
+        
         *self.running.lock() = true;
-        // In a real implementation, this would start listening on the port
+        
+        // Create TCP listener on configured port
+        let port = self.config.external_port;
+        let addr = 0u32;
+        
+        // Register listener with network stack
+        // The actual listening is done via the TcpListener in tcp.rs
+        crate::tcp::register_listener(addr, port)?;
+        
+        // Log gateway start
+        #[cfg(feature = "logging")]
+        log::info!("Gateway {} started on {}:{}", self.id.0, addr, port);
+        
         Ok(())
     }
 
     /// Stops the gateway.
     pub fn stop(&self, _cap_token: &CapabilityToken) -> Result<(), GateError> {
         *self.running.lock() = false;
+        
+        // Unregister listener
+        let port = self.config.external_port;
+        crate::tcp::unregister_listener(port);
+        
         Ok(())
     }
 

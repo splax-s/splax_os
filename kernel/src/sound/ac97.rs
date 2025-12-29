@@ -386,53 +386,138 @@ impl Ac97Controller {
 
     /// Read from mixer register
     fn read_mixer(&self, reg: u16) -> u16 {
-        // In a real implementation, this would use x86 port I/O
-        // For now, return dummy value
-        let _port = self.mixer_base + reg;
-        0
+        let port = self.mixer_base + reg;
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            let value: u16;
+            core::arch::asm!(
+                "in ax, dx",
+                in("dx") port,
+                out("ax") value,
+                options(nomem, nostack, preserves_flags)
+            );
+            value
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { let _ = port; 0 }
     }
 
     /// Write to mixer register
     fn write_mixer(&self, reg: u16, value: u16) {
-        let _port = self.mixer_base + reg;
-        let _value = value;
-        // In a real implementation: outw(port, value)
+        let port = self.mixer_base + reg;
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::asm!(
+                "out dx, ax",
+                in("dx") port,
+                in("ax") value,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { let _ = (port, value); }
     }
 
     /// Read from bus master register (8-bit)
     fn read_nabm8(&self, reg: u16) -> u8 {
-        let _port = self.bus_master_base + reg;
-        0
+        let port = self.bus_master_base + reg;
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            let value: u8;
+            core::arch::asm!(
+                "in al, dx",
+                in("dx") port,
+                out("al") value,
+                options(nomem, nostack, preserves_flags)
+            );
+            value
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { let _ = port; 0 }
     }
 
     /// Write to bus master register (8-bit)
     fn write_nabm8(&self, reg: u16, value: u8) {
-        let _port = self.bus_master_base + reg;
-        let _value = value;
+        let port = self.bus_master_base + reg;
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") port,
+                in("al") value,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { let _ = (port, value); }
     }
 
     /// Read from bus master register (16-bit)
     fn read_nabm16(&self, reg: u16) -> u16 {
-        let _port = self.bus_master_base + reg;
-        0
+        let port = self.bus_master_base + reg;
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            let value: u16;
+            core::arch::asm!(
+                "in ax, dx",
+                in("dx") port,
+                out("ax") value,
+                options(nomem, nostack, preserves_flags)
+            );
+            value
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { let _ = port; 0 }
     }
 
     /// Write to bus master register (16-bit)
     fn write_nabm16(&self, reg: u16, value: u16) {
-        let _port = self.bus_master_base + reg;
-        let _value = value;
+        let port = self.bus_master_base + reg;
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::asm!(
+                "out dx, ax",
+                in("dx") port,
+                in("ax") value,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { let _ = (port, value); }
     }
 
     /// Read from bus master register (32-bit)
     fn read_nabm32(&self, reg: u16) -> u32 {
-        let _port = self.bus_master_base + reg;
-        0
+        let port = self.bus_master_base + reg;
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            let value: u32;
+            core::arch::asm!(
+                "in eax, dx",
+                in("dx") port,
+                out("eax") value,
+                options(nomem, nostack, preserves_flags)
+            );
+            value
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { let _ = port; 0 }
     }
 
     /// Write to bus master register (32-bit)
     fn write_nabm32(&self, reg: u16, value: u32) {
-        let _port = self.bus_master_base + reg;
-        let _value = value;
+        let port = self.bus_master_base + reg;
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::asm!(
+                "out dx, eax",
+                in("dx") port,
+                in("eax") value,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        { let _ = (port, value); }
     }
 
     /// Reset the controller
@@ -714,20 +799,110 @@ impl AudioDevice for Ac97Controller {
         Err(AudioError::StreamNotFound)
     }
 
-    fn write(&mut self, _stream_id: StreamId, _data: &[u8]) -> Result<usize, AudioError> {
-        // In a real implementation:
-        // 1. Copy data to DMA buffer
-        // 2. Update buffer descriptor
-        // 3. Return bytes written
-        Ok(0)
+    fn write(&mut self, stream_id: StreamId, data: &[u8]) -> Result<usize, AudioError> {
+        // First, validate and extract all needed values from the stream
+        let (current_idx, buffer_addr, bytes_to_write, buffer_size, buffers_len, buffer_phys_addr) = {
+            let stream = self.playback_stream.as_ref()
+                .filter(|s| s.id == stream_id)
+                .ok_or(AudioError::StreamNotFound)?;
+            
+            if stream.state != StreamState::Running {
+                return Err(AudioError::StreamNotRunning);
+            }
+            
+            let current_idx = stream.current_index;
+            if current_idx >= stream.buffers.len() {
+                return Ok(0); // No buffers available
+            }
+            
+            let buffer_addr = stream.buffers[current_idx] as *mut u8;
+            let bytes_to_write = data.len().min(stream.buffer_size);
+            let buffer_phys_addr = stream.buffers[current_idx];
+            
+            (current_idx, buffer_addr, bytes_to_write, stream.buffer_size, stream.buffers.len(), buffer_phys_addr)
+        };
+        
+        // Copy data to DMA buffer (no borrow on self here)
+        unsafe {
+            core::ptr::copy_nonoverlapping(data.as_ptr(), buffer_addr, bytes_to_write);
+        }
+        
+        // Calculate next index
+        let next_index = (current_idx + 1) % buffers_len;
+        
+        // Now mutably borrow to update stream state and BDL
+        {
+            let stream = self.playback_stream.as_mut().unwrap();
+            
+            // Update BDL entry with sample count (16-bit stereo = 4 bytes per sample)
+            let samples = (bytes_to_write / 4) as u16;
+            stream.bdl[current_idx] = BdlEntry::new(
+                buffer_phys_addr,
+                samples,
+                true,  // Interrupt on completion
+                false, // Don't stop on underrun
+            );
+            
+            // Move to next buffer
+            stream.current_index = next_index;
+        }
+        
+        // Update LVI (last valid index) - now safe to borrow self immutably
+        self.write_nabm8(nabm::PO_LVI, next_index as u8);
+        
+        Ok(bytes_to_write)
     }
 
-    fn read(&mut self, _stream_id: StreamId, _data: &mut [u8]) -> Result<usize, AudioError> {
-        // In a real implementation:
-        // 1. Copy from DMA buffer
-        // 2. Update buffer descriptor
-        // 3. Return bytes read
-        Ok(0)
+    fn read(&mut self, stream_id: StreamId, data: &mut [u8]) -> Result<usize, AudioError> {
+        // First, validate stream exists and is running, extract buffer info
+        let (buffers_len, buffer_size) = {
+            let stream = self.capture_stream.as_ref()
+                .filter(|s| s.id == stream_id)
+                .ok_or(AudioError::StreamNotFound)?;
+            
+            if stream.state != StreamState::Running {
+                return Err(AudioError::StreamNotRunning);
+            }
+            
+            (stream.buffers.len(), stream.buffer_size)
+        };
+        
+        // Check status for buffer completion (now safe to borrow self)
+        let status = self.read_nabm16(nabm::PI_SR);
+        if status & status::BCIS == 0 {
+            // No buffer completed yet
+            return Ok(0);
+        }
+        
+        // Clear the interrupt
+        self.write_nabm16(nabm::PI_SR, status::BCIS);
+        
+        // Get current buffer index from hardware
+        let hw_index = self.read_nabm8(nabm::PI_CIV) as usize;
+        let prev_index = if hw_index == 0 { 
+            buffers_len - 1 
+        } else { 
+            hw_index - 1 
+        };
+        
+        if prev_index >= buffers_len {
+            return Ok(0);
+        }
+        
+        // Get buffer address from stream
+        let buffer_addr = {
+            let stream = self.capture_stream.as_ref().unwrap();
+            stream.buffers[prev_index] as *const u8
+        };
+        
+        let bytes_to_read = data.len().min(buffer_size);
+        
+        // Copy from completed DMA buffer
+        unsafe {
+            core::ptr::copy_nonoverlapping(buffer_addr, data.as_mut_ptr(), bytes_to_read);
+        }
+        
+        Ok(bytes_to_read)
     }
 
     fn available_write(&self, stream_id: StreamId) -> Result<usize, AudioError> {
@@ -792,16 +967,50 @@ pub const STANDARD_BUS_MASTER_BASE: u16 = 0x0000;
 
 /// Probe for AC'97 devices
 pub fn probe() -> Option<Box<dyn AudioDevice>> {
-    // In a real implementation, this would:
-    // 1. Scan PCI bus for AC'97 controllers
-    // 2. Read BAR0 (mixer base) and BAR1 (bus master base)
-    // 3. Initialize the controller
+    use crate::pci;
     
     // Known PCI vendor/device IDs for AC'97:
     // Intel ICH: 8086:2415, 8086:2425, 8086:2445, 8086:2485, 8086:24C5, 8086:24D5
     // VIA: 1106:3058
     // SiS: 1039:7012
     // nForce: 10DE:01B1
+    const AC97_DEVICES: &[(u16, u16)] = &[
+        (0x8086, 0x2415), // Intel 82801AA
+        (0x8086, 0x2425), // Intel 82801AB
+        (0x8086, 0x2445), // Intel 82801BA
+        (0x8086, 0x2485), // Intel ICH3
+        (0x8086, 0x24C5), // Intel ICH4
+        (0x8086, 0x24D5), // Intel ICH5
+        (0x8086, 0x266E), // Intel ICH6
+        (0x8086, 0x27DE), // Intel ICH7
+        (0x1106, 0x3058), // VIA VT82C686
+        (0x1039, 0x7012), // SiS 7012
+        (0x10DE, 0x01B1), // nForce
+        (0x10DE, 0x006A), // nForce2
+    ];
+    
+    // Scan PCI bus for AC'97 controllers
+    for &(vendor, device) in AC97_DEVICES {
+        if let Some(pci_device) = pci::find_device(vendor, device) {
+            // Read BAR0 (mixer base) and BAR1 (bus master base)
+            let mixer_base = pci_device.bar(0).map(|b| (b.address & 0xFFFC) as u16).unwrap_or(0);
+            let bus_master_base = pci_device.bar(1).map(|b| (b.address & 0xFFFC) as u16).unwrap_or(0);
+            
+            if mixer_base != 0 && bus_master_base != 0 {
+                // Enable bus mastering and I/O space
+                let cmd = pci_device.command();
+                pci_device.set_command(cmd | 0x05);
+                
+                let device_id = crate::sound::NEXT_DEVICE_ID.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+                let mut controller = Ac97Controller::new(device_id, mixer_base, bus_master_base);
+                
+                // Try to initialize
+                if controller.init_device().is_ok() {
+                    return Some(Box::new(controller));
+                }
+            }
+        }
+    }
     
     None
 }

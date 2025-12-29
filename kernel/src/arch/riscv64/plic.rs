@@ -185,11 +185,21 @@ pub fn handle_interrupt(hartid: usize) {
                 super::uart::handle_interrupt();
             }
             s if s >= sources::VIRTIO0 && s <= sources::VIRTIO7 => {
-                // VirtIO interrupt
-                // TODO: Call VirtIO handler
+                // VirtIO interrupt - dispatch to appropriate device
+                let virtio_idx = (s - sources::VIRTIO0) as usize;
+                #[cfg(feature = "virtio")]
+                {
+                    crate::net::virtio::handle_interrupt(virtio_idx);
+                }
+                #[cfg(not(feature = "virtio"))]
+                {
+                    let _ = virtio_idx;
+                }
             }
             _ => {
-                // Unknown source
+                // Unknown source - log and ignore
+                #[cfg(feature = "debug")]
+                super::uart::puts(&alloc::format!("[plic] Unknown interrupt source: {}\n", source));
             }
         }
         

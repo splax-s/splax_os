@@ -402,24 +402,55 @@ impl HttpGateway {
         let payload = msg.to_bytes();
         
         // Log the routing decision
-        let log_msg = alloc::format!(
+        let _log_msg = alloc::format!(
             "[S-GATE] {} {} -> {} ({} bytes)",
             msg.method, msg.path, service, payload.len()
         );
         
-        // In a real implementation, this would:
-        // 1. Get/create S-LINK channel to target service
-        // 2. Send request message with payload
-        // 3. Wait for response with timeout
-        // 4. Parse response and convert back to HTTP
-        //
-        // For now, return success with routing info
-        HttpResponse::ok(alloc::format!(
-            "{{\"routed_to\":\"{}\",\"method\":\"{}\",\"path\":\"{}\",\"status\":\"pending\"}}",
-            service, msg.method, msg.path
-        ).into_bytes())
-            .header("Content-Type", "application/json")
-            .header("X-Splax-Service", service)
+        // Create S-LINK message for the target service
+        use crate::network::{SLinkMessage, MessageType, send_and_receive};
+        
+        // Generate correlation ID from request hash
+        let correlation_id = {
+            let mut hash: u64 = 0;
+            for byte in request.path.bytes() {
+                hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
+            }
+            hash ^ (request.body.len() as u64)
+        };
+        
+        // Get or create channel to target service
+        let channel_id = get_service_channel(&service);
+        
+        let slink_request = SLinkMessage {
+            channel_id,
+            message_type: MessageType::Request,
+            correlation_id,
+            payload,
+            capabilities: Vec::new(),
+        };
+        
+        // Send request and wait for response
+        match send_and_receive(slink_request, self.timeout) {
+            Ok(response) => {
+                // Parse S-LINK response as HTTP response
+                match HttpResponseMessage::from_bytes(&response.payload) {
+                    Some(http_msg) => http_msg.to_response(),
+                    None => {
+                        // Raw payload - wrap as success response
+                        HttpResponse::ok(response.payload)
+                            .header("Content-Type", "application/octet-stream")
+                            .header("X-Splax-Service", service)
+                    }
+                }
+            }
+            Err(crate::network::NetworkError::TimedOut) => {
+                HttpResponse::error(HttpStatus::GATEWAY_TIMEOUT, "Service timeout")
+            }
+            Err(_) => {
+                HttpResponse::error(HttpStatus::BAD_GATEWAY, "Service unavailable")
+            }
+        }
     }
     
     /// Handles an HTTP request with actual S-LINK channel.
@@ -484,6 +515,44 @@ impl HttpGateway {
     pub fn list_routes(&self) -> Vec<Route> {
         self.routes.lock().clone()
     }
+}
+
+// =============================================================================
+// SERVICE CHANNEL MANAGEMENT
+// =============================================================================
+
+/// Channel registry mapping service names to channel IDs
+static SERVICE_CHANNELS: spin::Mutex<BTreeMap<alloc::string::String, u64>> = 
+    spin::Mutex::new(BTreeMap::new());
+
+/// Next channel ID counter
+static NEXT_CHANNEL_ID: core::sync::atomic::AtomicU64 = 
+    core::sync::atomic::AtomicU64::new(1);
+
+/// Get or create a channel to a service
+fn get_service_channel(service: &str) -> u64 {
+    let mut channels = SERVICE_CHANNELS.lock();
+    
+    if let Some(&id) = channels.get(service) {
+        return id;
+    }
+    
+    // Create new channel
+    let id = NEXT_CHANNEL_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    channels.insert(alloc::string::String::from(service), id);
+    id
+}
+
+/// Register a service channel explicitly
+pub fn register_service_channel(service: &str, channel_id: u64) {
+    let mut channels = SERVICE_CHANNELS.lock();
+    channels.insert(alloc::string::String::from(service), channel_id);
+}
+
+/// Unregister a service channel
+pub fn unregister_service_channel(service: &str) {
+    let mut channels = SERVICE_CHANNELS.lock();
+    channels.remove(service);
 }
 
 #[cfg(test)]
