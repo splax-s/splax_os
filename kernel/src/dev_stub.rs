@@ -379,7 +379,7 @@ impl DevStub {
         payload.extend_from_slice(&msg.payload[..msg.payload_len as usize]);
         
         // Create IPC message with kernel process ID as sender
-        let sender = crate::sched::ProcessId::kernel();
+        let sender = crate::sched::ProcessId::KERNEL;
         let ipc_msg = crate::ipc::Message::inline(sender, payload);
         
         // Send via channel (S-LINK IPC)

@@ -180,7 +180,7 @@ impl Channel {
         self.message_count == 0
     }
 
-    fn send(&mut self, mut message: Message) -> Result<(), IpcError> {
+    pub fn send(&mut self, mut message: Message) -> Result<(), IpcError> {
         if self.closed {
             return Err(IpcError::ChannelClosed);
         }
@@ -198,7 +198,7 @@ impl Channel {
         Ok(())
     }
 
-    fn receive(&mut self) -> Result<Message, IpcError> {
+    pub fn receive(&mut self) -> Result<Message, IpcError> {
         if self.is_empty() {
             if self.closed {
                 return Err(IpcError::ChannelClosed);

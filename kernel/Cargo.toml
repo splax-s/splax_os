@@ -23,7 +23,7 @@ log = { workspace = true }
 splax_wave = { path = "../runtime/wave" }
 
 [features]
-default = []
+default = ["microkernel"]
 # Enable kernel debugging features
 debug = []
 # Enable performance profiling
