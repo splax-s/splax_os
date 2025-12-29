@@ -110,16 +110,20 @@ qemu-system-x86_64 -cdrom target/splax.iso -m 512M -serial stdio -no-reboot \
     -device virtio-net-pci,netdev=net0 -netdev user,id=net0 \
     -drive file=disk.img,if=virtio,format=raw
 
-# Full hardware emulation (all drivers)
+# Full hardware emulation (all drivers, no disk images needed)
+qemu-system-x86_64 -cdrom target/splax.iso -m 1G -serial stdio -no-reboot \
+    -device e1000,netdev=net0 -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+    -device intel-hda -device hda-duplex \
+    -device qemu-xhci -device usb-kbd -device usb-mouse \
+    -device VGA
+
+# Full hardware emulation with disk images (optional - create images first)
 qemu-system-x86_64 -cdrom target/splax.iso -m 1G -serial stdio -no-reboot \
     -device e1000,netdev=net0 -netdev user,id=net0,hostfwd=tcp::2222-:22 \
     -device virtio-blk-pci,drive=hd0 -drive file=disk.img,id=hd0,if=none,format=raw \
     -device intel-hda -device hda-duplex \
-    -device usb-ehci -device usb-kbd -device usb-mouse \
-    -device qemu-xhci -device usb-storage,drive=usb0 \
-    -drive file=usb.img,id=usb0,if=none,format=raw \
-    -device VGA \
-    -enable-kvm
+    -device qemu-xhci -device usb-kbd -device usb-mouse \
+    -device VGA
 
 # NVMe storage
 qemu-system-x86_64 -cdrom target/splax.iso -m 512M -serial stdio -no-reboot \
