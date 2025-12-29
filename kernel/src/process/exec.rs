@@ -673,6 +673,8 @@ pub fn exec_user_process(ctx: &ExecContext) -> ! {
 /// Execute a binary from the filesystem
 ///
 /// This is the syscall-level exec implementation.
+/// Only available in monolithic mode (requires fs module).
+#[cfg(not(feature = "microkernel"))]
 pub fn exec(path: &str, args: &[&str], env: &[&str]) -> Result<u64, ExecError> {
     use crate::fs::vfs::{VFS, OpenFlags, VfsError};
     use alloc::vec::Vec;
@@ -841,6 +843,8 @@ use super::elf::{ELF_MAGIC, ELFCLASS64, ELFDATA2LSB, EV_CURRENT, ELFOSABI_NONE,
 /// Unlike exec(), this does not replace the current process.
 ///
 /// Returns the PID of the newly spawned process.
+/// Only available in monolithic mode (requires fs module).
+#[cfg(not(feature = "microkernel"))]
 pub fn spawn(path: &str) -> Result<crate::sched::ProcessId, ExecError> {
     // Extract just the filename for process name
     let name = path.rsplit('/').next().unwrap_or(path);
@@ -855,6 +859,8 @@ pub fn spawn(path: &str) -> Result<crate::sched::ProcessId, ExecError> {
 }
 
 /// Read a file from VFS into memory
+/// Only available in monolithic mode (requires fs module).
+#[cfg(not(feature = "microkernel"))]
 fn read_file_from_vfs(path: &str) -> Result<alloc::vec::Vec<u8>, ExecError> {
     // Get the filesystem
     let ramfs = crate::fs::filesystem();

@@ -267,35 +267,49 @@ pub extern "C" fn kernel_main(boot_info: *const u8) -> ! {
     };
     let mut kernel = Kernel::new(config);
 
-    // Print kernel init message before network
+    // Print kernel init message
     #[cfg(target_arch = "x86_64")]
     {
         use core::fmt::Write;
         let mut serial = arch::x86_64::serial::SERIAL.lock();
+        #[cfg(not(feature = "microkernel"))]
         let _ = writeln!(serial, "[kernel] Initializing subsystems...");
+        #[cfg(feature = "microkernel")]
+        let _ = writeln!(serial, "[kernel] Microkernel mode - minimal subsystems...");
         drop(serial);
     }
     
-    // Initialize filesystem
-    fs::init();
-    
-    // Initialize block subsystem (VirtIO-blk, etc.)
-    block::init();
-    
-    serial_println!("[kernel] About to init network...");
-    
-    // Initialize network subsystem
-    net::init();
-    
-    serial_println!("[kernel] Network init complete, running diagnostics...");
-    
-    // Run network diagnostics
-    net::run_diagnostics();
-    
-    serial_println!("[kernel] Diagnostics complete");
+    // Initialize monolithic subsystems (disabled in microkernel mode)
+    #[cfg(not(feature = "microkernel"))]
+    {
+        // Initialize filesystem
+        fs::init();
+        
+        // Initialize block subsystem (VirtIO-blk, etc.)
+        block::init();
+        
+        serial_println!("[kernel] About to init network...");
+        
+        // Initialize network subsystem
+        net::init();
+        
+        serial_println!("[kernel] Network init complete, running diagnostics...");
+        
+        // Run network diagnostics
+        net::run_diagnostics();
+        
+        serial_println!("[kernel] Diagnostics complete");
 
-    // Initialize WASM runtime
-    wasm::init();
+        // Initialize WASM runtime
+        wasm::init();
+    }
+    
+    // Microkernel mode - minimal init
+    #[cfg(feature = "microkernel")]
+    {
+        // Only essential kernel services, subsystems run as userspace servers
+        serial_println!("[kernel] Microkernel ready - services will run in userspace");
+    }
 
     // Print completion messages and show VGA status
     #[cfg(target_arch = "x86_64")]
@@ -320,9 +334,16 @@ pub extern "C" fn kernel_main(boot_info: *const u8) -> ! {
         vga_println!("[OK] S-CAP capability system ready");
         vga_println!("[OK] S-LINK IPC system ready");
         vga_println!("[OK] S-ATLAS service registry ready");
-        vga_println!("[OK] S-WAVE WASM runtime ready");
-        vga_println!("[OK] Filesystem: ramfs (4 MB)");
-        vga_println!("[OK] Network: virtio-net (10.0.2.15)");
+        #[cfg(not(feature = "microkernel"))]
+        {
+            vga_println!("[OK] S-WAVE WASM runtime ready");
+            vga_println!("[OK] Filesystem: ramfs (4 MB)");
+            vga_println!("[OK] Network: virtio-net (10.0.2.15)");
+        }
+        #[cfg(feature = "microkernel")]
+        {
+            vga_println!("[OK] Microkernel mode - minimal core");
+        }
         vga::set_color(Color::LightGray, Color::Black);
         vga_println!();
         vga::set_color(Color::Yellow, Color::Black);

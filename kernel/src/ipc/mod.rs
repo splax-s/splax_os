@@ -136,7 +136,7 @@ pub enum EndpointType {
 }
 
 /// A communication channel.
-struct Channel {
+pub struct Channel {
     /// Channel ID
     id: ChannelId,
     /// Sender endpoint owner

@@ -816,7 +816,12 @@ pub fn process_serial_input() {
     }
 }
 
-/// Execute a shell command (kernel built-in shell)
+// =============================================================================
+// Shell Commands - Full version (monolithic kernel)
+// =============================================================================
+
+/// Execute a shell command (kernel built-in shell) - FULL VERSION
+#[cfg(not(feature = "microkernel"))]
 fn execute_shell_command(cmd: &str) {
     let cmd = cmd.trim();
     let parts: [&str; 8] = {
@@ -2912,7 +2917,12 @@ fn execute_shell_command(cmd: &str) {
     }
 }
 
-/// Execute a shell command from serial console
+// =============================================================================
+// Shell Commands - Full version (monolithic kernel) - Serial console
+// =============================================================================
+
+/// Execute a shell command from serial console - FULL VERSION
+#[cfg(not(feature = "microkernel"))]
 fn execute_serial_command(cmd: &str) {
     use core::fmt::Write;
     
@@ -4153,6 +4163,124 @@ fn execute_serial_command(cmd: &str) {
         _ => {
             serial_println!("Unknown command: {}", command);
             serial_println!("Type 'help' for available commands");
+        }
+    }
+}
+
+// =============================================================================
+// Shell Commands - Minimal version (microkernel mode)
+// Only basic system info, no fs/net/usb commands
+// =============================================================================
+
+/// Execute a shell command - MICROKERNEL VERSION (minimal)
+#[cfg(feature = "microkernel")]
+fn execute_shell_command(cmd: &str) {
+    let cmd = cmd.trim();
+    let parts: [&str; 4] = {
+        let mut arr = [""; 4];
+        for (i, part) in cmd.split_whitespace().take(4).enumerate() {
+            arr[i] = part;
+        }
+        arr
+    };
+    
+    let command = parts[0];
+    
+    match command {
+        "help" => {
+            use super::vga::Color;
+            super::vga::set_color(Color::LightCyan, Color::Black);
+            crate::vga_println!("S-CORE Microkernel Shell");
+            super::vga::set_color(Color::LightGray, Color::Black);
+            crate::vga_println!();
+            crate::vga_println!("In microkernel mode, most commands run in userspace.");
+            crate::vga_println!("Kernel commands:");
+            crate::vga_println!("  help     - Show this help");
+            crate::vga_println!("  version  - Kernel version");
+            crate::vga_println!("  mem      - Memory stats");
+            crate::vga_println!("  clear    - Clear screen");
+            crate::vga_println!("  reboot   - Reboot system");
+            crate::vga_println!("  shutdown - Power off");
+        }
+        "version" => {
+            crate::vga_println!("S-CORE Microkernel v{}", crate::VERSION);
+        }
+        "mem" => {
+            crate::vga_println!("[Microkernel] Memory management active");
+            crate::vga_println!("Heap and page allocator running");
+        }
+        "clear" => {
+            super::vga::clear();
+        }
+        "reboot" => {
+            crate::vga_println!("Rebooting...");
+            super::power::reboot();
+        }
+        "shutdown" => {
+            crate::vga_println!("Shutting down...");
+            super::power::shutdown();
+        }
+        "" => {}
+        _ => {
+            crate::vga_println!("[Microkernel] Command '{}' not available in kernel", command);
+            crate::vga_println!("Most commands run in S-INIT userspace. Type 'help'.");
+        }
+    }
+}
+
+/// Execute a shell command from serial - MICROKERNEL VERSION (minimal)
+#[cfg(feature = "microkernel")]
+fn execute_serial_command(cmd: &str) {
+    use core::fmt::Write;
+    
+    let cmd = cmd.trim();
+    let parts: [&str; 4] = {
+        let mut arr = [""; 4];
+        for (i, part) in cmd.split_whitespace().take(4).enumerate() {
+            arr[i] = part;
+        }
+        arr
+    };
+    
+    let command = parts[0];
+    
+    macro_rules! serial_println {
+        () => { writeln!(SERIAL.lock(), "").unwrap_or(()) };
+        ($($arg:tt)*) => { writeln!(SERIAL.lock(), $($arg)*).unwrap_or(()) };
+    }
+    
+    match command {
+        "help" => {
+            serial_println!();
+            serial_println!("=== S-CORE Microkernel Shell ===");
+            serial_println!();
+            serial_println!("In microkernel mode, most commands run in userspace.");
+            serial_println!("Kernel commands:");
+            serial_println!("  help     - Show this help");
+            serial_println!("  version  - Kernel version");
+            serial_println!("  mem      - Memory stats");
+            serial_println!("  reboot   - Reboot system");
+            serial_println!("  shutdown - Power off");
+        }
+        "version" => {
+            serial_println!("S-CORE Microkernel v{}", crate::VERSION);
+        }
+        "mem" => {
+            serial_println!("[Microkernel] Memory management active");
+            serial_println!("Heap and page allocator running");
+        }
+        "reboot" => {
+            serial_println!("Rebooting...");
+            super::power::reboot();
+        }
+        "shutdown" => {
+            serial_println!("Shutting down...");
+            super::power::shutdown();
+        }
+        "" => {}
+        _ => {
+            serial_println!("[Microkernel] Command '{}' not available in kernel", command);
+            serial_println!("Most commands run in S-INIT userspace. Type 'help'.");
         }
     }
 }

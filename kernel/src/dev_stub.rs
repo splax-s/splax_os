@@ -465,13 +465,13 @@ impl MmioRegion {
     /// Read from MMIO region
     pub unsafe fn read_u32(&self, offset: usize) -> u32 {
         let ptr = (self.virt_addr + offset as u64) as *const u32;
-        core::ptr::read_volatile(ptr)
+        unsafe { core::ptr::read_volatile(ptr) }
     }
 
     /// Write to MMIO region
     pub unsafe fn write_u32(&self, offset: usize, value: u32) {
         let ptr = (self.virt_addr + offset as u64) as *mut u32;
-        core::ptr::write_volatile(ptr, value);
+        unsafe { core::ptr::write_volatile(ptr, value) }
     }
 }
 
@@ -520,7 +520,7 @@ impl DmaBuffer {
 pub fn forward_irq(irq: u8) {
     // Called from interrupt handler
     // Send async notification to S-DEV service
-    if let Ok(mut stub) = DEV_STUB.try_lock() {
+    if let Some(mut stub) = DEV_STUB.try_lock() {
         let _ = stub.irq_notify(irq);
     }
 }
