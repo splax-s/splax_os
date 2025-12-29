@@ -24,7 +24,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 authors = ["Splax OS Team"]
-repository = "https://github.com/splax/splax_os"
+repository = "https://github.com/splax-s/splax_os"
 description = "A production-grade, capability-secure, distributed-first operating system"
 
 [workspace.dependencies]

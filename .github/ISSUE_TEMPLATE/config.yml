@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📖 Documentation
+    url: https://github.com/splax-s/splax_os/tree/main/docs
+    about: Check our documentation for answers to common questions
+  - name: 💬 Discussions
+    url: https://github.com/splax-s/splax_os/discussions
+    about: Ask questions and discuss ideas with the community

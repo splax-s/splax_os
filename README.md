@@ -1,11 +1,28 @@
-# Splax OS
+<p align="center">
+  <img src="assets/logo/logo.png" alt="Splax OS Logo" width="200">
+</p>
 
-> *"Where your laptop feels like a cloud region, nothing runs unless you ask, and security is built in, not bolted on."*
+<h1 align="center">Splax OS</h1>
 
-[![Build Status](https://github.com/splax/splax_os/actions/workflows/ci.yml/badge.svg)](https://github.com/splax/splax_os/actions)
-[![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
+<p align="center">
+  <em>"Where your laptop feels like a cloud region, nothing runs unless you ask, and security is built in, not bolted on."</em>
+</p>
 
-⚠️ **PROPRIETARY SOFTWARE** - All rights reserved. See [LICENSE](LICENSE) for terms.
+<p align="center">
+  <a href="https://github.com/splax-s/splax_os/actions"><img src="https://github.com/splax-s/splax_os/actions/workflows/ci.yml/badge.svg" alt="Build Status"></a>
+  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <a href="LICENSE-APACHE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache 2.0 License"></a>
+  <a href="https://github.com/splax-s/splax_os/stargazers"><img src="https://img.shields.io/github/stars/splax-s/splax_os?style=social" alt="GitHub Stars"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="CONTRIBUTING.md">Contributing</a> •
+  <a href="docs/">Documentation</a>
+</p>
+
+---
 
 Splax OS is a **production-grade, capability-secure, distributed-first operating system** built from scratch in Rust. It reimagines operating system design with modern principles:
 
@@ -40,7 +57,7 @@ Splax OS is a **production-grade, capability-secure, distributed-first operating
 │  │(Capabil.)│ │(Zero-cp) │ │  (Det.)  │ │ Manager  │           │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘           │
 ├─────────────────────────────────────────────────────────────────┤
-│                      HARDWARE (x86_64 / aarch64)                │
+│             HARDWARE (x86_64 / aarch64 / risk-v)                │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -353,7 +370,15 @@ qemu-system-riscv64 -M virt -m 512M \
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines.
+We welcome contributions from developers of all skill levels! 🎉
+
+Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
+- Development setup instructions
+- Coding guidelines and style
+- Pull request process
+- Areas where we need help
+
+**Good first issues**: Look for issues labeled [`good first issue`](https://github.com/splax-s/splax_os/labels/good%20first%20issue)
 
 ### Code Style
 
