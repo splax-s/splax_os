@@ -692,31 +692,36 @@ cargo build -p splax_kernel --bin splax_kernel_aarch64 --release \
 ### Creating Bootable ISO
 
 ```bash
-# Copy kernel to ISO structure
-cp target/x86_64-unknown-none/release/splax_kernel target/iso/iso_root/boot/
+# Create ISO directory structure
+mkdir -p target/iso/boot/grub
+cp target/x86_64-unknown-none/release/splax_kernel target/iso/boot/
 
-# Create ISO with Limine bootloader
-xorriso -as mkisofs \
-    -b boot/limine/limine-bios-cd.bin \
-    -no-emul-boot -boot-load-size 4 -boot-info-table \
-    --efi-boot boot/limine/limine-uefi-cd.bin \
-    -efi-boot-part --efi-boot-image \
-    --protective-msdos-label \
-    target/iso/iso_root -o target/iso/splax.iso
+# Create GRUB config
+cat > target/iso/boot/grub/grub.cfg << EOF
+set timeout=0
+set default=0
+menuentry "Splax OS" {
+    multiboot /boot/splax_kernel
+    boot
+}
+EOF
+
+# Create bootable ISO with GRUB (supports BIOS and UEFI)
+i686-elf-grub-mkrescue -o target/splax.iso target/iso
 ```
 
 ### Testing in QEMU
 
 ```bash
 # Basic x86_64 test
-qemu-system-x86_64 -cdrom target/iso/splax.iso -m 256M -serial stdio -no-reboot
+qemu-system-x86_64 -cdrom target/splax.iso -m 256M -serial stdio -no-reboot
 
 # With networking
-qemu-system-x86_64 -cdrom target/iso/splax.iso -m 512M -serial stdio \
+qemu-system-x86_64 -cdrom target/splax.iso -m 512M -serial stdio \
     -device e1000,netdev=net0 -netdev user,id=net0
 
 # With VirtIO devices
-qemu-system-x86_64 -cdrom target/iso/splax.iso -m 512M -serial stdio \
+qemu-system-x86_64 -cdrom target/splax.iso -m 512M -serial stdio \
     -device virtio-net-pci,netdev=net0 -netdev user,id=net0 \
     -drive file=disk.img,if=virtio,format=raw
 
@@ -724,22 +729,31 @@ qemu-system-x86_64 -cdrom target/iso/splax.iso -m 512M -serial stdio \
 qemu-system-aarch64 -M virt -cpu cortex-a72 -m 512M \
     -kernel target/aarch64-unknown-none/release/splax_kernel_aarch64 \
     -nographic
+
+# RISC-V test
+qemu-system-riscv64 -M virt -m 512M -bios default \
+    -kernel target/riscv64gc-unknown-none-elf/release/splax_kernel_riscv64 \
+    -nographic
 ```
 
 ### Quick Build-and-Run (x86_64)
 
 ```bash
-# All-in-one command
+# Use the splax build script (recommended)
+./scripts/splax run
+
+# Or all-in-one command
 cargo build -p splax_kernel --bin splax_kernel --release \
     --target x86_64-unknown-none \
     -Zbuild-std=core,alloc \
     -Zbuild-std-features=compiler-builtins-mem && \
-cp target/x86_64-unknown-none/release/splax_kernel target/iso/iso_root/boot/ && \
-xorriso -as mkisofs -b boot/limine/limine-bios-cd.bin -no-emul-boot \
-    -boot-load-size 4 -boot-info-table --efi-boot boot/limine/limine-uefi-cd.bin \
-    -efi-boot-part --efi-boot-image --protective-msdos-label \
-    target/iso/iso_root -o target/iso/splax.iso 2>/dev/null && \
-qemu-system-x86_64 -cdrom target/iso/splax.iso -m 256M -serial stdio -no-reboot
+mkdir -p target/iso/boot/grub && \
+cp target/x86_64-unknown-none/release/splax_kernel target/iso/boot/ && \
+echo 'set timeout=0
+set default=0
+menuentry "Splax OS" { multiboot /boot/splax_kernel; boot; }' > target/iso/boot/grub/grub.cfg && \
+i686-elf-grub-mkrescue -o target/splax.iso target/iso 2>/dev/null && \
+qemu-system-x86_64 -cdrom target/splax.iso -m 256M -serial stdio -no-reboot
 ```
 
 ### Development Commands

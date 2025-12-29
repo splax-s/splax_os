@@ -83,15 +83,21 @@ cargo build -p splax_kernel --bin splax_kernel --release \
     -Zbuild-std=core,alloc \
     -Zbuild-std-features=compiler-builtins-mem
 
-# Create bootable ISO
-cp target/x86_64-unknown-none/release/splax_kernel target/iso/iso_root/boot/
-xorriso -as mkisofs -b boot/limine/limine-bios-cd.bin -no-emul-boot \
-    -boot-load-size 4 -boot-info-table --efi-boot boot/limine/limine-uefi-cd.bin \
-    -efi-boot-part --efi-boot-image --protective-msdos-label \
-    target/iso/iso_root -o target/iso/splax.iso
+# Create bootable ISO (uses GRUB for BIOS/UEFI boot)
+mkdir -p target/iso/boot/grub
+cp target/x86_64-unknown-none/release/splax_kernel target/iso/boot/
+cat > target/iso/boot/grub/grub.cfg << EOF
+set timeout=0
+set default=0
+menuentry "Splax OS" {
+    multiboot /boot/splax_kernel
+    boot
+}
+EOF
+i686-elf-grub-mkrescue -o target/splax.iso target/iso
 
 # Run in QEMU
-qemu-system-x86_64 -cdrom target/iso/splax.iso -m 256M -serial stdio -no-reboot
+qemu-system-x86_64 -cdrom target/splax.iso -m 256M -serial stdio -no-reboot
 ```
 
 ### Development
@@ -114,7 +120,7 @@ cargo test --workspace --exclude splax_kernel --exclude splax_bootloader
 
 ```
 splax_os/
-├── bootloader/          # UEFI bootloader
+├── bootloader/          # Native bootloader (UEFI/BIOS/SBI)
 ├── kernel/              # S-CORE microkernel
 │   └── src/
 │       ├── arch/        # Architecture-specific (x86_64, aarch64)
@@ -167,18 +173,20 @@ splax_os/
 | **GPU** | ✅ Done | Framebuffer, console, 2D primitives, text rendering |
 | **Documentation** | ✅ Done | Architecture docs, API reference, build instructions |
 
+### � In Progress
+| **RISC-V Support** | 🔄 WIP | Third architecture target with SBI boot |
+
 ### 📋 Planned
 | **GUI (S-CANVAS)** | 📋 Planned | Windowing system, compositor |
-| **RISC-V Support** | 📋 Planned | Third architecture target |
 
 ## Running Splax OS
 
 ### Prerequisites
 
 - Rust nightly toolchain with `rust-src` component
-- QEMU (x86_64 and optionally aarch64)
-- xorriso (for ISO creation)
-- Limine bootloader (included in `target/iso/`)
+- QEMU (x86_64, aarch64, riscv64)
+- GRUB (for ISO creation: `grub-mkrescue`)
+- (Optional) Cross-compilation toolchains for aarch64/riscv64
 
 ### Building the Kernel
 
@@ -201,16 +209,24 @@ cargo check
 
 ```bash
 # Copy kernel to ISO structure
-cp target/x86_64-unknown-none/release/splax_kernel target/iso/iso_root/boot/
+mkdir -p target/iso/boot/grub
+cp target/x86_64-unknown-none/release/splax_kernel target/iso/boot/
 
-# Create ISO with Limine bootloader
-xorriso -as mkisofs \
-    -b boot/limine/limine-bios-cd.bin \
-    -no-emul-boot -boot-load-size 4 -boot-info-table \
-    --efi-boot boot/limine/limine-uefi-cd.bin \
-    -efi-boot-part --efi-boot-image \
-    --protective-msdos-label \
-    target/iso/iso_root -o target/iso/splax.iso
+# Create GRUB config
+cat > target/iso/boot/grub/grub.cfg << EOF
+set timeout=0
+set default=0
+menuentry "Splax OS" {
+    multiboot /boot/splax_kernel
+    boot
+}
+EOF
+
+# Create bootable ISO with GRUB (supports BIOS and UEFI)
+i686-elf-grub-mkrescue -o target/splax.iso target/iso
+
+# Alternative: use native UEFI bootloader (physical machines)
+# Build the bootloader as EFI application and place in ESP
 ```
 
 ### Running in QEMU
@@ -232,17 +248,21 @@ qemu-system-x86_64 -cdrom target/iso/splax.iso -m 512M -serial stdio \
 ### Quick Start (All-in-One)
 
 ```bash
-# Build, create ISO, and run
+# Use the splax build script (recommended)
+./scripts/splax run
+
+# Or manually: Build, create ISO, and run
 cargo build -p splax_kernel --bin splax_kernel --release \
     --target x86_64-unknown-none \
     -Zbuild-std=core,alloc \
     -Zbuild-std-features=compiler-builtins-mem && \
-cp target/x86_64-unknown-none/release/splax_kernel target/iso/iso_root/boot/ && \
-xorriso -as mkisofs -b boot/limine/limine-bios-cd.bin -no-emul-boot \
-    -boot-load-size 4 -boot-info-table --efi-boot boot/limine/limine-uefi-cd.bin \
-    -efi-boot-part --efi-boot-image --protective-msdos-label \
-    target/iso/iso_root -o target/iso/splax.iso 2>/dev/null && \
-qemu-system-x86_64 -cdrom target/iso/splax.iso -m 256M -serial stdio -no-reboot
+mkdir -p target/iso/boot/grub && \
+cp target/x86_64-unknown-none/release/splax_kernel target/iso/boot/ && \
+echo 'set timeout=0
+set default=0
+menuentry "Splax OS" { multiboot /boot/splax_kernel; boot; }' > target/iso/boot/grub/grub.cfg && \
+i686-elf-grub-mkrescue -o target/splax.iso target/iso 2>/dev/null && \
+qemu-system-x86_64 -cdrom target/splax.iso -m 256M -serial stdio -no-reboot
 ```
 
 ### Kernel Shell Commands
@@ -312,6 +332,22 @@ cargo build -p splax_kernel --bin splax_kernel_aarch64 --release \
 # Run in QEMU (virt machine with Cortex-A72)
 qemu-system-aarch64 -M virt -cpu cortex-a72 -m 512M \
     -kernel target/aarch64-unknown-none/release/splax_kernel_aarch64 \
+    -nographic
+```
+
+### Building for RISC-V 64-bit
+
+```bash
+# Build for riscv64
+cargo build -p splax_kernel --bin splax_kernel_riscv64 --release \
+    --target riscv64gc-unknown-none-elf \
+    -Zbuild-std=core,alloc \
+    -Zbuild-std-features=compiler-builtins-mem
+
+# Run in QEMU (virt machine with OpenSBI)
+qemu-system-riscv64 -M virt -m 512M \
+    -bios default \
+    -kernel target/riscv64gc-unknown-none-elf/release/splax_kernel_riscv64 \
     -nographic
 ```
 

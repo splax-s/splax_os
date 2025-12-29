@@ -669,10 +669,10 @@ pub enum KeyDerivation {
 pub enum BootloaderChoice {
     /// Automatic selection based on boot mode
     Auto,
-    /// GRUB2
+    /// GRUB2 (BIOS and UEFI)
     Grub2,
-    /// Limine
-    Limine,
+    /// Splax native bootloader (UEFI and BIOS)
+    SplaxNative,
     /// systemd-boot (UEFI only)
     SystemdBoot,
     /// No bootloader (external boot)
@@ -1239,13 +1239,13 @@ impl Installer {
         let bootloader = match config.bootloader {
             BootloaderChoice::Auto => {
                 if self.hardware.boot_mode == BootMode::Uefi {
-                    "Limine (UEFI)"
+                    "Splax Native (UEFI)"
                 } else {
-                    "Limine (BIOS)"
+                    "Splax Native (BIOS)"
                 }
             }
             BootloaderChoice::Grub2 => "GRUB2",
-            BootloaderChoice::Limine => "Limine",
+            BootloaderChoice::SplaxNative => "Splax Native",
             BootloaderChoice::SystemdBoot => "systemd-boot",
             BootloaderChoice::None => "None",
         };

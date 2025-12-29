@@ -310,9 +310,9 @@ impl GpuService {
     /// Probe for GPU devices
     fn probe_devices(&mut self) -> Result<(), GpuError> {
         // Query kernel for bootloader-provided framebuffer info
-        // The bootloader (Limine) provides framebuffer information in a standardized format
+        // The native Splax bootloader or GRUB provides framebuffer information via BootInfo
         
-        // Create device from boot framebuffer (always available after Limine boot)
+        // Create device from boot framebuffer (always available after boot)
         // Framebuffer address would be obtained via kernel syscall or memory-mapped region
         let fb_device = GpuDevice {
             id: self.next_device_id,

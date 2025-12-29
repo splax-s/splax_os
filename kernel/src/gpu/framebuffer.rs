@@ -379,24 +379,20 @@ pub static FRAMEBUFFER: Mutex<Option<Framebuffer>> = Mutex::new(None);
 /// Detects framebuffer from bootloader info
 /// Returns None if no framebuffer is available
 pub fn detect_framebuffer() -> Option<FramebufferInfo> {
-    // Try to detect framebuffer from Limine bootloader
-    #[cfg(feature = "limine")]
+    // Try to detect framebuffer from BootInfo structure
+    // The native Splax bootloader or Multiboot2 provides this info
+    #[cfg(feature = "bootinfo")]
     {
-        use crate::boot::limine;
-        if let Some(fb_response) = limine::framebuffer_response() {
-            if fb_response.framebuffer_count > 0 {
-                let fb = &fb_response.framebuffers[0];
+        use crate::boot::bootinfo;
+        if let Some(info) = bootinfo::get_boot_info() {
+            if info.framebuffer_addr != 0 {
                 return Some(FramebufferInfo {
-                    base_addr: fb.address as usize,
-                    width: fb.width as u32,
-                    height: fb.height as u32,
-                    pitch: fb.pitch as u32,
-                    bits_per_pixel: fb.bpp as u8,
-                    pixel_format: match (fb.red_mask_shift, fb.blue_mask_shift) {
-                        (0, 16) => PixelFormat::Rgb,
-                        (16, 0) => PixelFormat::Bgr,
-                        _ => PixelFormat::Bgr, // Default
-                    },
+                    base_addr: info.framebuffer_addr as usize,
+                    width: info.framebuffer_width,
+                    height: info.framebuffer_height,
+                    pitch: info.framebuffer_pitch,
+                    bits_per_pixel: info.framebuffer_bpp as u8,
+                    pixel_format: PixelFormat::Bgr, // Most common for BIOS/UEFI
                 });
             }
         }
