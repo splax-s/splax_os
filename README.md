@@ -13,13 +13,15 @@
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
   <a href="LICENSE-APACHE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache 2.0 License"></a>
   <a href="https://github.com/splax-s/splax_os/stargazers"><img src="https://img.shields.io/github/stars/splax-s/splax_os?style=social" alt="GitHub Stars"></a>
+  <a href="https://github.com/sponsors/splax-s"><img src="https://img.shields.io/badge/sponsor-❤-ea4aaa.svg" alt="Sponsor"></a>
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
   <a href="#architecture">Architecture</a> •
   <a href="CONTRIBUTING.md">Contributing</a> •
-  <a href="docs/">Documentation</a>
+  <a href="docs/">Documentation</a> •
+  <a href="https://github.com/sponsors/splax-s">Sponsor</a>
 </p>
 
 ---
