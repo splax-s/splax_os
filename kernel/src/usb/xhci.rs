@@ -614,14 +614,113 @@ impl XhciController {
         setup: SetupPacket,
         data: Option<&mut [u8]>,
     ) -> TransferResult {
-        // Get transfer ring for endpoint 0
+        // Validate slot ID
         if slot_id == 0 || slot_id as usize > self.slots.len() {
             return TransferResult::HostError;
         }
         
-        // For now, return a placeholder
-        // Full implementation would queue TRBs to the endpoint's transfer ring
-        TransferResult::Success(0)
+        // Get the slot's transfer ring for endpoint 0 (control endpoint)
+        let slot_idx = (slot_id - 1) as usize;
+        if slot_idx >= self.slots.len() {
+            return TransferResult::HostError;
+        }
+        
+        // Build Setup Stage TRB
+        let mut setup_trb = Trb::new();
+        setup_trb.set_type(TrbType::SetupStage);
+        // Pack setup packet into TRB: request_type, request, value, index, length
+        setup_trb.parameter = ((setup.length as u64) << 48)
+            | ((setup.index as u64) << 32)
+            | ((setup.value as u64) << 16)
+            | ((setup.request as u64) << 8)
+            | (setup.request_type as u64);
+        // TRT (Transfer Type): 0=No Data, 2=OUT Data, 3=IN Data
+        let trt = match (setup.length, setup.request_type & 0x80) {
+            (0, _) => 0,      // No data stage
+            (_, 0) => 2,      // OUT data stage
+            (_, _) => 3,      // IN data stage
+        };
+        setup_trb.status = (8 << 0) | (trt << 16); // 8 bytes, TRT in bits 16-17
+        setup_trb.control |= 1 << 6; // IDT (Immediate Data)
+        
+        // Ensure slot has a transfer ring for endpoint 0 (control endpoint, index 1)
+        // DCI 1 = default control endpoint
+        let slot = &mut self.slots[slot_idx];
+        if slot.transfer_rings[1].is_none() {
+            slot.transfer_rings[1] = Some(TransferRing::new(256));
+        }
+        
+        // Get mutable reference to the control endpoint's transfer ring
+        let transfer_ring = match slot.transfer_rings[1].as_mut() {
+            Some(ring) => ring,
+            None => return TransferResult::HostError,
+        };
+        
+        transfer_ring.enqueue(setup_trb);
+        
+        let mut bytes_transferred: usize = 0;
+        
+        // Build Data Stage TRB if we have data
+        if let Some(data_buf) = data {
+            if !data_buf.is_empty() {
+                let mut data_trb = Trb::new();
+                data_trb.set_type(TrbType::DataStage);
+                data_trb.parameter = data_buf.as_ptr() as u64;
+                data_trb.status = data_buf.len() as u32;
+                // DIR: 0=OUT, 1=IN (based on bmRequestType bit 7)
+                if (setup.request_type & 0x80) != 0 {
+                    data_trb.control |= 1 << 16; // DIR = IN
+                }
+                // Re-borrow transfer ring
+                let slot = &mut self.slots[slot_idx];
+                if let Some(ref mut ring) = slot.transfer_rings[1] {
+                    ring.enqueue(data_trb);
+                }
+                bytes_transferred = data_buf.len();
+            }
+        }
+        
+        // Build Status Stage TRB
+        let mut status_trb = Trb::new();
+        status_trb.set_type(TrbType::StatusStage);
+        status_trb.control |= 1 << 5; // IOC (Interrupt on Completion)
+        // DIR is opposite of data stage direction (or IN if no data stage)
+        if setup.length == 0 || (setup.request_type & 0x80) == 0 {
+            status_trb.control |= 1 << 16; // DIR = IN
+        }
+        
+        // Re-borrow and enqueue status TRB
+        let slot = &mut self.slots[slot_idx];
+        if let Some(ref mut ring) = slot.transfer_rings[1] {
+            ring.enqueue(status_trb);
+        }
+        
+        // Ring the doorbell for endpoint 0 (DCI = 1 for default control EP)
+        self.ring_doorbell(slot_id, 1);
+        
+        // Wait for completion event
+        for _ in 0..10000 {
+            if let Some(event) = self.event_ring.dequeue() {
+                if event.trb_type() == TrbType::TransferEvent as u8 {
+                    // Check completion code
+                    let completion_code = ((event.status >> 24) & 0xFF) as u8;
+                    return match completion_code {
+                        1 => TransferResult::Success(bytes_transferred), // Success
+                        6 => TransferResult::Stall,                       // Stall
+                        13 => {                                           // Short packet
+                            let residue = (event.status & 0xFFFFFF) as usize;
+                            TransferResult::Success(bytes_transferred.saturating_sub(residue))
+                        }
+                        _ => TransferResult::HostError,
+                    };
+                }
+            }
+            for _ in 0..100 {
+                core::hint::spin_loop();
+            }
+        }
+        
+        TransferResult::HostError // Timeout
     }
 }
 

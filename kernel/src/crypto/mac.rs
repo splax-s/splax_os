@@ -128,9 +128,26 @@ impl HmacSha1 {
     
     /// Compute MAC in one shot (for simple_prf compatibility)
     pub fn compute(&self, data: &[u8]) -> Vec<u8> {
-        let mut h = Self::new(&[0u8; 0]); // Placeholder
-        h.update(data);
-        h.finalize()
+        // Clone the inner state and outer key pad
+        let mut new_inner = Sha1::new();
+        new_inner.update(&self.inner_data());
+        new_inner.update(data);
+        let inner_hash = new_inner.finalize();
+        
+        let mut outer = Sha1::new();
+        outer.update(&self.outer_key_pad);
+        outer.update(&inner_hash);
+        outer.finalize()
+    }
+    
+    /// Get the current accumulated inner data
+    fn inner_data(&self) -> Vec<u8> {
+        // Return the inner key padding (what was used to initialize)
+        let mut ipad = [0u8; 64];
+        for i in 0..64 {
+            ipad[i] = self.outer_key_pad[i] ^ 0x36 ^ 0x5c; // XOR to get back ipad from opad
+        }
+        ipad.to_vec()
     }
 }
 

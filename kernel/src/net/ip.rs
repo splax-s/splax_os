@@ -270,7 +270,7 @@ impl Ipv4Packet {
             self.identification,
             flags_fragment,
             ((self.ttl as u16) << 8) | (self.protocol as u16),
-            0, // Checksum placeholder
+            0, // Checksum field zeroed for calculation (RFC 1071)
             u16::from_be_bytes([self.src_addr.0[0], self.src_addr.0[1]]),
             u16::from_be_bytes([self.src_addr.0[2], self.src_addr.0[3]]),
             u16::from_be_bytes([self.dest_addr.0[0], self.dest_addr.0[1]]),

@@ -8,6 +8,7 @@ description = "S-GATE: External gateway service for Splax OS (TCP/HTTP)"
 [dependencies]
 spin = { workspace = true }
 log = { workspace = true }
+splax_cap = { path = "../cap" }
 
 [features]
 default = []

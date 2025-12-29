@@ -8,6 +8,7 @@ description = "S-STORAGE: Object storage service for Splax OS"
 [dependencies]
 spin = { workspace = true }
 log = { workspace = true }
+splax_cap = { path = "../cap" }
 
 [features]
 default = []

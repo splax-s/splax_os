@@ -472,17 +472,35 @@ impl SshClient {
     }
     
     /// Generate DH keypair for key exchange
+    /// 
+    /// For Ed25519/Curve25519, we derive the public key by:
+    /// 1. Hash the private key seed with SHA-512
+    /// 2. Clamp the lower 32 bytes to form a scalar
+    /// 3. Multiply the base point by this scalar
     fn generate_dh_keypair(&self) -> (Vec<u8>, Vec<u8>) {
-        // Use group14 (2048-bit MODP)
-        // In practice, use a proper big-integer library
-        // Generate random private key
-        let private: [u8; 32] = crate::crypto::random::random_bytes();
+        use crate::crypto::hash::Hash;
         
-        // For now, use the private key bytes directly as public key placeholder
-        // Real implementation would compute g^private mod p
-        let public = private.to_vec();
+        // Generate random 32-byte seed (private key)
+        let seed: [u8; 32] = crate::crypto::random::random_bytes();
         
-        (private.to_vec(), public)
+        // Derive scalar from seed using SHA-512 (Ed25519 style)
+        let hash = crate::crypto::Sha512::hash(&seed);
+        let mut scalar = [0u8; 32];
+        scalar.copy_from_slice(&hash[..32]);
+        
+        // Clamp the scalar per Ed25519/Curve25519 specification:
+        // - Clear the lowest 3 bits (makes it a multiple of 8)
+        // - Clear the highest bit (ensures it's < 2^255)
+        // - Set bit 254 (ensures constant-time behavior)
+        scalar[0] &= 0xF8;  // Clear lowest 3 bits
+        scalar[31] &= 0x7F; // Clear highest bit
+        scalar[31] |= 0x40; // Set bit 254
+        
+        // Compute public key: scalar * G (base point multiplication)
+        // Using Curve25519 base point G = 9
+        let public = curve25519_scalar_mult_base(&scalar);
+        
+        (seed.to_vec(), public.to_vec())
     }
     
     /// Compute DH shared secret
@@ -660,6 +678,325 @@ pub fn start_server() -> Result<(), NetworkError> {
 /// Stop the SSH server
 pub fn stop_server() {
     SSH_SERVER.lock().stop()
+}
+
+// ============================================================================
+// Curve25519 Elliptic Curve Cryptography
+// ============================================================================
+
+/// Curve25519 scalar multiplication with the base point (X25519)
+/// 
+/// This implements the X25519 function: computes the x-coordinate of scalar * G
+/// where G is the base point with x-coordinate 9.
+/// 
+/// Uses the Montgomery ladder algorithm for constant-time multiplication.
+fn curve25519_scalar_mult_base(scalar: &[u8; 32]) -> [u8; 32] {
+    // Base point x-coordinate is 9
+    let mut u = [0u8; 32];
+    u[0] = 9;
+    
+    curve25519_scalar_mult(scalar, &u)
+}
+
+/// Curve25519 scalar multiplication: computes scalar * point
+/// 
+/// This is the core X25519 function using the Montgomery ladder algorithm.
+/// All arithmetic is performed in the field GF(2^255 - 19).
+fn curve25519_scalar_mult(scalar: &[u8; 32], point: &[u8; 32]) -> [u8; 32] {
+    // Field prime: p = 2^255 - 19
+    // We work with 256-bit integers represented as 4 x u64 limbs
+    
+    // Decode point (little-endian) and clamp high bit
+    let mut u = decode_u256(point);
+    u[3] &= 0x7FFFFFFFFFFFFFFF; // Clear bit 255
+    
+    // Montgomery ladder variables (projective coordinates)
+    // x_2 = 1, z_2 = 0 (point at infinity)
+    // x_3 = u, z_3 = 1 (input point)
+    let mut x_2 = [1u64, 0, 0, 0];
+    let mut z_2 = [0u64, 0, 0, 0];
+    let mut x_3 = u;
+    let mut z_3 = [1u64, 0, 0, 0];
+    
+    let mut swap: u64 = 0;
+    
+    // Montgomery ladder: iterate from bit 254 down to 0
+    for pos in (0..255).rev() {
+        // Get bit at position
+        let byte_idx = pos / 8;
+        let bit_idx = pos % 8;
+        let bit = ((scalar[byte_idx] >> bit_idx) & 1) as u64;
+        
+        // Conditional swap based on bit XOR previous bit
+        swap ^= bit;
+        cswap(&mut x_2, &mut x_3, swap);
+        cswap(&mut z_2, &mut z_3, swap);
+        swap = bit;
+        
+        // Montgomery ladder step
+        let a = field_add(&x_2, &z_2);
+        let aa = field_square(&a);
+        let b = field_sub(&x_2, &z_2);
+        let bb = field_square(&b);
+        let e = field_sub(&aa, &bb);
+        let c = field_add(&x_3, &z_3);
+        let d = field_sub(&x_3, &z_3);
+        let da = field_mul(&d, &a);
+        let cb = field_mul(&c, &b);
+        let sum = field_add(&da, &cb);
+        let diff = field_sub(&da, &cb);
+        x_3 = field_square(&sum);
+        let diff_sq = field_square(&diff);
+        z_3 = field_mul(&u, &diff_sq);
+        x_2 = field_mul(&aa, &bb);
+        let a24_e = field_mul_small(&e, 121666); // (A+2)/4 = 121666
+        let sum2 = field_add(&aa, &a24_e);
+        z_2 = field_mul(&e, &sum2);
+    }
+    
+    // Final conditional swap
+    cswap(&mut x_2, &mut x_3, swap);
+    cswap(&mut z_2, &mut z_3, swap);
+    
+    // Convert to affine: x = x_2 * z_2^(-1) mod p
+    let z_inv = field_invert(&z_2);
+    let result = field_mul(&x_2, &z_inv);
+    
+    encode_u256(&result)
+}
+
+// Field arithmetic for GF(2^255 - 19)
+
+type FieldElement = [u64; 4];
+
+fn decode_u256(bytes: &[u8; 32]) -> FieldElement {
+    [
+        u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
+        u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+        u64::from_le_bytes(bytes[16..24].try_into().unwrap()),
+        u64::from_le_bytes(bytes[24..32].try_into().unwrap()),
+    ]
+}
+
+fn encode_u256(fe: &FieldElement) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[0..8].copy_from_slice(&fe[0].to_le_bytes());
+    out[8..16].copy_from_slice(&fe[1].to_le_bytes());
+    out[16..24].copy_from_slice(&fe[2].to_le_bytes());
+    out[24..32].copy_from_slice(&fe[3].to_le_bytes());
+    out
+}
+
+fn field_add(a: &FieldElement, b: &FieldElement) -> FieldElement {
+    let mut r = [0u64; 4];
+    let mut carry = 0u128;
+    for i in 0..4 {
+        carry += a[i] as u128 + b[i] as u128;
+        r[i] = carry as u64;
+        carry >>= 64;
+    }
+    field_reduce(&r)
+}
+
+fn field_sub(a: &FieldElement, b: &FieldElement) -> FieldElement {
+    // p = 2^255 - 19, we add p if needed
+    let p: FieldElement = [
+        0xFFFFFFFFFFFFFFED,
+        0xFFFFFFFFFFFFFFFF,
+        0xFFFFFFFFFFFFFFFF,
+        0x7FFFFFFFFFFFFFFF,
+    ];
+    
+    let mut r = [0u64; 4];
+    let mut borrow = 0i128;
+    for i in 0..4 {
+        borrow += a[i] as i128 - b[i] as i128;
+        if borrow < 0 {
+            r[i] = (borrow + (1i128 << 64)) as u64;
+            borrow = -1;
+        } else {
+            r[i] = borrow as u64;
+            borrow = 0;
+        }
+    }
+    
+    // Add p if we underflowed
+    if borrow < 0 {
+        let mut carry = 0u128;
+        for i in 0..4 {
+            carry += r[i] as u128 + p[i] as u128;
+            r[i] = carry as u64;
+            carry >>= 64;
+        }
+    }
+    r
+}
+
+fn field_mul(a: &FieldElement, b: &FieldElement) -> FieldElement {
+    // Schoolbook multiplication followed by reduction
+    let mut r = [0u128; 8];
+    
+    for i in 0..4 {
+        for j in 0..4 {
+            r[i + j] += a[i] as u128 * b[j] as u128;
+        }
+    }
+    
+    // Carry propagation
+    for i in 0..7 {
+        r[i + 1] += r[i] >> 64;
+        r[i] &= 0xFFFFFFFFFFFFFFFF;
+    }
+    
+    // Reduce mod p = 2^255 - 19
+    // r = r_low + r_high * 2^256
+    // 2^256 = 2 * 2^255 = 2 * (p + 19) = 2p + 38 ≡ 38 (mod p)
+    // So we multiply high part by 38 and add to low part
+    
+    let mut result = [r[0] as u64, r[1] as u64, r[2] as u64, r[3] as u64];
+    let high = [r[4] as u64, r[5] as u64, r[6] as u64, r[7] as u64];
+    
+    // result += high * 38 (since 2^256 ≡ 38 mod p)
+    let mut carry = 0u128;
+    for i in 0..4 {
+        carry += result[i] as u128 + (high[i] as u128 * 38);
+        result[i] = carry as u64;
+        carry >>= 64;
+    }
+    
+    // Handle final carry
+    while carry > 0 {
+        let mut c = carry * 38;
+        carry = 0;
+        for i in 0..4 {
+            c += result[i] as u128;
+            result[i] = c as u64;
+            c >>= 64;
+        }
+        carry = c;
+    }
+    
+    field_reduce(&result)
+}
+
+fn field_mul_small(a: &FieldElement, b: u64) -> FieldElement {
+    let mut r = [0u64; 4];
+    let mut carry = 0u128;
+    for i in 0..4 {
+        carry += a[i] as u128 * b as u128;
+        r[i] = carry as u64;
+        carry >>= 64;
+    }
+    
+    // Reduce carry
+    while carry > 0 {
+        let mut c = carry * 38;
+        carry = 0;
+        for i in 0..4 {
+            c += r[i] as u128;
+            r[i] = c as u64;
+            c >>= 64;
+        }
+        carry = c;
+    }
+    
+    field_reduce(&r)
+}
+
+fn field_square(a: &FieldElement) -> FieldElement {
+    field_mul(a, a)
+}
+
+fn field_reduce(a: &FieldElement) -> FieldElement {
+    // Reduce mod p = 2^255 - 19
+    let p: FieldElement = [
+        0xFFFFFFFFFFFFFFED,
+        0xFFFFFFFFFFFFFFFF,
+        0xFFFFFFFFFFFFFFFF,
+        0x7FFFFFFFFFFFFFFF,
+    ];
+    
+    let mut r = *a;
+    
+    // Check if r >= p
+    let mut ge = true;
+    for i in (0..4).rev() {
+        if r[i] < p[i] {
+            ge = false;
+            break;
+        } else if r[i] > p[i] {
+            break;
+        }
+    }
+    
+    // Subtract p if r >= p
+    if ge {
+        let mut borrow = 0i128;
+        for i in 0..4 {
+            borrow += r[i] as i128 - p[i] as i128;
+            if borrow < 0 {
+                r[i] = (borrow + (1i128 << 64)) as u64;
+                borrow = -1;
+            } else {
+                r[i] = borrow as u64;
+                borrow = 0;
+            }
+        }
+    }
+    
+    r
+}
+
+fn field_invert(a: &FieldElement) -> FieldElement {
+    // Use Fermat's little theorem: a^(-1) = a^(p-2) mod p
+    // p - 2 = 2^255 - 21
+    // 
+    // We use an addition chain optimized for p-2
+    
+    let mut t0 = field_square(a);      // a^2
+    let mut t1 = field_square(&t0);    // a^4
+    t1 = field_square(&t1);            // a^8
+    t1 = field_mul(&t1, a);            // a^9
+    t0 = field_mul(&t0, &t1);          // a^11
+    let mut t2 = field_square(&t0);    // a^22
+    t1 = field_mul(&t1, &t2);          // a^31 = a^(2^5 - 1)
+    t2 = field_square(&t1);
+    for _ in 0..4 { t2 = field_square(&t2); }
+    t1 = field_mul(&t2, &t1);          // a^(2^10 - 1)
+    t2 = field_square(&t1);
+    for _ in 0..9 { t2 = field_square(&t2); }
+    t2 = field_mul(&t2, &t1);          // a^(2^20 - 1)
+    let mut t3 = field_square(&t2);
+    for _ in 0..19 { t3 = field_square(&t3); }
+    t2 = field_mul(&t3, &t2);          // a^(2^40 - 1)
+    t2 = field_square(&t2);
+    for _ in 0..9 { t2 = field_square(&t2); }
+    t1 = field_mul(&t2, &t1);          // a^(2^50 - 1)
+    t2 = field_square(&t1);
+    for _ in 0..49 { t2 = field_square(&t2); }
+    t2 = field_mul(&t2, &t1);          // a^(2^100 - 1)
+    t3 = field_square(&t2);
+    for _ in 0..99 { t3 = field_square(&t3); }
+    t2 = field_mul(&t3, &t2);          // a^(2^200 - 1)
+    t2 = field_square(&t2);
+    for _ in 0..49 { t2 = field_square(&t2); }
+    t1 = field_mul(&t2, &t1);          // a^(2^250 - 1)
+    t1 = field_square(&t1);
+    t1 = field_square(&t1);
+    t1 = field_square(&t1);
+    t1 = field_square(&t1);
+    t1 = field_square(&t1);            // a^(2^255 - 32)
+    field_mul(&t1, &t0)                // a^(2^255 - 21) = a^(p-2)
+}
+
+/// Constant-time conditional swap
+fn cswap(a: &mut FieldElement, b: &mut FieldElement, swap: u64) {
+    let mask = 0u64.wrapping_sub(swap); // All 1s if swap==1, all 0s if swap==0
+    for i in 0..4 {
+        let t = mask & (a[i] ^ b[i]);
+        a[i] ^= t;
+        b[i] ^= t;
+    }
 }
 
 /// Create a new SSH client connection

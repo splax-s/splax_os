@@ -491,13 +491,16 @@ pub fn execute_bytecode(code: &[u8], locals: Vec<WasmValue>) -> Result<Vec<WasmV
 
     // Load and execute
     let module_id = load_bytes("__bytecode__", wasm)?;
-    let _instance_id = instantiate(module_id)?;
+    let instance_id = instantiate(module_id)?;
+
+    // Execute the main function and get results
+    let result = call(instance_id, "main", &locals)?;
 
     // Clean up
     let _ = unload(module_id);
 
-    // Return locals as result (placeholder)
-    Ok(locals)
+    // Return the actual execution results from the WASM function
+    Ok(result)
 }
 
 use alloc::string::ToString;

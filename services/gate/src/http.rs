@@ -613,7 +613,7 @@ mod tests {
     use super::*;
 
     fn dummy_token() -> CapabilityToken {
-        CapabilityToken { value: [1, 2, 3, 4] }
+        CapabilityToken::default()
     }
 
     #[test]

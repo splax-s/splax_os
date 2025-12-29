@@ -59,6 +59,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "spin",
+ "splax_cap",
 ]
 
 [[package]]
@@ -66,6 +67,13 @@ name = "splax_bootloader"
 version = "0.1.0"
 dependencies = [
  "log",
+]
+
+[[package]]
+name = "splax_cap"
+version = "0.1.0"
+dependencies = [
+ "spin",
 ]
 
 [[package]]
@@ -82,6 +90,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "spin",
+ "splax_cap",
 ]
 
 [[package]]
@@ -114,6 +123,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "spin",
+ "splax_cap",
 ]
 
 [[package]]
@@ -122,6 +132,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "spin",
+ "splax_cap",
 ]
 
 [[package]]
@@ -130,6 +141,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "spin",
+ "splax_cap",
 ]
 
 [[package]]
@@ -146,4 +158,5 @@ version = "0.1.0"
 dependencies = [
  "log",
  "spin",
+ "splax_cap",
 ]

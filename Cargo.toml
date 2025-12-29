@@ -2,6 +2,7 @@
 members = [
     "bootloader",
     "kernel",
+    "services/cap",
     "services/atlas",
     "services/dev",
     "services/gpu",

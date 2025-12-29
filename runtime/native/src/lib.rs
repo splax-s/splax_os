@@ -39,15 +39,12 @@ use alloc::vec::Vec;
 
 use spin::Mutex;
 
+// Import shared capability token
+pub use splax_cap::{CapabilityToken, Operations, Permission};
+
 /// Native process identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NativeProcessId(pub u64);
-
-/// Capability token placeholder.
-#[derive(Debug, Clone, Copy)]
-pub struct CapabilityToken {
-    value: [u64; 4],
-}
 
 /// Target architecture for native code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -510,7 +507,7 @@ mod tests {
     use super::*;
 
     fn dummy_token() -> CapabilityToken {
-        CapabilityToken { value: [1, 2, 3, 4] }
+        CapabilityToken::new([1, 2, 3, 4])
     }
 
     #[test]

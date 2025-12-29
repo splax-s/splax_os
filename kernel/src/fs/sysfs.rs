@@ -304,16 +304,24 @@ pub fn read_sys_file(path: &str) -> Option<String> {
             result
         }
         ["devices", "net", dev_name, "statistics", stat] => {
-            // Stats are included in NetworkInterface when the driver reports them
-            // Currently using default/zero values if not available from driver
+            // Get stats from the network device
             let stack = crate::net::network_stack().lock();
             let result = stack.primary_interface()
                 .filter(|i| i.config.name == *dev_name)
-                .map(|_| {
-                    // Return placeholder stats for now
+                .map(|iface| {
+                    // Get device info from the underlying network device
+                    let device = iface.get_device();
+                    let dev_guard = device.lock();
+                    let info = dev_guard.info();
                     match *stat {
-                        "rx_bytes" | "tx_bytes" | "rx_packets" | "tx_packets" |
-                        "rx_errors" | "tx_errors" => String::from("0\n"),
+                        "rx_bytes" => format!("{}\n", info.rx_bytes),
+                        "tx_bytes" => format!("{}\n", info.tx_bytes),
+                        "rx_packets" => format!("{}\n", info.rx_packets),
+                        "tx_packets" => format!("{}\n", info.tx_packets),
+                        "rx_errors" => format!("{}\n", info.rx_errors),
+                        "tx_errors" => format!("{}\n", info.tx_errors),
+                        "rx_dropped" => format!("{}\n", info.rx_dropped),
+                        "tx_dropped" => format!("{}\n", info.tx_dropped),
                         _ => String::from("0\n"),
                     }
                 });

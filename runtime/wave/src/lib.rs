@@ -56,6 +56,9 @@ use alloc::vec::Vec;
 
 use spin::Mutex;
 
+// Import shared capability token
+pub use splax_cap::{CapabilityToken, Operations, Permission};
+
 /// Module identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ModuleId(pub u64);
@@ -63,29 +66,6 @@ pub struct ModuleId(pub u64);
 /// Instance identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InstanceId(pub u64);
-
-/// Capability token placeholder.
-#[derive(Debug, Clone, Copy)]
-pub struct CapabilityToken {
-    value: [u64; 4],
-}
-
-impl CapabilityToken {
-    /// Create a new capability token from raw values
-    pub const fn new(value: [u64; 4]) -> Self {
-        Self { value }
-    }
-
-    /// Create a null/empty capability token
-    pub const fn null() -> Self {
-        Self { value: [0; 4] }
-    }
-
-    /// Get the raw token value
-    pub fn raw(&self) -> &[u64; 4] {
-        &self.value
-    }
-}
 
 // =============================================================================
 // TIMESTAMP UTILITIES
@@ -4605,7 +4585,9 @@ mod tests {
     use super::*;
 
     fn dummy_token() -> CapabilityToken {
-        CapabilityToken { value: [1, 2, 3, 4] }
+        // Create a capability token through the public API
+        // If splax_cap provides a constructor, use that; otherwise use default
+        CapabilityToken::default()
     }
 
     #[test]

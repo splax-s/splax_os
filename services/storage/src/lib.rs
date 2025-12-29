@@ -67,6 +67,9 @@ use alloc::vec::Vec;
 
 use spin::Mutex;
 
+// Import shared capability token
+pub use splax_cap::{CapabilityToken, Operations, Permission};
+
 /// Object identifier - unique within the storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ObjectId(pub u64);
@@ -82,21 +85,10 @@ impl ObjectId {
 pub struct ContentHash([u8; 32]);
 
 impl ContentHash {
-    /// Computes a hash of the data (simplified).
+    /// Computes a hash of the data using SHA-256.
     pub fn compute(data: &[u8]) -> Self {
-        // Simplified hash - real implementation would use SHA-256 or similar
-        let mut hash = [0u8; 32];
-        for (i, byte) in data.iter().enumerate() {
-            hash[i % 32] ^= byte;
-        }
-        Self(hash)
+        Self(splax_cap::compute_sha256(data))
     }
-}
-
-/// Capability token placeholder.
-#[derive(Debug, Clone, Copy)]
-pub struct CapabilityToken {
-    value: [u64; 4],
 }
 
 /// Object metadata.
@@ -419,7 +411,7 @@ mod tests {
     use super::*;
 
     fn dummy_token() -> CapabilityToken {
-        CapabilityToken { value: [1, 2, 3, 4] }
+        CapabilityToken::new([1, 2, 3, 4])
     }
 
     #[test]

@@ -1,14 +1,12 @@
 [package]
-name = "splax_link"
+name = "splax_cap"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "S-LINK: Internal capability-bound messaging for Splax OS"
+description = "S-CAP: Shared capability token library for Splax OS userspace services"
 
 [dependencies]
 spin = { workspace = true }
-log = { workspace = true }
-splax_cap = { path = "../cap" }
 
 [features]
 default = []

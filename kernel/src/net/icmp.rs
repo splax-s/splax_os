@@ -119,8 +119,8 @@ impl IcmpPacket {
         let mut bytes = Vec::with_capacity(Self::HEADER_SIZE + self.data.len());
         bytes.push(self.icmp_type);
         bytes.push(self.code);
-        bytes.push(0); // Checksum placeholder
-        bytes.push(0);
+        bytes.push(0); // Checksum field zeroed for calculation (RFC 1071)
+        bytes.push(0); // (checksum is 16-bit, so two zero bytes)
         bytes.extend_from_slice(&self.identifier.to_be_bytes());
         bytes.extend_from_slice(&self.sequence.to_be_bytes());
         bytes.extend_from_slice(&self.data);

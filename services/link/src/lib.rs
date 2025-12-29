@@ -40,6 +40,9 @@ use alloc::vec::Vec;
 
 use spin::Mutex;
 
+// Import shared capability token
+pub use splax_cap::{CapabilityToken, Operations, Permission};
+
 /// Channel identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChannelId(pub u64);
@@ -53,12 +56,6 @@ impl ChannelId {
 /// Message identifier for correlation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MessageId(pub u64);
-
-/// Capability token placeholder.
-#[derive(Debug, Clone, Copy)]
-pub struct CapabilityToken {
-    value: [u64; 4],
-}
 
 /// Service identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -502,7 +499,7 @@ mod tests {
     use super::*;
 
     fn dummy_token() -> CapabilityToken {
-        CapabilityToken { value: [1, 2, 3, 4] }
+        CapabilityToken::new([1, 2, 3, 4])
     }
 
     #[test]

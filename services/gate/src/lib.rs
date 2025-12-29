@@ -35,6 +35,9 @@ use alloc::vec::Vec;
 
 use spin::Mutex;
 
+// Import shared capability token
+pub use splax_cap::{CapabilityToken, Operations, Permission};
+
 /// Gateway identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GatewayId(pub u64);
@@ -43,33 +46,6 @@ impl GatewayId {
     pub const fn new(id: u64) -> Self {
         Self(id)
     }
-}
-
-/// Capability token placeholder.
-#[derive(Debug, Clone, Copy)]
-pub struct CapabilityToken {
-    value: [u64; 4],
-}
-
-impl CapabilityToken {
-    /// Check if token has a specific permission
-    pub fn has_permission(&self, _perm: Permission) -> bool {
-        // Non-zero token values indicate valid capabilities
-        self.value[0] != 0
-    }
-}
-
-/// Permission types for capability tokens
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Permission {
-    /// Permission to bind to network ports
-    NetworkBind,
-    /// Permission to create network connections
-    NetworkConnect,
-    /// Permission to access file system
-    FileAccess,
-    /// Permission to spawn processes
-    ProcessSpawn,
 }
 
 /// Gateway protocol.
@@ -433,7 +409,7 @@ mod tests {
     use super::*;
 
     fn dummy_token() -> CapabilityToken {
-        CapabilityToken { value: [1, 2, 3, 4] }
+        CapabilityToken::default()
     }
 
     #[test]

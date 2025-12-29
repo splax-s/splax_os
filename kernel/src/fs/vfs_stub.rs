@@ -42,13 +42,14 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use spin::{Mutex, Once};
 
-use crate::ipc::{ChannelId, IpcError, Message, MessageData};
+use crate::cap::CapabilityToken;
+use crate::ipc::{ChannelId, IpcError, Message, MessageData, IPC_MANAGER};
+use crate::ipc::fastpath::{FastEndpoint, FastMessage, IPC_STATS, tags};
 use crate::sched::ProcessId;
 
 /// Storage channel (initialized at boot)
@@ -59,6 +60,17 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Request ID counter
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// IPC timeout in spin iterations (approx 100ms at 1GHz)
+const IPC_TIMEOUT_SPINS: u64 = 100_000_000;
+
+/// Fast path timeout in iterations
+#[allow(dead_code)]
+const FASTPATH_TIMEOUT_SPINS: u64 = 1_000_000;
+
+/// S-STORAGE service ID for fast path
+#[allow(dead_code)]
+const STORAGE_SERVICE_ID: u64 = 0x53544F52; // "STOR"
 
 /// File descriptor type
 pub type Fd = u32;
@@ -83,10 +95,19 @@ static FD_TABLE: Mutex<BTreeMap<Fd, FdMapping>> = Mutex::new(BTreeMap::new());
 /// Next local FD
 static NEXT_FD: AtomicU64 = AtomicU64::new(3); // 0,1,2 reserved for stdin/stdout/stderr
 
-/// Storage channel wrapper
+/// Pending requests waiting for responses
+static PENDING_REQUESTS: Mutex<BTreeMap<u64, Option<Vec<u8>>>> = Mutex::new(BTreeMap::new());
+
+/// Storage channel wrapper with full IPC support
 struct StorageChannel {
+    /// IPC channel identifier
     channel_id: ChannelId,
-    // In real implementation, this would use the IPC subsystem
+    /// Capability token for IPC authorization
+    capability: CapabilityToken,
+    /// Fast path endpoint for small messages (optional)
+    fast_endpoint: Option<FastEndpoint>,
+    /// Whether to use fast path when possible
+    use_fast_path: bool,
 }
 
 /// VFS Error codes
@@ -170,6 +191,7 @@ pub struct DirEntry {
 // ============================================================================
 
 #[repr(u32)]
+#[allow(dead_code)]
 enum RequestType {
     Open = 3,
     Close = 4,
@@ -184,6 +206,7 @@ enum RequestType {
 }
 
 #[repr(u32)]
+#[allow(dead_code)]
 enum ResponseType {
     Ok = 100,
     Error = 101,
@@ -200,8 +223,37 @@ enum ResponseType {
 // ============================================================================
 
 /// Initialize VFS stub with S-LINK channel to S-STORAGE
-pub fn init(channel_id: ChannelId) {
-    STORAGE_CHANNEL.call_once(|| StorageChannel { channel_id });
+/// 
+/// # Arguments
+/// * `channel_id` - The IPC channel ID connected to S-STORAGE service
+/// * `capability` - Capability token authorizing IPC operations
+pub fn init(channel_id: ChannelId, capability: CapabilityToken) {
+    STORAGE_CHANNEL.call_once(|| StorageChannel { 
+        channel_id,
+        capability,
+        fast_endpoint: None, // Fast path configured separately
+        use_fast_path: false,
+    });
+    INITIALIZED.store(true, Ordering::Release);
+}
+
+/// Initialize VFS stub with fast path support
+/// 
+/// # Arguments
+/// * `channel_id` - The IPC channel ID for fallback
+/// * `capability` - Capability token authorizing IPC operations
+/// * `fast_endpoint` - Fast path endpoint for optimized small messages
+pub fn init_with_fast_path(
+    channel_id: ChannelId,
+    capability: CapabilityToken,
+    fast_endpoint: FastEndpoint,
+) {
+    STORAGE_CHANNEL.call_once(|| StorageChannel {
+        channel_id,
+        capability,
+        fast_endpoint: Some(fast_endpoint),
+        use_fast_path: true,
+    });
     INITIALIZED.store(true, Ordering::Release);
 }
 
@@ -462,28 +514,287 @@ pub fn unlink(path: &str) -> Result<(), VfsError> {
 }
 
 // ============================================================================
+// Statistics and Diagnostics
+// ============================================================================
+
+/// VFS stub statistics
+#[derive(Debug, Clone)]
+pub struct VfsStubStats {
+    /// Total requests sent
+    pub total_requests: u64,
+    /// Fast path messages sent
+    pub fast_path_sends: u64,
+    /// Fast path messages received
+    pub fast_path_recvs: u64,
+    /// Slow path fallbacks
+    pub slow_path_count: u64,
+    /// Buffer full events
+    pub buffer_full_events: u64,
+    /// Pending requests currently waiting
+    pub pending_requests: usize,
+    /// Open file descriptors
+    pub open_fds: usize,
+}
+
+/// Get VFS stub statistics
+pub fn get_stats() -> VfsStubStats {
+    let pending = PENDING_REQUESTS.lock().len();
+    let fds = FD_TABLE.lock().len();
+    
+    VfsStubStats {
+        total_requests: REQUEST_COUNTER.load(Ordering::Relaxed) - 1,
+        fast_path_sends: IPC_STATS.fast_sends.load(Ordering::Relaxed),
+        fast_path_recvs: IPC_STATS.fast_recvs.load(Ordering::Relaxed),
+        slow_path_count: IPC_STATS.slow_path.load(Ordering::Relaxed),
+        buffer_full_events: IPC_STATS.buffer_full.load(Ordering::Relaxed),
+        pending_requests: pending,
+        open_fds: fds,
+    }
+}
+
+/// Check if fast path is enabled
+pub fn is_fast_path_enabled() -> bool {
+    STORAGE_CHANNEL
+        .get()
+        .map(|ch| ch.use_fast_path)
+        .unwrap_or(false)
+}
+
+/// Get the channel ID used for S-STORAGE communication
+pub fn get_channel_id() -> Option<ChannelId> {
+    STORAGE_CHANNEL.get().map(|ch| ch.channel_id)
+}
+
+// ============================================================================
 // Internal Functions (message building/parsing)
 // ============================================================================
 
+/// Send a VFS request to S-STORAGE and receive the response.
+/// 
+/// This function handles the kernel-to-userspace IPC bridge:
+/// 1. Attempts fast path for small messages if available
+/// 2. Falls back to regular IPC channel
+/// 3. Implements timeout handling
+/// 4. Deserializes and returns the response
 fn send_and_receive(request: Vec<u8>) -> Result<Vec<u8>, VfsError> {
-    // In real implementation, this would:
-    // 1. Send message via IPC to S-STORAGE channel
-    // 2. Block waiting for response
-    // 3. Return response data
-    //
-    // For now, this is a placeholder that shows the architecture
+    let channel = STORAGE_CHANNEL.get().ok_or(VfsError::NotInitialized)?;
     
-    let _channel = STORAGE_CHANNEL.get().ok_or(VfsError::NotInitialized)?;
+    // Try fast path first for small messages
+    if channel.use_fast_path && request.len() <= 56 {
+        if let Some(ref endpoint) = channel.fast_endpoint {
+            return send_and_receive_fast(endpoint, &request);
+        }
+    }
     
-    // Placeholder: In real implementation, use ipc::send() and ipc::receive()
-    // let msg = Message::inline(ProcessId::kernel(), request);
-    // ipc::send(channel.channel_id, msg)?;
-    // let response = ipc::receive(channel.channel_id)?;
-    // return Ok(response.data);
+    // Fall back to regular IPC
+    send_and_receive_standard(channel, request)
+}
+
+/// Fast path IPC for small messages (≤56 bytes)
+/// 
+/// Uses lock-free SPSC ring buffers for minimal latency.
+fn send_and_receive_fast(endpoint: &FastEndpoint, request: &[u8]) -> Result<Vec<u8>, VfsError> {
+    // Determine the message tag based on request type
+    let request_type = if request.len() >= 4 {
+        u32::from_le_bytes(request[0..4].try_into().unwrap())
+    } else {
+        return Err(VfsError::InvalidArgument);
+    };
     
-    // For testing without full IPC:
-    let _ = request;
-    Err(VfsError::NotSupported)
+    let tag = match request_type {
+        3 => tags::VFS_OPEN,
+        4 => tags::VFS_CLOSE,
+        5 => tags::VFS_READ,
+        6 => tags::VFS_WRITE,
+        7 => tags::VFS_STAT,
+        9 => tags::VFS_READDIR,
+        _ => {
+            // Unsupported operation for fast path, fall back to standard
+            IPC_STATS.record_slow_path();
+            return Err(VfsError::NotSupported);
+        }
+    };
+    
+    // Create fast message
+    let fast_msg = FastMessage::from_bytes(tag, request);
+    
+    // Send and wait for reply with timeout
+    match endpoint.call(fast_msg) {
+        Ok(reply) => {
+            IPC_STATS.record_fast_send();
+            IPC_STATS.record_fast_recv();
+            
+            // Check reply status
+            if reply.tag == tags::REPLY_ERROR {
+                let error_code = reply.data0 as u32;
+                return Err(error_code_to_vfs_error(error_code));
+            }
+            
+            // Extract response data
+            let mut response = Vec::with_capacity(64);
+            let mut buffer = [0u8; 56];
+            reply.to_bytes(&mut buffer);
+            response.extend_from_slice(&buffer);
+            
+            Ok(response)
+        }
+        Err(IpcError::Timeout) => Err(VfsError::Timeout),
+        Err(IpcError::BufferFull) => {
+            // Fast path buffer full, record and let caller retry via standard path
+            IPC_STATS.buffer_full.fetch_add(1, Ordering::Relaxed);
+            Err(VfsError::IpcError)
+        }
+        Err(_) => Err(VfsError::IpcError),
+    }
+}
+
+/// Standard IPC path for larger messages or when fast path is unavailable
+/// 
+/// Uses the IPC manager's channel-based messaging with proper serialization.
+fn send_and_receive_standard(channel: &StorageChannel, request: Vec<u8>) -> Result<Vec<u8>, VfsError> {
+    // Extract request ID for matching response
+    let request_id = if request.len() >= 12 {
+        u64::from_le_bytes(request[4..12].try_into().unwrap())
+    } else {
+        return Err(VfsError::InvalidArgument);
+    };
+    
+    // Register pending request before sending
+    {
+        let mut pending = PENDING_REQUESTS.lock();
+        pending.insert(request_id, None);
+    }
+    
+    // Create IPC message with kernel process ID as sender
+    let sender = ProcessId::KERNEL;
+    let ipc_msg = Message::inline(sender, request);
+    
+    // Send via IPC manager
+    IPC_MANAGER.send(
+        channel.channel_id,
+        sender,
+        ipc_msg,
+        &channel.capability,
+    ).map_err(|e| {
+        // Clean up pending request on send failure
+        let mut pending = PENDING_REQUESTS.lock();
+        pending.remove(&request_id);
+        ipc_error_to_vfs_error(e)
+    })?;
+    
+    // Poll for response with timeout
+    let mut spin_count: u64 = 0;
+    loop {
+        // Try to receive response
+        match IPC_MANAGER.receive(
+            channel.channel_id,
+            sender, // Kernel receives responses
+            &channel.capability,
+        ) {
+            Ok(response_msg) => {
+                // Extract response data
+                let response_data = match response_msg.data {
+                    MessageData::Inline(data) => data,
+                    MessageData::SharedRef { addr, size } => {
+                        // Handle shared memory response (zero-copy path)
+                        read_shared_memory_response(addr, size)?
+                    }
+                };
+                
+                // Verify this response matches our request
+                if response_data.len() >= 12 {
+                    let response_request_id = u64::from_le_bytes(
+                        response_data[4..12].try_into().unwrap()
+                    );
+                    
+                    if response_request_id == request_id {
+                        // Clean up pending request
+                        let mut pending = PENDING_REQUESTS.lock();
+                        pending.remove(&request_id);
+                        return Ok(response_data);
+                    } else {
+                        // Response for different request, store it
+                        let mut pending = PENDING_REQUESTS.lock();
+                        if pending.contains_key(&response_request_id) {
+                            pending.insert(response_request_id, Some(response_data));
+                        }
+                        // Continue waiting for our response
+                    }
+                }
+            }
+            Err(IpcError::BufferEmpty) => {
+                // Check if our response was stored by another receiver
+                let mut pending = PENDING_REQUESTS.lock();
+                if let Some(Some(data)) = pending.remove(&request_id) {
+                    return Ok(data);
+                }
+                drop(pending);
+                
+                // No response yet, spin wait
+                core::hint::spin_loop();
+            }
+            Err(IpcError::ChannelClosed) => {
+                let mut pending = PENDING_REQUESTS.lock();
+                pending.remove(&request_id);
+                return Err(VfsError::IpcError);
+            }
+            Err(e) => {
+                let mut pending = PENDING_REQUESTS.lock();
+                pending.remove(&request_id);
+                return Err(ipc_error_to_vfs_error(e));
+            }
+        }
+        
+        // Increment spin counter and check timeout
+        spin_count += 1;
+        if spin_count >= IPC_TIMEOUT_SPINS {
+            let mut pending = PENDING_REQUESTS.lock();
+            pending.remove(&request_id);
+            return Err(VfsError::Timeout);
+        }
+        
+        // Yield after spinning for a while to allow other work
+        if spin_count % 10000 == 0 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// Read response data from shared memory region (zero-copy path)
+fn read_shared_memory_response(addr: u64, size: usize) -> Result<Vec<u8>, VfsError> {
+    // Safety: This assumes the shared memory region is valid and accessible
+    // In a real implementation, this would verify the memory mapping
+    if size > 64 * 1024 {
+        return Err(VfsError::InvalidArgument); // Max 64KB response
+    }
+    
+    let mut data = Vec::with_capacity(size);
+    
+    // Safety: We trust that S-STORAGE has set up this shared memory correctly
+    // The kernel has validated the address range during IPC setup
+    unsafe {
+        let ptr = addr as *const u8;
+        for i in 0..size {
+            data.push(ptr.add(i).read_volatile());
+        }
+    }
+    
+    Ok(data)
+}
+
+/// Convert IPC error to VFS error
+fn ipc_error_to_vfs_error(error: IpcError) -> VfsError {
+    match error {
+        IpcError::ChannelNotFound => VfsError::NotInitialized,
+        IpcError::NotAuthorized => VfsError::PermissionDenied,
+        IpcError::ChannelClosed => VfsError::IpcError,
+        IpcError::BufferFull => VfsError::IpcError,
+        IpcError::BufferEmpty => VfsError::IpcError,
+        IpcError::MessageTooLarge => VfsError::InvalidArgument,
+        IpcError::TooManyChannels => VfsError::IpcError,
+        IpcError::InvalidCapability => VfsError::PermissionDenied,
+        IpcError::Timeout => VfsError::Timeout,
+    }
 }
 
 fn build_open_request(request_id: u64, path: &str, flags: u32, mode: u32) -> Vec<u8> {

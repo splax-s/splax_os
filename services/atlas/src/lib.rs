@@ -41,6 +41,170 @@ use alloc::vec::Vec;
 
 use spin::Mutex;
 
+// Import shared capability token
+pub use splax_cap::{CapabilityToken, Operations, Permission};
+
+// ============================================================================
+// Time and Timestamp Support
+// ============================================================================
+
+/// Assumed CPU frequency for time conversions (1 GHz default).
+/// In a real system, this would be calibrated at boot time.
+const DEFAULT_CPU_FREQ_HZ: u64 = 1_000_000_000;
+
+/// Cached CPU frequency (cycles per second).
+/// Should be calibrated during boot using a known time source (e.g., PIT, HPET, or ACPI PM timer).
+static CPU_FREQ_HZ: spin::Lazy<u64> = spin::Lazy::new(|| DEFAULT_CPU_FREQ_HZ);
+
+/// Reads the CPU's cycle counter (TSC on x86_64, CNTVCT_EL0 on aarch64).
+///
+/// # Returns
+///
+/// The current cycle count since CPU reset.
+#[inline]
+pub fn read_cycle_counter() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Use RDTSC instruction to read Time Stamp Counter
+        // RDTSC returns a 64-bit value split across EDX:EAX
+        let low: u32;
+        let high: u32;
+        unsafe {
+            core::arch::asm!(
+                "rdtsc",
+                out("eax") low,
+                out("edx") high,
+                options(nostack, nomem, preserves_flags)
+            );
+        }
+        ((high as u64) << 32) | (low as u64)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // Read the virtual count register (CNTVCT_EL0)
+        // This is a 64-bit counter that increments at a fixed frequency
+        let count: u64;
+        unsafe {
+            core::arch::asm!(
+                "mrs {}, cntvct_el0",
+                out(reg) count,
+                options(nostack, nomem, preserves_flags)
+            );
+        }
+        count
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    {
+        // Read the cycle counter CSR (mcycle or rdcycle)
+        let count: u64;
+        unsafe {
+            core::arch::asm!(
+                "rdcycle {}",
+                out(reg) count,
+                options(nostack, nomem, preserves_flags)
+            );
+        }
+        count
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
+    {
+        // Fallback for unsupported architectures (e.g., during testing)
+        0
+    }
+}
+
+/// Gets the counter frequency for aarch64 (CNTFRQ_EL0).
+///
+/// On aarch64, the counter frequency is stored in a system register.
+/// On other architectures, returns the default CPU frequency.
+#[inline]
+pub fn get_counter_frequency() -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let freq: u64;
+        unsafe {
+            core::arch::asm!(
+                "mrs {}, cntfrq_el0",
+                out(reg) freq,
+                options(nostack, nomem, preserves_flags)
+            );
+        }
+        if freq == 0 {
+            DEFAULT_CPU_FREQ_HZ
+        } else {
+            freq
+        }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        *CPU_FREQ_HZ
+    }
+}
+
+/// Gets the current monotonic time in nanoseconds since boot.
+///
+/// This provides a consistent time source that can be used throughout
+/// the service for timing operations, timeouts, and performance measurements.
+///
+/// # Returns
+///
+/// Nanoseconds elapsed since system boot (or CPU reset).
+///
+/// # Note
+///
+/// The accuracy depends on the CPU frequency calibration. For precise
+/// timing, the system should calibrate against a known time source during boot.
+#[inline]
+pub fn get_monotonic_time() -> u64 {
+    let cycles = read_cycle_counter();
+    let freq = get_counter_frequency();
+
+    // Convert cycles to nanoseconds: (cycles * 1_000_000_000) / freq
+    // Use 128-bit arithmetic to avoid overflow
+    let nanos_per_second: u64 = 1_000_000_000;
+
+    // Split the calculation to avoid overflow:
+    // cycles / freq gives seconds, (cycles % freq) * nanos / freq gives remainder
+    let seconds = cycles / freq;
+    let remainder_cycles = cycles % freq;
+
+    // For the remainder, we can safely multiply by nanos_per_second
+    // since remainder_cycles < freq
+    let remainder_nanos = (remainder_cycles as u128 * nanos_per_second as u128 / freq as u128) as u64;
+
+    seconds.saturating_mul(nanos_per_second).saturating_add(remainder_nanos)
+}
+
+/// Gets the current monotonic time in milliseconds since boot.
+///
+/// This is a convenience function for operations that don't need
+/// nanosecond precision.
+///
+/// # Returns
+///
+/// Milliseconds elapsed since system boot.
+#[inline]
+pub fn get_monotonic_time_ms() -> u64 {
+    get_monotonic_time() / 1_000_000
+}
+
+/// Gets the raw cycle count for high-precision timing.
+///
+/// Use this when you need the highest precision timing and will
+/// handle the frequency conversion yourself.
+///
+/// # Returns
+///
+/// Raw CPU cycle count.
+#[inline]
+pub fn get_timestamp() -> u64 {
+    read_cycle_counter()
+}
+
 /// Service identifier - unique within the system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ServiceId(pub u64);
@@ -51,13 +215,7 @@ impl ServiceId {
     }
 }
 
-/// Capability token placeholder (would import from kernel in real impl).
-#[derive(Debug, Clone, Copy)]
-pub struct CapabilityToken {
-    value: [u64; 4],
-}
-
-/// Process ID placeholder.
+/// Process ID (imported from kernel in real implementation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessId(pub u64);
 
@@ -191,8 +349,8 @@ impl Atlas {
         let id = ServiceId::new(*next_id);
         *next_id += 1;
 
-        // Get current timestamp (placeholder)
-        let now = 0u64; // Would use arch::read_cycle_counter()
+        // Get current timestamp using architecture-specific cycle counter
+        let now = get_timestamp();
 
         let entry = ServiceEntry {
             id,
@@ -289,7 +447,7 @@ impl Atlas {
             .get_mut(&service_id)
             .ok_or(AtlasError::ServiceNotFound)?;
 
-        let now = 0u64; // Would use arch::read_cycle_counter()
+        let now = get_timestamp();
         entry.last_heartbeat = now;
         entry.status = ServiceStatus::Healthy;
 
@@ -348,7 +506,7 @@ impl Atlas {
             return;
         }
 
-        let now = 0u64; // Would use arch::read_cycle_counter()
+        let now = get_timestamp();
         let threshold = self.config.heartbeat_interval * self.config.unhealthy_threshold as u64;
 
         let mut services = self.services.lock();
@@ -396,7 +554,7 @@ mod tests {
     use super::*;
 
     fn dummy_token() -> CapabilityToken {
-        CapabilityToken { value: [1, 2, 3, 4] }
+        CapabilityToken::default()
     }
 
     #[test]

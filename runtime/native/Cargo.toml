@@ -8,6 +8,7 @@ description = "S-NATIVE: Native code sandbox for Splax OS"
 [dependencies]
 spin = { workspace = true }
 log = { workspace = true }
+splax_cap = { path = "../../services/cap" }
 
 [features]
 default = []

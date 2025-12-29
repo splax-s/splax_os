@@ -638,10 +638,10 @@ impl Icmpv6Packet {
         pseudo.extend_from_slice(&(icmp_len as u32).to_be_bytes());
         pseudo.extend_from_slice(&[0, 0, 0, PROTOCOL_ICMPV6]);
         
-        // Add ICMPv6 message (with checksum = 0)
+        // Add ICMPv6 message (with checksum = 0 for calculation per RFC 1071)
         pseudo.push(self.msg_type);
         pseudo.push(self.code);
-        pseudo.extend_from_slice(&[0, 0]); // Checksum placeholder
+        pseudo.extend_from_slice(&[0, 0]); // Checksum field zeroed for calculation
         pseudo.extend_from_slice(&self.body);
         
         // Pad to even length

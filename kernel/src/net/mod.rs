@@ -141,6 +141,11 @@ impl NetworkInterface {
         }
     }
 
+    /// Gets the underlying network device for direct access.
+    pub fn get_device(&self) -> &Arc<Mutex<dyn NetworkDevice + Send>> {
+        &self.device
+    }
+
     /// Sends an Ethernet frame.
     pub fn send_ethernet(&self, frame: &EthernetFrame) -> Result<(), NetworkError> {
         let bytes = frame.to_bytes();
@@ -1030,7 +1035,7 @@ pub fn traceroute(target: Ipv4Address, max_hops: u8) -> Result<Vec<TracerouteHop
                 ip_bytes.extend_from_slice(&[0x40, 0x00]); // Flags + Fragment
                 ip_bytes.push(ttl); // TTL
                 ip_bytes.push(ip::PROTOCOL_ICMP);
-                ip_bytes.extend_from_slice(&[0x00, 0x00]); // Checksum placeholder
+                ip_bytes.extend_from_slice(&[0x00, 0x00]); // Checksum field (zeroed for calculation per RFC 1071)
                 ip_bytes.extend_from_slice(interface.config.ipv4_addr.as_bytes());
                 ip_bytes.extend_from_slice(target.as_bytes());
                 ip_bytes.extend(icmp_packet.to_bytes());

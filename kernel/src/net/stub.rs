@@ -115,11 +115,30 @@ impl NetStub {
 
     /// Connect to the S-NET service
     pub fn connect(&mut self) -> Result<(), NetStubError> {
-        // Request channel to S-NET service from S-INIT
-        // In real implementation, this would use service discovery
+        use crate::ipc::{IPC_MANAGER, ChannelId, Message, MessageData};
+        use crate::sched::ProcessId;
         
-        // For now, placeholder - service discovery would happen here
-        // let channel = s_atlas::discover("s-net", discovery_token)?;
+        // Create a discovery capability token for S-NET service lookup
+        let discovery_token = CapabilityToken::new([SNET_SERVICE_ID as u32, 0, 0, 0]);
+        
+        // Create IPC channel to S-NET service
+        // Kernel process (PID 0) connects to S-NET service (PID is SNET_SERVICE_ID)
+        let kernel_pid = ProcessId::new(0);
+        let snet_pid = ProcessId::new(SNET_SERVICE_ID);
+        
+        let channel_id = IPC_MANAGER
+            .create_channel(kernel_pid, snet_pid, &discovery_token)
+            .map_err(|_| NetStubError::ServiceUnavailable)?;
+        
+        // Store channel for future communication
+        self.channel = Some(Channel {
+            id: channel_id,
+            sender: kernel_pid,
+            receiver: snet_pid,
+        });
+        
+        // Store capability token
+        self.capability = Some(discovery_token);
         
         Ok(())
     }
@@ -356,21 +375,88 @@ impl NetStub {
     }
 
     /// Send message and wait for response
-    fn send_receive(&mut self, _msg: &NetMessage) -> Result<NetMessage, NetStubError> {
-        // In real implementation:
-        // 1. Serialize message to IPC buffer
-        // 2. Send via S-LINK channel
-        // 3. Block waiting for response
-        // 4. Deserialize response
+    fn send_receive(&mut self, msg: &NetMessage) -> Result<NetMessage, NetStubError> {
+        use crate::ipc::{IPC_MANAGER, Message, MessageData};
         
-        // Placeholder for now - would use actual IPC
+        // Get channel and capability
         let channel = self.channel.as_ref()
             .ok_or(NetStubError::ServiceUnavailable)?;
+        let cap_token = self.capability.as_ref()
+            .ok_or(NetStubError::ServiceUnavailable)?;
         
-        // channel.send(msg)?;
-        // let response = channel.receive()?;
+        // Serialize NetMessage to bytes for IPC
+        let mut ipc_data = alloc::vec::Vec::with_capacity(1036);
+        ipc_data.extend_from_slice(&(msg.msg_type as u32).to_le_bytes());
+        ipc_data.extend_from_slice(&msg.sequence.to_le_bytes());
+        ipc_data.extend_from_slice(&msg.payload_len.to_le_bytes());
+        ipc_data.extend_from_slice(&msg.payload[..msg.payload_len as usize]);
         
-        Ok(NetMessage::default())
+        // Create and send IPC message
+        let ipc_msg = Message::inline(channel.sender, ipc_data);
+        IPC_MANAGER
+            .send(channel.id, channel.sender, ipc_msg, cap_token)
+            .map_err(|e| match e {
+                crate::ipc::IpcError::Timeout => NetStubError::Timeout,
+                crate::ipc::IpcError::ChannelClosed => NetStubError::ServiceUnavailable,
+                _ => NetStubError::IpcError,
+            })?;
+        
+        // Wait for response with retry loop
+        let mut retries = 0;
+        const MAX_RETRIES: u32 = 10000;
+        
+        loop {
+            match IPC_MANAGER.receive(channel.id, channel.receiver, cap_token) {
+                Ok(response_msg) => {
+                    // Deserialize response NetMessage from IPC data
+                    let mut response = NetMessage::default();
+                    
+                    if let MessageData::Inline(data) = response_msg.data {
+                        if data.len() >= 12 {
+                            let msg_type_raw = u32::from_le_bytes(
+                                data[0..4].try_into().unwrap()
+                            );
+                            response.msg_type = match msg_type_raw {
+                                0x8000 => NetMessageType::Success,
+                                0x8001 => NetMessageType::Error,
+                                _ => NetMessageType::Success,
+                            };
+                            response.sequence = u32::from_le_bytes(
+                                data[4..8].try_into().unwrap()
+                            );
+                            response.payload_len = u32::from_le_bytes(
+                                data[8..12].try_into().unwrap()
+                            );
+                            
+                            let payload_len = (response.payload_len as usize).min(1024);
+                            if data.len() >= 12 + payload_len {
+                                response.payload[..payload_len]
+                                    .copy_from_slice(&data[12..12 + payload_len]);
+                            }
+                        }
+                    }
+                    
+                    return Ok(response);
+                }
+                Err(crate::ipc::IpcError::BufferEmpty) => {
+                    // No message yet, spin and retry
+                    retries += 1;
+                    if retries >= MAX_RETRIES {
+                        return Err(NetStubError::Timeout);
+                    }
+                    core::hint::spin_loop();
+                }
+                Err(crate::ipc::IpcError::Timeout) => {
+                    return Err(NetStubError::Timeout);
+                }
+                Err(crate::ipc::IpcError::ChannelClosed) => {
+                    return Err(NetStubError::ServiceUnavailable);
+                }
+                Err(_) => {
+                    return Err(NetStubError::IpcError);
+                }
+            }
+        }
     }
 }
 
