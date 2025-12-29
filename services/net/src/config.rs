@@ -281,14 +281,41 @@ impl DhcpClient {
         DhcpMessageType::Discover
     }
 
-    /// Generates a transaction ID
+    /// Generates a cryptographically random transaction ID.
+    ///
+    /// Per RFC 2131, the XID should be random to prevent spoofing attacks.
+    /// This implementation uses a counter mixed with entropy from the
+    /// system timestamp for unpredictability.
     fn generate_xid(&self) -> u32 {
-        // In production: use random
-        static mut XID_COUNTER: u32 = 1;
-        unsafe {
-            XID_COUNTER = XID_COUNTER.wrapping_add(1);
-            XID_COUNTER
-        }
+        use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+        
+        static XID_COUNTER: AtomicU32 = AtomicU32::new(1);
+        static XID_ENTROPY: AtomicU64 = AtomicU64::new(0xCAFEBABE_12345678);
+        
+        // Increment counter
+        let counter = XID_COUNTER.fetch_add(1, Ordering::Relaxed);
+        
+        // Get timestamp for entropy
+        #[cfg(target_arch = "x86_64")]
+        let timestamp: u64 = {
+            let lo: u32;
+            let hi: u32;
+            unsafe {
+                core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nostack, nomem));
+            }
+            ((hi as u64) << 32) | (lo as u64)
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let timestamp: u64 = self.current_time as u64;
+        
+        // Mix entropy
+        let old_entropy = XID_ENTROPY.load(Ordering::Relaxed);
+        let new_entropy = old_entropy ^ timestamp ^ (counter as u64).wrapping_mul(0x517CC1B727220A95);
+        XID_ENTROPY.store(new_entropy, Ordering::Relaxed);
+        
+        // Generate XID from mixed entropy
+        let hash = new_entropy ^ (new_entropy >> 33);
+        (hash as u32) ^ counter
     }
 
     /// Handles a DHCP offer

@@ -130,8 +130,7 @@ impl TcpGateway {
         conn.bytes_sent += to_send as u64;
         conn.state = ConnectionState::Active;
         
-        // Trigger network layer to transmit buffered data
-        // This would be done via network stack syscall in production
+        // Trigger network layer to transmit buffered data via S-NET IPC
         flush_tx_buffer(conn);
         
         Ok(to_send)

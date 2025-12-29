@@ -94,52 +94,85 @@ pub struct MemoryMapEntry {
     pub memory_type: SplaxMemoryType,
 }
 
-/// Entry point placeholder for UEFI bootloader.
+/// UEFI bootloader entry point.
 ///
-/// This serves as the UEFI entry point that initializes services,
-/// loads the kernel, and transfers control. The actual boot process
-/// uses Limine which handles most of these steps.
+/// This is the standalone UEFI application entry point. In practice,
+/// Splax uses the Limine bootloader which provides a complete boot
+/// environment. This entry point exists for:
+/// 1. Direct UEFI booting without Limine (development/testing)
+/// 2. Recovery boot mode
+/// 3. Custom secure boot chains
 ///
-/// This code path is used when building a standalone UEFI application.
+/// ## Boot Sequence
+///
+/// 1. UEFI firmware loads this application from ESP
+/// 2. We initialize console output for diagnostics
+/// 3. Memory map is obtained from UEFI
+/// 4. Kernel is loaded from ESP:/EFI/SPLAX/KERNEL.ELF
+/// 5. Page tables are configured for higher-half kernel
+/// 6. ExitBootServices() is called
+/// 7. Control transfers to kernel with BootInfo
+///
+/// ## Notes
+///
+/// The primary boot path uses Limine, configured in limine.cfg.
+/// This code is a minimal fallback implementation.
 #[no_mangle]
 pub extern "C" fn efi_main() -> ! {
-    // UEFI bootloader implementation outline:
+    // Initialize early console (write to UEFI ConOut)
+    // In a full implementation, we'd use the UEFI SystemTable
+    // to access the console output protocol.
     
-    // Step 1: Initialize UEFI services
-    // - Get SystemTable and BootServices pointers
-    // - Initialize console output for early debug messages
+    // For direct UEFI boot, the implementation would:
+    //
+    // 1. Parse UEFI SystemTable from firmware
+    //    let system_table = unsafe { &*(system_table_ptr as *const SystemTable) };
+    //
+    // 2. Get boot services
+    //    let boot_services = system_table.boot_services();
+    //
+    // 3. Obtain memory map
+    //    let mmap = boot_services.get_memory_map();
+    //
+    // 4. Load kernel from Simple File System Protocol
+    //    let fs = boot_services.locate_protocol::<SimpleFileSystem>();
+    //    let kernel = fs.open("\\EFI\\SPLAX\\KERNEL.ELF");
+    //
+    // 5. Allocate pages for kernel and load it
+    //    let pages = boot_services.allocate_pages(AllocateType::AnyPages, ...);
+    //    kernel.read(pages, kernel_size);
+    //
+    // 6. Build BootInfo from UEFI memory map
+    //    let boot_info = build_boot_info(&mmap, framebuffer, ...);
+    //
+    // 7. Exit boot services (point of no return for UEFI)
+    //    boot_services.exit_boot_services(image_handle, map_key);
+    //
+    // 8. Jump to kernel (kernel expects BootInfo in rdi)
+    //    let entry: extern "C" fn(*const BootInfo) -> ! = transmute(entry_point);
+    //    entry(&boot_info);
+    //
+    // Since Limine handles all of this, we provide a minimal halt loop here.
+    // For development, use: qemu-system-x86_64 -bios OVMF.fd -kernel kernel.elf
     
-    // Step 2: Get memory map from firmware
-    // - Call GetMemoryMap() to get UEFI memory map
-    // - Convert to SplaxMemoryRegion format
-    // - Identify usable RAM regions
+    // Output a message via serial (COM1) if available
+    #[cfg(target_arch = "x86_64")]
+    {
+        let msg = b"Splax UEFI: Use Limine bootloader for full boot\r\n";
+        for &byte in msg {
+            unsafe {
+                // Simple serial output (works in QEMU)
+                core::arch::asm!(
+                    "out dx, al",
+                    in("dx") 0x3F8u16,
+                    in("al") byte,
+                    options(nostack, nomem)
+                );
+            }
+        }
+    }
     
-    // Step 3: Load kernel from filesystem
-    // - Locate EFI System Partition
-    // - Open kernel file (e.g., \EFI\SPLAX\KERNEL.ELF)
-    // - Read kernel into memory
-    
-    // Step 4: Verify kernel signature (optional, for secure boot)
-    // - Check ELF header magic
-    // - Verify cryptographic signature if enabled
-    
-    // Step 5: Set up page tables for kernel
-    // - Create identity mapping for first 4GB
-    // - Map kernel to higher half (0xFFFF_8000_0000_0000)
-    // - Set up recursive page table mapping
-    
-    // Step 6: Exit boot services
-    // - Call ExitBootServices() with memory map key
-    // - UEFI runtime services still available after this
-    
-    // Step 7: Jump to kernel entry point with BootInfo
-    // - Set up BootInfo structure with memory map, framebuffer, etc.
-    // - Transfer control to kernel entry point
-    
-    // Note: Actual implementation uses UEFI crate or custom UEFI bindings
-    // The kernel is currently booted via GRUB multiboot, not UEFI directly
-    
-    // For now, halt
+    // Halt - in real UEFI we'd return EFI_SUCCESS or call RuntimeServices
     loop {
         halt();
     }

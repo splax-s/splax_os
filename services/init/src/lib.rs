@@ -1007,13 +1007,41 @@ pub fn init_main() -> ! {
     // Boot microkernel services first
     match boot_microkernel() {
         Ok(summary) => {
-            // Log boot summary
-            // In production: serial_println!("Boot complete: {}/{} services", ...);
+            // Log boot summary via serial console
+            #[cfg(target_arch = "x86_64")]
+            {
+                // Write boot summary to serial port (COM1 at 0x3F8)
+                let msg = b"[init] Microkernel boot complete\r\n";
+                for &byte in msg {
+                    unsafe {
+                        // Wait for transmit buffer empty
+                        while (core::ptr::read_volatile(0x3FD as *const u8) & 0x20) == 0 {}
+                        core::ptr::write_volatile(0x3F8 as *mut u8, byte);
+                    }
+                }
+            }
             let _ = summary;
         }
         Err(_e) => {
-            // Critical failure - cannot continue
-            // In production: trigger kernel panic or recovery mode
+            // Critical failure - trigger kernel panic via debug port
+            #[cfg(target_arch = "x86_64")]
+            unsafe {
+                // Write panic message to serial
+                let msg = b"[init] CRITICAL: Microkernel boot failed!\r\n";
+                for &byte in msg {
+                    while (core::ptr::read_volatile(0x3FD as *const u8) & 0x20) == 0 {}
+                    core::ptr::write_volatile(0x3F8 as *mut u8, byte);
+                }
+                // Write to QEMU debug exit port to signal failure
+                core::arch::asm!("out dx, al", in("dx") 0xf4u16, in("al") 1u8);
+            }
+            // Halt on non-x86 or if debug exit doesn't work
+            loop {
+                #[cfg(target_arch = "x86_64")]
+                unsafe { core::arch::asm!("hlt"); }
+                #[cfg(target_arch = "aarch64")]
+                unsafe { core::arch::asm!("wfe"); }
+            }
         }
     }
     

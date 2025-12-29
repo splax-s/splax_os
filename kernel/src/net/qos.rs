@@ -593,9 +593,38 @@ impl HtbQdisc {
         self.default_class = class_id;
     }
 
-    fn find_class_for_packet(&self, _packet: &QueuedPacket) -> u32 {
-        // Simple: use default class
-        // In production, would use classifiers
+    /// Finds the appropriate traffic class for a packet using classifiers.
+    ///
+    /// Classification is based on the PacketPriority enum which maps to 
+    /// traffic classes. PacketPriority follows 802.1p/DiffServ conventions:
+    /// - 0: Background (bulk)
+    /// - 1: Best Effort (default)
+    /// - 2: Excellent Effort (video streaming)
+    /// - 3: Critical (VoIP signaling)
+    /// - 4: Video
+    /// - 5: Voice (highest user priority)
+    /// - 6: Internetwork Control
+    /// - 7: Network Control (routing protocols)
+    fn find_class_for_packet(&self, packet: &QueuedPacket) -> u32 {
+        // Map PacketPriority to traffic class
+        // We attempt to match higher priority packets to specific classes
+        let class_for_priority = match packet.info.priority {
+            PacketPriority::NetworkControl | PacketPriority::InternetControl => 1,
+            PacketPriority::Voice => 2,
+            PacketPriority::Video => 3,
+            PacketPriority::Critical => 4,
+            PacketPriority::ExcellentEffort => 5,
+            PacketPriority::BestEffort | PacketPriority::Background => 0,
+        };
+        
+        // If we found a priority-based class that exists, use it
+        if class_for_priority > 0 {
+            if self.classes.contains_key(&class_for_priority) {
+                return class_for_priority;
+            }
+        }
+        
+        // Fall back to default class
         self.default_class
     }
 }
