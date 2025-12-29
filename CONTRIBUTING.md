@@ -71,8 +71,16 @@ We recommend VS Code with these extensions:
 ### Building for Different Architectures
 
 ```bash
-# x86_64 (default)
+# x86_64 (default - microkernel mode)
 ./scripts/splax build
+
+# x86_64 with all monolithic drivers (for testing hardware)
+cargo build -p splax_kernel --bin splax_kernel --release \
+    --target x86_64-unknown-none \
+    --no-default-features \
+    --features "monolithic_net,monolithic_usb,monolithic_sound,monolithic_gpu,monolithic_fs" \
+    -Zbuild-std=core,alloc \
+    -Zbuild-std-features=compiler-builtins-mem
 
 # aarch64
 cargo build -p splax_kernel --bin splax_kernel_aarch64 --release \
@@ -85,6 +93,77 @@ cargo build -p splax_kernel --bin splax_kernel_riscv64 --release \
     --target riscv64gc-unknown-none-elf \
     -Zbuild-std=core,alloc \
     -Zbuild-std-features=compiler-builtins-mem
+```
+
+### Running in QEMU
+
+```bash
+# Basic run (microkernel mode)
+qemu-system-x86_64 -cdrom target/splax.iso -m 256M -serial stdio -no-reboot
+
+# With E1000 network adapter
+qemu-system-x86_64 -cdrom target/splax.iso -m 512M -serial stdio -no-reboot \
+    -device e1000,netdev=net0 -netdev user,id=net0
+
+# With VirtIO devices (network + block)
+qemu-system-x86_64 -cdrom target/splax.iso -m 512M -serial stdio -no-reboot \
+    -device virtio-net-pci,netdev=net0 -netdev user,id=net0 \
+    -drive file=disk.img,if=virtio,format=raw
+
+# Full hardware emulation (all drivers)
+qemu-system-x86_64 -cdrom target/splax.iso -m 1G -serial stdio -no-reboot \
+    -device e1000,netdev=net0 -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+    -device virtio-blk-pci,drive=hd0 -drive file=disk.img,id=hd0,if=none,format=raw \
+    -device intel-hda -device hda-duplex \
+    -device usb-ehci -device usb-kbd -device usb-mouse \
+    -device qemu-xhci -device usb-storage,drive=usb0 \
+    -drive file=usb.img,id=usb0,if=none,format=raw \
+    -device VGA \
+    -enable-kvm
+
+# NVMe storage
+qemu-system-x86_64 -cdrom target/splax.iso -m 512M -serial stdio -no-reboot \
+    -device nvme,drive=nvme0,serial=deadbeef \
+    -drive file=nvme.img,id=nvme0,if=none,format=raw
+
+# AHCI/SATA storage
+qemu-system-x86_64 -cdrom target/splax.iso -m 512M -serial stdio -no-reboot \
+    -device ahci,id=ahci \
+    -device ide-hd,drive=sata0,bus=ahci.0 \
+    -drive file=sata.img,id=sata0,if=none,format=raw
+
+# With sound (AC97)
+qemu-system-x86_64 -cdrom target/splax.iso -m 512M -serial stdio -no-reboot \
+    -device AC97
+
+# With sound (Intel HDA)
+qemu-system-x86_64 -cdrom target/splax.iso -m 512M -serial stdio -no-reboot \
+    -device intel-hda -device hda-duplex
+
+# aarch64 in QEMU
+qemu-system-aarch64 -M virt -cpu cortex-a72 -m 512M \
+    -kernel target/aarch64-unknown-none/release/splax_kernel_aarch64 \
+    -nographic
+
+# RISC-V in QEMU
+qemu-system-riscv64 -M virt -m 512M -bios default \
+    -kernel target/riscv64gc-unknown-none-elf/release/splax_kernel_riscv64 \
+    -nographic
+```
+
+### Creating Disk Images for Testing
+
+```bash
+# Create a blank disk image (100MB)
+qemu-img create -f raw disk.img 100M
+
+# Create a FAT32 formatted disk (for FAT32 driver testing)
+dd if=/dev/zero of=fat32.img bs=1M count=100
+mkfs.vfat -F 32 fat32.img
+
+# Create an ext4 formatted disk (for ext4 driver testing)
+dd if=/dev/zero of=ext4.img bs=1M count=100
+mkfs.ext4 ext4.img
 ```
 
 ## How to Contribute
