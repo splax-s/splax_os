@@ -33,6 +33,8 @@
 
 extern crate alloc;
 
+pub mod dynlink;
+
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -41,6 +43,7 @@ use spin::Mutex;
 
 // Import shared capability token
 pub use splax_cap::{CapabilityToken, Operations, Permission};
+pub use dynlink::{DynamicLinker, LoadedLibrary, LibraryHandle, LinkError};
 
 /// Native process identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

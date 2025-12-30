@@ -50,6 +50,7 @@
 extern crate alloc;
 
 pub mod wasi;
+pub mod jit;
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;

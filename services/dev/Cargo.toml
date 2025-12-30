@@ -10,3 +10,4 @@ license = "MIT"
 crate-type = ["rlib"]
 
 [dependencies]
+libm = "0.2"

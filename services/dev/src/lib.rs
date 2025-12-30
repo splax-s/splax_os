@@ -70,6 +70,7 @@ pub mod usb;
 pub mod sound;
 pub mod input;
 pub mod irq;
+pub mod touchpad;
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;

@@ -85,22 +85,22 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 
 ### WASM Runtime
 - [x] Basic WASM interpreter
-- [ ] WASI implementation
-- [ ] JIT compilation
+- [x] WASI implementation
+- [x] JIT compilation
 - [ ] Ahead-of-time compilation
-- [ ] Capability-based WASM permissions
+- [x] Capability-based WASM permissions
 
 ### Native Runtime
 - [x] ELF loader
-- [ ] Dynamic linking
-- [ ] Shared libraries
-- [ ] Native sandbox
+- [x] Dynamic linking
+- [x] Shared libraries
+- [x] Native sandbox
 
 ### Shell & Tools
 - [x] Serial console shell
 - [ ] Full terminal emulator (S-TERM)
 - [ ] Code editor (S-CODE)
-- [ ] Package manager
+- [x] Package manager (S-PKG)
 
 ---
 
@@ -116,21 +116,21 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 ### Audio
 - [x] Intel HDA driver
 - [x] AC97 driver
-- [ ] Audio mixing
+- [x] Audio mixing
 - [ ] Low-latency audio
 
 ### USB
 - [x] xHCI (USB 3.0) controller
 - [x] USB HID (keyboard/mouse)
-- [ ] USB mass storage
+- [x] USB mass storage
 - [ ] USB audio
 - [ ] USB video
 
 ### Input
 - [x] PS/2 keyboard
 - [x] PS/2 mouse
-- [ ] Touchpad support
-- [ ] Multi-touch support
+- [x] Touchpad support
+- [x] Multi-touch support
 
 ---
 
@@ -145,15 +145,15 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 ### Isolation
 - [ ] Memory tagging (aarch64 MTE)
 - [ ] Control flow integrity
-- [ ] Stack canaries
-- [ ] ASLR
+- [x] Stack canaries
+- [x] ASLR
 
 ### Cryptography
 - [x] Random number generation
 - [x] Hash functions (SHA-256, SHA-3)
 - [x] Symmetric encryption (AES-GCM, ChaCha20-Poly1305)
-- [ ] Asymmetric cryptography
-- [ ] TLS support
+- [x] Asymmetric cryptography (Ed25519)
+- [x] TLS support
 - [ ] Secure key storage
 
 ---
@@ -161,10 +161,10 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 ## Phase 7: Cloud Native (Q4 2025)
 
 ### Container Support
-- [ ] OCI-compatible runtime
-- [ ] Capability-based container isolation
-- [ ] Container networking
-- [ ] Container storage
+- [x] OCI-compatible runtime
+- [x] Capability-based container isolation
+- [x] Container networking
+- [x] Container storage
 
 ### Orchestration
 - [ ] Kubernetes node support
@@ -173,10 +173,10 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 - [ ] Load balancing
 
 ### Observability
-- [ ] Metrics collection
-- [ ] Distributed tracing
-- [ ] Log aggregation
-- [ ] Health checks
+- [x] Metrics collection
+- [x] Distributed tracing
+- [x] Log aggregation
+- [x] Health checks
 
 ---
 

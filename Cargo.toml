@@ -12,6 +12,7 @@ members = [
     "services/gate",
     "services/net",
     "services/storage",
+    "services/pkg",
     "runtime/wave",
     "runtime/native",
     "tools/term",
