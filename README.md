@@ -9,10 +9,16 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/splax-s/splax_os/actions"><img src="https://github.com/splax-s/splax_os/actions/workflows/ci.yml/badge.svg" alt="Build Status"></a>
-  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
-  <a href="LICENSE-APACHE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache 2.0 License"></a>
-  <a href="https://github.com/splax-s/splax_os/stargazers"><img src="https://img.shields.io/github/stars/splax-s/splax_os?style=social" alt="GitHub Stars"></a>
+  <a href="https://github.com/splax-s/splax_os/actions/workflows/ci.yml"><img src="https://github.com/splax-s/splax_os/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/splax-s/splax_os/releases"><img src="https://img.shields.io/github/v/release/splax-s/splax_os?include_prereleases&label=release" alt="Release"></a>
+  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg" alt="License"></a>
+  <a href="https://github.com/splax-s/splax_os/stargazers"><img src="https://img.shields.io/github/stars/splax-s/splax_os?style=social" alt="Stars"></a>
+</p>
+
+<p align="center">
+  <a href="ROADMAP.md"><img src="https://img.shields.io/badge/roadmap-view-brightgreen.svg" alt="Roadmap"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-view-blue.svg" alt="Changelog"></a>
+  <a href="security.md"><img src="https://img.shields.io/badge/security-policy-red.svg" alt="Security"></a>
   <a href="https://github.com/sponsors/splax-s"><img src="https://img.shields.io/badge/sponsor-❤-ea4aaa.svg" alt="Sponsor"></a>
 </p>
 
@@ -20,7 +26,8 @@
   <a href="#quick-start">Quick Start</a> •
   <a href="#architecture">Architecture</a> •
   <a href="CONTRIBUTING.md">Contributing</a> •
-  <a href="docs/">Documentation</a> •
+  <a href="ROADMAP.md">Roadmap</a> •
+  <a href="docs/">Docs</a> •
   <a href="https://github.com/sponsors/splax-s">Sponsor</a>
 </p>
 

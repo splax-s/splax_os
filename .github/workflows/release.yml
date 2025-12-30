@@ -5,16 +5,31 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-release:
-    name: Build Release
+  # ============================================================================
+  # Build Release Artifacts
+  # ============================================================================
+
+  build-kernel:
+    name: Build Kernel (${{ matrix.target }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        target: [x86_64, aarch64]
+        include:
+          - target: x86_64-unknown-none
+            artifact: splax-kernel-x86_64
+          - target: aarch64-unknown-none
+            artifact: splax-kernel-aarch64
+          - target: riscv64gc-unknown-none-elf
+            artifact: splax-kernel-riscv64
+
     steps:
       - uses: actions/checkout@v4
       
@@ -24,40 +39,140 @@ jobs:
           toolchain: nightly
           components: rust-src, llvm-tools-preview
       
-      - name: Build (${{ matrix.target }})
+      - name: Build kernel (microkernel)
         run: |
-          if [ "${{ matrix.target }}" = "x86_64" ]; then
-            cargo build --release -p splax_kernel --target splax_kernel.json -Z build-std=core,alloc || true
-          else
-            cargo build --release -p splax_kernel --target splax_kernel_aarch64.json -Z build-std=core,alloc || true
-          fi
-        continue-on-error: true
+          cargo build -p splax_kernel --bin splax_kernel --release \
+            --target ${{ matrix.target }} \
+            -Zbuild-std=core,alloc \
+            -Zbuild-std-features=compiler-builtins-mem
       
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: splax-os-${{ matrix.target }}
-          path: |
-            target/*/release/kernel
-            target/*/release/bootloader
+          name: ${{ matrix.artifact }}
+          path: target/${{ matrix.target }}/release/splax_kernel
 
-  create-release:
-    name: Create Release
-    needs: build-release
+  # ============================================================================
+  # Build Bootable ISO
+  # ============================================================================
+
+  build-iso:
+    name: Build ISO
     runs-on: ubuntu-latest
+    needs: build-kernel
     steps:
       - uses: actions/checkout@v4
       
-      - name: Download artifacts
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xorriso mtools
+
+      - name: Download x86_64 kernel
         uses: actions/download-artifact@v4
-      
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
         with:
+          name: splax-kernel-x86_64
+          path: kernel/
+
+      - name: Download Limine bootloader
+        run: |
+          git clone https://github.com/limine-bootloader/limine.git --branch=v8.x-binary --depth=1
+          make -C limine
+
+      - name: Create ISO structure
+        run: |
+          mkdir -p iso_root/boot/limine
+          mkdir -p iso_root/EFI/BOOT
+          cp kernel/splax_kernel iso_root/boot/
+          cp limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/boot/limine/
+          cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
+          cat > iso_root/boot/limine/limine.conf << 'EOF'
+          timeout: 3
+          
+          /Splax OS
+              protocol: limine
+              kernel_path: boot():/boot/splax_kernel
+          EOF
+
+      - name: Create ISO
+        run: |
+          xorriso -as mkisofs \
+            -b boot/limine/limine-bios-cd.bin \
+            -no-emul-boot -boot-load-size 4 -boot-info-table \
+            --efi-boot boot/limine/limine-uefi-cd.bin \
+            -efi-boot-part --efi-boot-image --protective-msdos-label \
+            iso_root -o splax-${{ github.ref_name }}.iso
+          
+          ./limine/limine bios-install splax-${{ github.ref_name }}.iso
+
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: splax-iso
+          path: splax-${{ github.ref_name }}.iso
+
+  # ============================================================================
+  # Create GitHub Release
+  # ============================================================================
+
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-kernel, build-iso]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          mv artifacts/splax-kernel-x86_64/splax_kernel release/splax_kernel-x86_64
+          mv artifacts/splax-kernel-aarch64/splax_kernel release/splax_kernel-aarch64
+          mv artifacts/splax-kernel-riscv64/splax_kernel release/splax_kernel-riscv64
+          mv artifacts/splax-iso/*.iso release/
+          
+          # Make kernels executable
+          chmod +x release/splax_kernel-*
+
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Extract changelog
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"  # Remove 'v' prefix
+          echo "Extracting changelog for version $VERSION"
+          
+          # Extract content between version headers
+          if grep -q "## \[$VERSION\]" CHANGELOG.md; then
+            awk "/^## \[$VERSION\]/{found=1; next} /^## \[/{found=0} found" CHANGELOG.md > release_notes.md
+          else
+            echo "Release ${{ github.ref_name }}" > release_notes.md
+            echo "" >> release_notes.md
+            echo "See [CHANGELOG.md](https://github.com/splax-s/splax_os/blob/main/CHANGELOG.md) for details." >> release_notes.md
+          fi
+          
+          # Add checksums to release notes
+          echo "" >> release_notes.md
+          echo "## Checksums" >> release_notes.md
+          echo '```' >> release_notes.md
+          cat release/SHA256SUMS.txt >> release_notes.md
+          echo '```' >> release_notes.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_notes.md
           files: |
-            splax-os-x86_64/*
-            splax-os-aarch64/*
-          draft: true
-          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+            release/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

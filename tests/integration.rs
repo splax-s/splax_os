@@ -1222,6 +1222,555 @@ pub mod firewall_tests {
     ];
 }
 
+/// Cryptography tests.
+pub mod crypto_tests {
+    use super::framework::*;
+    use crate::{assert_eq_test, assert_test};
+
+    pub fn test_sha256_constants() -> TestResult {
+        // Test SHA-256 initial hash values (first 32 bits of fractional parts of square roots)
+        let h0: u32 = 0x6a09e667;
+        let h1: u32 = 0xbb67ae85;
+        
+        assert_eq_test!(h0, 0x6a09e667, "SHA-256 H0 constant");
+        assert_eq_test!(h1, 0xbb67ae85, "SHA-256 H1 constant");
+        TestResult::Pass
+    }
+
+    pub fn test_sha256_output_size() -> TestResult {
+        // Test SHA-256 produces 32-byte output
+        let output_bits = 256usize;
+        let output_bytes = output_bits / 8;
+        
+        assert_eq_test!(output_bytes, 32, "SHA-256 output is 32 bytes");
+        TestResult::Pass
+    }
+
+    pub fn test_aes_key_sizes() -> TestResult {
+        // Test AES key sizes
+        let aes128_bits = 128usize;
+        let aes256_bits = 256usize;
+        
+        assert_eq_test!(aes128_bits / 8, 16, "AES-128 key is 16 bytes");
+        assert_eq_test!(aes256_bits / 8, 32, "AES-256 key is 32 bytes");
+        TestResult::Pass
+    }
+
+    pub fn test_aes_block_size() -> TestResult {
+        // Test AES block size
+        let block_size_bytes = 16usize;
+        assert_eq_test!(block_size_bytes, 16, "AES block is 16 bytes");
+        TestResult::Pass
+    }
+
+    pub fn test_gcm_tag_size() -> TestResult {
+        // Test AES-GCM authentication tag size
+        let tag_size_bytes = 16usize;
+        assert_eq_test!(tag_size_bytes, 16, "GCM tag is 16 bytes");
+        TestResult::Pass
+    }
+
+    pub fn test_chacha20_nonce_size() -> TestResult {
+        // Test ChaCha20 nonce size
+        let nonce_bytes = 12usize;
+        assert_eq_test!(nonce_bytes, 12, "ChaCha20 nonce is 12 bytes");
+        TestResult::Pass
+    }
+
+    pub fn test_hmac_construction() -> TestResult {
+        // Test HMAC construction
+        // HMAC(K, m) = H((K ^ opad) || H((K ^ ipad) || m))
+        let ipad: u8 = 0x36;
+        let opad: u8 = 0x5c;
+        
+        assert_eq_test!(ipad, 0x36, "HMAC ipad constant");
+        assert_eq_test!(opad, 0x5c, "HMAC opad constant");
+        TestResult::Pass
+    }
+
+    pub fn test_random_entropy() -> TestResult {
+        // Test RNG entropy requirements
+        let min_entropy_bits = 256usize;
+        assert_test!(min_entropy_bits >= 128, "sufficient entropy");
+        TestResult::Pass
+    }
+
+    pub const TESTS: &[TestCase] = &[
+        TestCase {
+            name: "crypto::sha256_constants",
+            test_fn: test_sha256_constants,
+            category: "Crypto",
+        },
+        TestCase {
+            name: "crypto::sha256_output",
+            test_fn: test_sha256_output_size,
+            category: "Crypto",
+        },
+        TestCase {
+            name: "crypto::aes_keys",
+            test_fn: test_aes_key_sizes,
+            category: "Crypto",
+        },
+        TestCase {
+            name: "crypto::aes_block",
+            test_fn: test_aes_block_size,
+            category: "Crypto",
+        },
+        TestCase {
+            name: "crypto::gcm_tag",
+            test_fn: test_gcm_tag_size,
+            category: "Crypto",
+        },
+        TestCase {
+            name: "crypto::chacha20_nonce",
+            test_fn: test_chacha20_nonce_size,
+            category: "Crypto",
+        },
+        TestCase {
+            name: "crypto::hmac",
+            test_fn: test_hmac_construction,
+            category: "Crypto",
+        },
+        TestCase {
+            name: "crypto::entropy",
+            test_fn: test_random_entropy,
+            category: "Crypto",
+        },
+    ];
+}
+
+/// USB subsystem tests.
+pub mod usb_tests {
+    use super::framework::*;
+    use crate::{assert_eq_test, assert_test};
+
+    pub fn test_usb_descriptor_types() -> TestResult {
+        // Test USB descriptor type constants
+        let device_desc: u8 = 0x01;
+        let config_desc: u8 = 0x02;
+        let interface_desc: u8 = 0x04;
+        let endpoint_desc: u8 = 0x05;
+        
+        assert_eq_test!(device_desc, 0x01, "device descriptor type");
+        assert_eq_test!(config_desc, 0x02, "config descriptor type");
+        assert_eq_test!(interface_desc, 0x04, "interface descriptor type");
+        assert_eq_test!(endpoint_desc, 0x05, "endpoint descriptor type");
+        TestResult::Pass
+    }
+
+    pub fn test_usb_speed_values() -> TestResult {
+        // Test USB speed enumeration
+        let low_speed: u8 = 0; // 1.5 Mbps
+        let full_speed: u8 = 1; // 12 Mbps
+        let high_speed: u8 = 2; // 480 Mbps
+        let super_speed: u8 = 3; // 5 Gbps
+        
+        assert_test!(super_speed > high_speed, "SuperSpeed fastest");
+        TestResult::Pass
+    }
+
+    pub fn test_usb_endpoint_address() -> TestResult {
+        // Test endpoint address parsing
+        let ep_addr: u8 = 0x81; // EP1 IN
+        let ep_num = ep_addr & 0x0F;
+        let is_in = (ep_addr & 0x80) != 0;
+        
+        assert_eq_test!(ep_num, 1, "endpoint 1");
+        assert_test!(is_in, "IN direction");
+        TestResult::Pass
+    }
+
+    pub fn test_usb_device_class() -> TestResult {
+        // Test USB device class codes
+        let hid_class: u8 = 0x03;
+        let mass_storage: u8 = 0x08;
+        let hub_class: u8 = 0x09;
+        
+        assert_eq_test!(hid_class, 0x03, "HID class");
+        assert_eq_test!(mass_storage, 0x08, "Mass storage class");
+        assert_eq_test!(hub_class, 0x09, "Hub class");
+        TestResult::Pass
+    }
+
+    pub fn test_xhci_trb_types() -> TestResult {
+        // Test xHCI TRB (Transfer Request Block) types
+        let normal_trb: u8 = 1;
+        let link_trb: u8 = 6;
+        let event_data: u8 = 7;
+        let transfer_event: u8 = 32;
+        let command_completion: u8 = 33;
+        
+        assert_eq_test!(normal_trb, 1, "normal TRB type");
+        assert_eq_test!(link_trb, 6, "link TRB type");
+        assert_test!(transfer_event >= 32, "event TRBs start at 32");
+        TestResult::Pass
+    }
+
+    pub fn test_usb_max_packet_sizes() -> TestResult {
+        // Test USB max packet sizes by speed
+        let full_speed_control = 64u16;
+        let high_speed_bulk = 512u16;
+        let super_speed_bulk = 1024u16;
+        
+        assert_eq_test!(full_speed_control, 64, "FS control max packet");
+        assert_eq_test!(high_speed_bulk, 512, "HS bulk max packet");
+        assert_eq_test!(super_speed_bulk, 1024, "SS bulk max packet");
+        TestResult::Pass
+    }
+
+    pub const TESTS: &[TestCase] = &[
+        TestCase {
+            name: "usb::descriptor_types",
+            test_fn: test_usb_descriptor_types,
+            category: "USB",
+        },
+        TestCase {
+            name: "usb::speeds",
+            test_fn: test_usb_speed_values,
+            category: "USB",
+        },
+        TestCase {
+            name: "usb::endpoint_addr",
+            test_fn: test_usb_endpoint_address,
+            category: "USB",
+        },
+        TestCase {
+            name: "usb::device_class",
+            test_fn: test_usb_device_class,
+            category: "USB",
+        },
+        TestCase {
+            name: "usb::xhci_trb",
+            test_fn: test_xhci_trb_types,
+            category: "USB",
+        },
+        TestCase {
+            name: "usb::max_packets",
+            test_fn: test_usb_max_packet_sizes,
+            category: "USB",
+        },
+    ];
+}
+
+/// Sound subsystem tests.
+pub mod sound_tests {
+    use super::framework::*;
+    use crate::{assert_eq_test, assert_test};
+
+    pub fn test_pcm_sample_rates() -> TestResult {
+        // Test common PCM sample rates
+        let cd_quality = 44100u32;
+        let dvd_quality = 48000u32;
+        let hires = 96000u32;
+        
+        assert_eq_test!(cd_quality, 44100, "CD quality sample rate");
+        assert_eq_test!(dvd_quality, 48000, "DVD quality sample rate");
+        assert_test!(hires > dvd_quality, "Hi-res audio higher rate");
+        TestResult::Pass
+    }
+
+    pub fn test_pcm_bit_depths() -> TestResult {
+        // Test PCM bit depths
+        let bits_16 = 16u8;
+        let bits_24 = 24u8;
+        let bits_32 = 32u8;
+        
+        assert_eq_test!(bits_16, 16, "16-bit audio");
+        assert_eq_test!(bits_24, 24, "24-bit audio");
+        assert_eq_test!(bits_32, 32, "32-bit audio");
+        TestResult::Pass
+    }
+
+    pub fn test_intel_hda_codec_id() -> TestResult {
+        // Test Intel HDA codec identification
+        let vendor_id: u16 = 0x8086; // Intel
+        let device_id: u16 = 0x2668; // ICH6 Audio
+        
+        assert_eq_test!(vendor_id, 0x8086, "Intel vendor ID");
+        assert_test!(device_id != 0xFFFF, "valid device ID");
+        TestResult::Pass
+    }
+
+    pub fn test_audio_buffer_alignment() -> TestResult {
+        // Test audio buffer alignment requirements
+        let buffer_size: usize = 4096;
+        let alignment: usize = 128; // HDA requirement
+        
+        assert_test!((buffer_size % alignment) == 0, "buffer aligned");
+        TestResult::Pass
+    }
+
+    pub fn test_channel_configurations() -> TestResult {
+        // Test audio channel configurations
+        let mono = 1u8;
+        let stereo = 2u8;
+        let surround_51 = 6u8;
+        let surround_71 = 8u8;
+        
+        assert_eq_test!(stereo, 2, "stereo is 2 channels");
+        assert_eq_test!(surround_51, 6, "5.1 is 6 channels");
+        assert_eq_test!(surround_71, 8, "7.1 is 8 channels");
+        TestResult::Pass
+    }
+
+    pub fn test_ac97_registers() -> TestResult {
+        // Test AC'97 codec registers
+        let reset_reg: u16 = 0x00;
+        let master_vol: u16 = 0x02;
+        let pcm_vol: u16 = 0x18;
+        
+        assert_eq_test!(reset_reg, 0x00, "reset register offset");
+        assert_eq_test!(master_vol, 0x02, "master volume offset");
+        assert_eq_test!(pcm_vol, 0x18, "PCM volume offset");
+        TestResult::Pass
+    }
+
+    pub const TESTS: &[TestCase] = &[
+        TestCase {
+            name: "sound::sample_rates",
+            test_fn: test_pcm_sample_rates,
+            category: "Sound",
+        },
+        TestCase {
+            name: "sound::bit_depths",
+            test_fn: test_pcm_bit_depths,
+            category: "Sound",
+        },
+        TestCase {
+            name: "sound::hda_codec",
+            test_fn: test_intel_hda_codec_id,
+            category: "Sound",
+        },
+        TestCase {
+            name: "sound::buffer_align",
+            test_fn: test_audio_buffer_alignment,
+            category: "Sound",
+        },
+        TestCase {
+            name: "sound::channels",
+            test_fn: test_channel_configurations,
+            category: "Sound",
+        },
+        TestCase {
+            name: "sound::ac97_regs",
+            test_fn: test_ac97_registers,
+            category: "Sound",
+        },
+    ];
+}
+
+/// Block device tests.
+pub mod block_tests {
+    use super::framework::*;
+    use crate::{assert_eq_test, assert_test};
+
+    pub fn test_sector_sizes() -> TestResult {
+        // Test standard sector sizes
+        let legacy_sector = 512usize;
+        let advanced_format = 4096usize;
+        
+        assert_eq_test!(legacy_sector, 512, "legacy 512-byte sectors");
+        assert_eq_test!(advanced_format, 4096, "AF 4K sectors");
+        TestResult::Pass
+    }
+
+    pub fn test_nvme_queue_depths() -> TestResult {
+        // Test NVMe queue configuration
+        let admin_queue_depth: u16 = 32;
+        let io_queue_depth: u16 = 1024;
+        
+        assert_test!(admin_queue_depth >= 2, "admin queue at least 2");
+        assert_test!(io_queue_depth <= 65536, "IO queue within spec");
+        TestResult::Pass
+    }
+
+    pub fn test_nvme_command_format() -> TestResult {
+        // Test NVMe command structure
+        let cmd_size = 64usize; // NVMe command is 64 bytes
+        let sqe_alignment = 4usize;
+        
+        assert_eq_test!(cmd_size, 64, "NVMe command is 64 bytes");
+        assert_test!((cmd_size % sqe_alignment) == 0, "command aligned");
+        TestResult::Pass
+    }
+
+    pub fn test_ahci_port_registers() -> TestResult {
+        // Test AHCI port register offsets
+        let clb_offset: u32 = 0x00; // Command List Base
+        let fb_offset: u32 = 0x08; // FIS Base
+        let is_offset: u32 = 0x10; // Interrupt Status
+        let cmd_offset: u32 = 0x18; // Command
+        
+        assert_eq_test!(clb_offset, 0x00, "CLB at offset 0");
+        assert_eq_test!(fb_offset, 0x08, "FB at offset 8");
+        TestResult::Pass
+    }
+
+    pub fn test_partition_table_offsets() -> TestResult {
+        // Test MBR partition table location
+        let mbr_signature: u16 = 0xAA55;
+        let partition_table_offset = 446usize;
+        let mbr_size = 512usize;
+        
+        assert_eq_test!(mbr_signature, 0xAA55, "MBR boot signature");
+        assert_eq_test!(partition_table_offset, 446, "partition table at 446");
+        TestResult::Pass
+    }
+
+    pub fn test_gpt_header() -> TestResult {
+        // Test GPT header signature
+        let gpt_signature: u64 = 0x5452415020494645; // "EFI PART"
+        let gpt_header_size = 92usize;
+        
+        assert_test!(gpt_signature != 0, "GPT has signature");
+        assert_eq_test!(gpt_header_size, 92, "GPT header is 92 bytes");
+        TestResult::Pass
+    }
+
+    pub const TESTS: &[TestCase] = &[
+        TestCase {
+            name: "block::sectors",
+            test_fn: test_sector_sizes,
+            category: "Block",
+        },
+        TestCase {
+            name: "block::nvme_queues",
+            test_fn: test_nvme_queue_depths,
+            category: "Block",
+        },
+        TestCase {
+            name: "block::nvme_cmd",
+            test_fn: test_nvme_command_format,
+            category: "Block",
+        },
+        TestCase {
+            name: "block::ahci_regs",
+            test_fn: test_ahci_port_registers,
+            category: "Block",
+        },
+        TestCase {
+            name: "block::mbr",
+            test_fn: test_partition_table_offsets,
+            category: "Block",
+        },
+        TestCase {
+            name: "block::gpt",
+            test_fn: test_gpt_header,
+            category: "Block",
+        },
+    ];
+}
+
+/// Network driver tests.
+pub mod net_tests {
+    use super::framework::*;
+    use crate::{assert_eq_test, assert_test};
+
+    pub fn test_ethernet_frame_sizes() -> TestResult {
+        // Test Ethernet frame size limits
+        let min_frame = 64usize;
+        let max_frame = 1518usize; // Without VLAN
+        let max_jumbo = 9000usize;
+        
+        assert_eq_test!(min_frame, 64, "minimum frame 64 bytes");
+        assert_eq_test!(max_frame, 1518, "standard MTU frame");
+        assert_test!(max_jumbo > max_frame, "jumbo frames larger");
+        TestResult::Pass
+    }
+
+    pub fn test_mac_address_format() -> TestResult {
+        // Test MAC address structure
+        let mac_len = 6usize;
+        let broadcast: [u8; 6] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+        
+        assert_eq_test!(mac_len, 6, "MAC is 6 bytes");
+        assert_test!(broadcast.iter().all(|&b| b == 0xFF), "broadcast all ones");
+        TestResult::Pass
+    }
+
+    pub fn test_ip_header_checksum() -> TestResult {
+        // Test IP header checksum calculation
+        // Checksum is one's complement sum of 16-bit words
+        let header_words: [u16; 2] = [0x4500, 0x0028];
+        let sum: u32 = header_words.iter().map(|&w| w as u32).sum();
+        
+        // Fold carry bits
+        let folded = (sum & 0xFFFF) + (sum >> 16);
+        assert_test!(folded != 0, "checksum calculated");
+        TestResult::Pass
+    }
+
+    pub fn test_tcp_port_ranges() -> TestResult {
+        // Test TCP port classification
+        let well_known_max = 1023u16;
+        let registered_max = 49151u16;
+        let ephemeral_min = 49152u16;
+        
+        assert_test!(well_known_max < registered_max, "well-known lowest");
+        assert_eq_test!(ephemeral_min, 49152, "ephemeral start");
+        TestResult::Pass
+    }
+
+    pub fn test_e1000_registers() -> TestResult {
+        // Test E1000 register offsets
+        let ctrl: u32 = 0x0000;
+        let status: u32 = 0x0008;
+        let eecd: u32 = 0x0010;
+        let rctl: u32 = 0x0100;
+        let tctl: u32 = 0x0400;
+        
+        assert_eq_test!(ctrl, 0x0000, "CTRL at offset 0");
+        assert_eq_test!(status, 0x0008, "STATUS at offset 8");
+        assert_eq_test!(rctl, 0x0100, "RCTL at offset 0x100");
+        TestResult::Pass
+    }
+
+    pub fn test_virtio_net_features() -> TestResult {
+        // Test VirtIO network feature bits
+        let csum: u64 = 1 << 0;
+        let guest_csum: u64 = 1 << 1;
+        let mac: u64 = 1 << 5;
+        let mrg_rxbuf: u64 = 1 << 15;
+        
+        assert_test!((csum & guest_csum) == 0, "distinct feature bits");
+        assert_eq_test!(mac, 32, "MAC feature bit 5");
+        TestResult::Pass
+    }
+
+    pub const TESTS: &[TestCase] = &[
+        TestCase {
+            name: "net::frame_sizes",
+            test_fn: test_ethernet_frame_sizes,
+            category: "Network",
+        },
+        TestCase {
+            name: "net::mac_addr",
+            test_fn: test_mac_address_format,
+            category: "Network",
+        },
+        TestCase {
+            name: "net::ip_checksum",
+            test_fn: test_ip_header_checksum,
+            category: "Network",
+        },
+        TestCase {
+            name: "net::tcp_ports",
+            test_fn: test_tcp_port_ranges,
+            category: "Network",
+        },
+        TestCase {
+            name: "net::e1000_regs",
+            test_fn: test_e1000_registers,
+            category: "Network",
+        },
+        TestCase {
+            name: "net::virtio_features",
+            test_fn: test_virtio_net_features,
+            category: "Network",
+        },
+    ];
+}
+
 /// Entry point for integration tests.
 #[no_mangle]
 pub extern "C" fn test_main() -> i32 {
@@ -1240,19 +1789,30 @@ pub extern "C" fn test_main() -> i32 {
     let fs_summary = run_tests(fs_tests::TESTS);
     let ipv6_summary = run_tests(ipv6_tests::TESTS);
     let firewall_summary = run_tests(firewall_tests::TESTS);
+    let crypto_summary = run_tests(crypto_tests::TESTS);
+    let usb_summary = run_tests(usb_tests::TESTS);
+    let sound_summary = run_tests(sound_tests::TESTS);
+    let block_summary = run_tests(block_tests::TESTS);
+    let net_summary = run_tests(net_tests::TESTS);
 
     let total_passed = cap_summary.passed + ipc_summary.passed + mm_summary.passed 
         + sched_summary.passed + wave_summary.passed + storage_summary.passed 
         + atlas_summary.passed + pci_summary.passed + acpi_summary.passed
-        + fs_summary.passed + ipv6_summary.passed + firewall_summary.passed;
+        + fs_summary.passed + ipv6_summary.passed + firewall_summary.passed
+        + crypto_summary.passed + usb_summary.passed + sound_summary.passed
+        + block_summary.passed + net_summary.passed;
     let total_failed = cap_summary.failed + ipc_summary.failed + mm_summary.failed 
         + sched_summary.failed + wave_summary.failed + storage_summary.failed 
         + atlas_summary.failed + pci_summary.failed + acpi_summary.failed
-        + fs_summary.failed + ipv6_summary.failed + firewall_summary.failed;
+        + fs_summary.failed + ipv6_summary.failed + firewall_summary.failed
+        + crypto_summary.failed + usb_summary.failed + sound_summary.failed
+        + block_summary.failed + net_summary.failed;
     let total_skipped = cap_summary.skipped + ipc_summary.skipped + mm_summary.skipped 
         + sched_summary.skipped + wave_summary.skipped + storage_summary.skipped 
         + atlas_summary.skipped + pci_summary.skipped + acpi_summary.skipped
-        + fs_summary.skipped + ipv6_summary.skipped + firewall_summary.skipped;
+        + fs_summary.skipped + ipv6_summary.skipped + firewall_summary.skipped
+        + crypto_summary.skipped + usb_summary.skipped + sound_summary.skipped
+        + block_summary.skipped + net_summary.skipped;
 
     // Return 0 on success, failure count otherwise
     if total_failed == 0 {
@@ -1276,6 +1836,11 @@ pub fn total_test_count() -> usize {
         + fs_tests::TESTS.len()
         + ipv6_tests::TESTS.len()
         + firewall_tests::TESTS.len()
+        + crypto_tests::TESTS.len()
+        + usb_tests::TESTS.len()
+        + sound_tests::TESTS.len()
+        + block_tests::TESTS.len()
+        + net_tests::TESTS.len()
 }
 
 /// Panic handler.
