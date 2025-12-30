@@ -293,3 +293,348 @@ pub const DNS_PORT: u16 = 53;
 pub const DHCP_CLIENT_PORT: u16 = 68;
 /// DHCP server port.
 pub const DHCP_SERVER_PORT: u16 = 67;
+
+// =============================================================================
+// UDP Multicast Support (v0.2.0)
+// =============================================================================
+
+/// Multicast group address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MulticastGroup(pub Ipv4Address);
+
+impl MulticastGroup {
+    /// Creates a new multicast group.
+    pub fn new(addr: Ipv4Address) -> Option<Self> {
+        if addr.is_multicast() {
+            Some(Self(addr))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the multicast address.
+    pub fn addr(&self) -> Ipv4Address {
+        self.0
+    }
+
+    /// Computes the MAC address for this multicast group.
+    ///
+    /// Multicast MAC = 01:00:5E + lower 23 bits of IP
+    pub fn mac_address(&self) -> [u8; 6] {
+        let ip = self.0.0;
+        [
+            0x01,
+            0x00,
+            0x5E,
+            ip[1] & 0x7F, // Lower 23 bits
+            ip[2],
+            ip[3],
+        ]
+    }
+}
+
+impl Ipv4Address {
+    /// Checks if this is a multicast address (224.0.0.0 - 239.255.255.255).
+    pub fn is_multicast(&self) -> bool {
+        self.0[0] >= 224 && self.0[0] <= 239
+    }
+
+    /// Well-known multicast addresses.
+    pub const ALL_HOSTS: Ipv4Address = Ipv4Address([224, 0, 0, 1]);
+    pub const ALL_ROUTERS: Ipv4Address = Ipv4Address([224, 0, 0, 2]);
+    pub const MDNS: Ipv4Address = Ipv4Address([224, 0, 0, 251]);
+    pub const LLMNR: Ipv4Address = Ipv4Address([224, 0, 0, 252]);
+}
+
+/// IGMP message types.
+pub mod igmp {
+    pub const MEMBERSHIP_QUERY: u8 = 0x11;
+    pub const MEMBERSHIP_REPORT_V1: u8 = 0x12;
+    pub const MEMBERSHIP_REPORT_V2: u8 = 0x16;
+    pub const MEMBERSHIP_REPORT_V3: u8 = 0x22;
+    pub const LEAVE_GROUP: u8 = 0x17;
+}
+
+/// IGMP message for multicast group management.
+#[derive(Debug, Clone)]
+pub struct IgmpMessage {
+    pub msg_type: u8,
+    pub max_resp_time: u8,
+    pub checksum: u16,
+    pub group_addr: Ipv4Address,
+}
+
+impl IgmpMessage {
+    /// Header size (8 bytes).
+    pub const SIZE: usize = 8;
+
+    /// Parses an IGMP message.
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() < Self::SIZE {
+            return None;
+        }
+
+        Some(Self {
+            msg_type: data[0],
+            max_resp_time: data[1],
+            checksum: u16::from_be_bytes([data[2], data[3]]),
+            group_addr: Ipv4Address([data[4], data[5], data[6], data[7]]),
+        })
+    }
+
+    /// Serializes to bytes.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(Self::SIZE);
+        bytes.push(self.msg_type);
+        bytes.push(self.max_resp_time);
+        bytes.extend_from_slice(&self.checksum.to_be_bytes());
+        bytes.extend_from_slice(&self.group_addr.0);
+        bytes
+    }
+
+    /// Creates a membership report.
+    pub fn membership_report(group: MulticastGroup) -> Self {
+        let mut msg = Self {
+            msg_type: igmp::MEMBERSHIP_REPORT_V2,
+            max_resp_time: 0,
+            checksum: 0,
+            group_addr: group.addr(),
+        };
+        msg.checksum = msg.compute_checksum();
+        msg
+    }
+
+    /// Creates a leave group message.
+    pub fn leave_group(group: MulticastGroup) -> Self {
+        let mut msg = Self {
+            msg_type: igmp::LEAVE_GROUP,
+            max_resp_time: 0,
+            checksum: 0,
+            group_addr: group.addr(),
+        };
+        msg.checksum = msg.compute_checksum();
+        msg
+    }
+
+    /// Computes the IGMP checksum.
+    fn compute_checksum(&self) -> u16 {
+        let mut sum: u32 = 0;
+        sum += ((self.msg_type as u32) << 8) | self.max_resp_time as u32;
+        sum += 0; // Checksum field is 0 during computation
+        sum += ((self.group_addr.0[0] as u32) << 8) | self.group_addr.0[1] as u32;
+        sum += ((self.group_addr.0[2] as u32) << 8) | self.group_addr.0[3] as u32;
+
+        while sum >> 16 != 0 {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+
+        !sum as u16
+    }
+}
+
+/// Multicast group membership.
+#[derive(Debug, Clone)]
+pub struct MulticastMembership {
+    /// Group address.
+    pub group: MulticastGroup,
+    /// Interface index (for multi-homed hosts).
+    pub interface: u32,
+    /// Local address to receive on.
+    pub local_addr: Ipv4Address,
+    /// Filter mode (include/exclude sources).
+    pub filter_mode: SourceFilterMode,
+    /// Source list for filtering.
+    pub sources: Vec<Ipv4Address>,
+    /// Timestamp of last report sent.
+    pub last_report: u64,
+}
+
+/// Source filter mode for multicast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceFilterMode {
+    /// Include only listed sources.
+    Include,
+    /// Exclude listed sources.
+    Exclude,
+}
+
+/// Multicast socket extension.
+pub struct MulticastSocket {
+    /// Base UDP socket.
+    pub socket: UdpSocket,
+    /// Joined multicast groups.
+    pub memberships: Vec<MulticastMembership>,
+    /// Loopback enabled (receive own multicast).
+    pub loopback: bool,
+    /// TTL for outgoing multicast.
+    pub multicast_ttl: u8,
+    /// Interface for outgoing multicast.
+    pub multicast_interface: Option<Ipv4Address>,
+}
+
+impl MulticastSocket {
+    /// Creates a new multicast socket.
+    pub fn new(local: UdpEndpoint) -> Self {
+        Self {
+            socket: UdpSocket::new(local),
+            memberships: Vec::new(),
+            loopback: true,
+            multicast_ttl: 1, // Default: local network only
+            multicast_interface: None,
+        }
+    }
+
+    /// Joins a multicast group.
+    pub fn join_group(&mut self, group: MulticastGroup, interface: Ipv4Address) -> Result<(), NetworkError> {
+        // Check if already a member
+        if self.memberships.iter().any(|m| m.group == group && m.local_addr == interface) {
+            return Err(NetworkError::AddressInUse);
+        }
+
+        let membership = MulticastMembership {
+            group,
+            interface: 0,
+            local_addr: interface,
+            filter_mode: SourceFilterMode::Exclude,
+            sources: Vec::new(),
+            last_report: 0,
+        };
+
+        self.memberships.push(membership);
+
+        // Would send IGMP membership report here
+        Ok(())
+    }
+
+    /// Leaves a multicast group.
+    pub fn leave_group(&mut self, group: MulticastGroup, interface: Ipv4Address) -> Result<(), NetworkError> {
+        let idx = self.memberships.iter()
+            .position(|m| m.group == group && m.local_addr == interface)
+            .ok_or(NetworkError::NotConnected)?;
+
+        self.memberships.remove(idx);
+
+        // Would send IGMP leave group here
+        Ok(())
+    }
+
+    /// Sets source filter for a group.
+    pub fn set_source_filter(
+        &mut self,
+        group: MulticastGroup,
+        mode: SourceFilterMode,
+        sources: Vec<Ipv4Address>,
+    ) -> Result<(), NetworkError> {
+        let membership = self.memberships.iter_mut()
+            .find(|m| m.group == group)
+            .ok_or(NetworkError::NotConnected)?;
+
+        membership.filter_mode = mode;
+        membership.sources = sources;
+
+        Ok(())
+    }
+
+    /// Checks if should receive from source.
+    pub fn should_receive(&self, group: MulticastGroup, source: Ipv4Address) -> bool {
+        for membership in &self.memberships {
+            if membership.group == group {
+                match membership.filter_mode {
+                    SourceFilterMode::Include => {
+                        return membership.sources.is_empty() || membership.sources.contains(&source);
+                    }
+                    SourceFilterMode::Exclude => {
+                        return !membership.sources.contains(&source);
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Sets multicast TTL.
+    pub fn set_multicast_ttl(&mut self, ttl: u8) {
+        self.multicast_ttl = ttl;
+    }
+
+    /// Sets multicast loopback.
+    pub fn set_loopback(&mut self, enabled: bool) {
+        self.loopback = enabled;
+    }
+
+    /// Sets outgoing interface for multicast.
+    pub fn set_multicast_interface(&mut self, addr: Ipv4Address) {
+        self.multicast_interface = Some(addr);
+    }
+
+    /// Sends to a multicast group.
+    pub fn send_multicast(&self, group: MulticastGroup, data: Vec<u8>) -> UdpDatagram {
+        // Uses the socket's local port as source
+        UdpDatagram::new(self.socket.local.port, 0, data)
+    }
+}
+
+/// Global multicast state.
+pub struct MulticastState {
+    /// Multicast sockets by port.
+    sockets: BTreeMap<u16, MulticastSocket>,
+    /// Global group memberships (for IGMP).
+    groups: BTreeMap<MulticastGroup, Vec<u16>>, // Group -> ports
+}
+
+impl MulticastState {
+    /// Creates new multicast state.
+    pub const fn new() -> Self {
+        Self {
+            sockets: BTreeMap::new(),
+            groups: BTreeMap::new(),
+        }
+    }
+
+    /// Registers a multicast socket.
+    pub fn register(&mut self, port: u16, socket: MulticastSocket) {
+        for membership in &socket.memberships {
+            self.groups
+                .entry(membership.group)
+                .or_insert_with(Vec::new)
+                .push(port);
+        }
+        self.sockets.insert(port, socket);
+    }
+
+    /// Delivers a multicast datagram.
+    pub fn deliver(&mut self, group: MulticastGroup, source: Ipv4Address, data: &[u8]) {
+        if let Some(ports) = self.groups.get(&group) {
+            for &port in ports {
+                if let Some(socket) = self.sockets.get_mut(&port) {
+                    if socket.should_receive(group, source) {
+                        socket.socket.queue_message(
+                            UdpEndpoint::new(source, 0),
+                            data.to_vec(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Lists all joined groups.
+    pub fn joined_groups(&self) -> Vec<MulticastGroup> {
+        self.groups.keys().copied().collect()
+    }
+}
+
+/// Static multicast state.
+static MULTICAST_STATE: Mutex<MulticastState> = Mutex::new(MulticastState::new());
+
+/// Gets multicast state.
+pub fn multicast_state() -> &'static Mutex<MulticastState> {
+    &MULTICAST_STATE
+}
+
+/// Handles an incoming multicast packet.
+pub fn handle_multicast_packet(src: Ipv4Address, dest: Ipv4Address, data: &[u8]) {
+    if let Some(group) = MulticastGroup::new(dest) {
+        MULTICAST_STATE.lock().deliver(group, src, data);
+    }
+}

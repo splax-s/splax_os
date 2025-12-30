@@ -26,8 +26,14 @@
 //!
 //! The `fastpath` module provides optimized IPC for high-frequency operations
 //! in the hybrid microkernel architecture. See `fastpath.rs` for details.
+//!
+//! ## Distributed IPC (v0.2.0)
+//!
+//! The `distributed` module extends S-LINK for cross-node communication,
+//! enabling transparent IPC across Splax clusters.
 
 pub mod fastpath;
+pub mod distributed;
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;

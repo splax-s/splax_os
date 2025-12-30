@@ -56,9 +56,9 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 - [x] NVMe driver
 - [x] AHCI/SATA driver
 - [x] VirtIO block driver
-- [ ] Object storage API
-- [ ] Content-addressed storage
-- [ ] Distributed storage protocol
+- [x] Object storage API
+- [x] Content-addressed storage
+- [x] Distributed storage protocol
 
 ---
 
@@ -69,15 +69,15 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 - [x] VirtIO network driver
 - [x] IPv4 support
 - [x] IPv6 support
-- [ ] TCP optimization
-- [ ] UDP multicast
+- [x] TCP optimization
+- [x] UDP multicast
 - [ ] Network namespaces
 
 ### Distributed Features
 - [ ] Service mesh integration
 - [ ] Capability-based network ACLs
-- [ ] Encrypted inter-node communication
-- [ ] Distributed capability delegation
+- [x] Encrypted inter-node communication
+- [x] Distributed capability delegation
 
 ---
 
@@ -237,15 +237,15 @@ We welcome contributions at any phase! See [CONTRIBUTING.md](CONTRIBUTING.md) fo
 
 | Version | Target Date | Focus | Status |
 |---------|-------------|-------|--------|
-| 0.1.0 | Dec 2024 | Initial alpha release | ✅ Released |
-| 0.2.0 | Feb 2025 | Object storage, distributed IPC | 🔄 Next |
-| 0.3.0 | Apr 2025 | WASM JIT, native sandbox | Planned |
-| 0.4.0 | Jun 2025 | Graphics acceleration | Planned |
-| 0.5.0 | Aug 2025 | Security hardening | Planned |
-| 1.0.0 | Q1 2026 | First stable release | Planned |
+| 0.1.0 | Dec 2025 | Initial alpha release | ✅ Released |
+| 0.2.0 | Feb 2026 | Object storage, distributed IPC | 🔄 Next |
+| 0.3.0 | Apr 2026 | WASM JIT, native sandbox | Planned |
+| 0.4.0 | Jun 2026 | Graphics acceleration | Planned |
+| 0.5.0 | Aug 2026 | Security hardening | Planned |
+| 1.0.0 | Q1 2027 | First stable release | Planned |
 
 ---
 
 *This roadmap is a living document and will be updated as priorities evolve.*
 
-*Last updated: December 2024*
+*Last updated: December 2025*

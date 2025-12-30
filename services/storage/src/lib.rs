@@ -57,9 +57,30 @@ pub mod vfs_protocol;
 // VFS Server (userspace filesystem handler)
 pub mod vfs_server;
 
+// Object Storage API v2 (queries, batching, streaming)
+pub mod object_api;
+
+// Content-Addressed Storage (CAS)
+pub mod cas;
+
+// Distributed Storage Protocol
+pub mod distributed;
+
 // Re-export VFS types
 pub use vfs_protocol::*;
 pub use vfs_server::{Filesystem, VfsServer};
+
+// Re-export CAS types
+pub use cas::{CasConfig, CasError, CasStats, ContentAddress, ContentAddressedStore};
+
+// Re-export distributed types
+pub use distributed::{
+    ClusterStats, DistributedCoordinator, DistributedMessage, HashRing, NodeAddress, NodeId,
+    NodeInfo, NodeStatus, ReplicationConfig,
+};
+
+// Re-export Object API
+pub use object_api::{ObjectQuery, ObjectStorageApi, QueryOp, QueryResult, SortField};
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
