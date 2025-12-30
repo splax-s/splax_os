@@ -36,10 +36,12 @@
 Splax OS is a **production-grade, capability-secure, distributed-first operating system** built from scratch in Rust. It reimagines operating system design with modern principles:
 
 - **🔐 Capability-Based Security (S-CAP)**: No users, groups, or root. Every operation requires an explicit, unforgeable capability token.
-- **🧱 Microkernel Architecture**: Tiny trusted kernel (~15K LOC), everything else in userspace services.
+- **🧱 Microkernel Architecture**: Tiny trusted kernel (~53KB stripped), everything else in userspace services.
 - **🌐 Distributed-First**: Designed for cloud-native workloads from day one.
 - **⚡ Deterministic Execution**: Same inputs → same outputs. No swap, no overcommit.
 - **🦀 Memory Safe**: 100% Rust, zero `unsafe` outside hardware abstraction.
+
+> **v0.1.0 Released!** First public release with async IPC, service auto-restart, and 53KB microkernel.
 
 ## Architecture
 

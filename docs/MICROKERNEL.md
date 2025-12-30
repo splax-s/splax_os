@@ -12,13 +12,14 @@ The kernel contains only essential primitives:
 
 | Component | Size | Responsibility |
 |-----------|------|----------------|
-| `arch/` | ~5KB | CPU init, interrupts, paging |
-| `mm/` | ~3KB | Frame allocator, page tables |
-| `sched/` | ~2KB | Scheduler, context switch |
-| `cap/` | ~2KB | Capability checking |
-| `ipc/` | ~3KB | S-LINK channels, fast path |
-| `syscall/` | ~2KB | Syscall dispatch |
-| **Total** | **~17KB** | Target: <50KB |
+| `arch/` | ~15KB | CPU init, interrupts, paging, VGA |
+| `mm/` | ~5KB | Frame allocator, page tables |
+| `sched/` | ~3KB | Scheduler, context switch |
+| `cap/` | ~3KB | Capability checking |
+| `ipc/` | ~8KB | S-LINK channels, fast path, async |
+| `crypto/` | ~10KB | ChaCha20, AES-GCM, hashing |
+| `net/` | ~9KB | TCP/IP stack, sockets |
+| **Total** | **~53KB** | v0.1.0 stripped |
 
 ### Userspace Services
 

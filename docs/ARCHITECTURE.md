@@ -41,7 +41,7 @@ Splax OS is a capability-secure, microkernel-based operating system written in R
 
 ## S-CORE: The Microkernel
 
-The kernel is intentionally minimal (~15K LOC target). It handles only:
+The kernel is intentionally minimal (~53KB stripped, v0.1.0). It handles only:
 
 ### 1. CPU Scheduling
 

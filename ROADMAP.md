@@ -34,19 +34,22 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 
 ---
 
-## Phase 2: Core Services 🔄 (In Progress)
+## Phase 2: Core Services ✅ (Complete)
 
 ### IPC & Messaging
 - [x] Zero-copy IPC channels
 - [x] Message passing infrastructure
-- [ ] Asynchronous message handling
-- [ ] Channel multiplexing
+- [x] Asynchronous message handling
+- [x] Fast path IPC (<500ns target)
+- [x] IPC benchmarks (`ipcbench` command)
 
 ### Service Framework
 - [x] Service registry (S-ATLAS)
 - [x] Service lifecycle management
-- [ ] Service health monitoring
-- [ ] Automatic service restart
+- [x] Service health monitoring
+- [x] Automatic service restart
+- [x] Restart policies (Never, OnFailure, Always)
+- [x] Service event logging
 
 ### Storage
 - [x] Block device abstraction
@@ -232,14 +235,14 @@ We welcome contributions at any phase! See [CONTRIBUTING.md](CONTRIBUTING.md) fo
 
 ## Release Schedule
 
-| Version | Target Date | Focus |
-|---------|-------------|-------|
-| 0.1.0 | Dec 2025 | Initial alpha release |
-| 0.2.0 | Feb 2026 | Improved IPC, storage |
-| 0.3.0 | Apr 2026 | Networking, WASM |
-| 0.4.0 | Jun 2026 | Graphics, audio |
-| 0.5.0 | Aug 2026 | Security hardening |
-| 1.0.0 | Q1 2027 | First stable release |
+| Version | Target Date | Focus | Status |
+|---------|-------------|-------|--------|
+| 0.1.0 | Dec 2024 | Initial alpha release | ✅ Released |
+| 0.2.0 | Feb 2025 | Object storage, distributed IPC | 🔄 Next |
+| 0.3.0 | Apr 2025 | WASM JIT, native sandbox | Planned |
+| 0.4.0 | Jun 2025 | Graphics acceleration | Planned |
+| 0.5.0 | Aug 2025 | Security hardening | Planned |
+| 1.0.0 | Q1 2026 | First stable release | Planned |
 
 ---
 
