@@ -526,3 +526,115 @@ mod tests {
         assert!(ring.is_empty());
     }
 }
+
+// =============================================================================
+// IPC Benchmarks
+// =============================================================================
+
+/// Benchmark results for IPC operations
+#[derive(Debug, Clone, Copy)]
+pub struct IpcBenchmarkResult {
+    /// Operation name
+    pub name: &'static str,
+    /// Number of iterations
+    pub iterations: u64,
+    /// Total cycles
+    pub total_cycles: u64,
+    /// Average cycles per operation
+    pub avg_cycles: u64,
+    /// Estimated nanoseconds (assuming 3GHz)
+    pub estimated_ns: u64,
+}
+
+impl IpcBenchmarkResult {
+    /// Calculate average from total
+    pub fn new(name: &'static str, iterations: u64, total_cycles: u64) -> Self {
+        let avg_cycles = total_cycles / iterations.max(1);
+        // Assume ~3GHz CPU for estimation
+        let estimated_ns = avg_cycles / 3;
+        Self {
+            name,
+            iterations,
+            total_cycles,
+            avg_cycles,
+            estimated_ns,
+        }
+    }
+}
+
+/// Run IPC benchmarks (call from kernel shell or test harness)
+pub fn run_ipc_benchmarks() -> [IpcBenchmarkResult; 4] {
+    let iterations = 10_000u64;
+    
+    // Benchmark 1: FastMessage creation
+    let start = read_tsc();
+    for i in 0..iterations {
+        let msg = FastMessage::new(i);
+        core::hint::black_box(msg);
+    }
+    let end = read_tsc();
+    let fast_msg_create = IpcBenchmarkResult::new("FastMessage::new", iterations, end - start);
+    
+    // Benchmark 2: FastMessage from_bytes
+    let data = [1u8, 2, 3, 4, 5, 6, 7, 8];
+    let start = read_tsc();
+    for i in 0..iterations {
+        let msg = FastMessage::from_bytes(i, &data);
+        core::hint::black_box(msg);
+    }
+    let end = read_tsc();
+    let fast_msg_bytes = IpcBenchmarkResult::new("FastMessage::from_bytes", iterations, end - start);
+    
+    // Benchmark 3: SPSC ring send/recv (no contention)
+    let ring = SpscRing::new();
+    let msg = FastMessage::new(42);
+    let start = read_tsc();
+    for _ in 0..iterations {
+        let _ = ring.try_send(msg);
+        let recv = ring.try_recv();
+        core::hint::black_box(recv);
+    }
+    let end = read_tsc();
+    let spsc_roundtrip = IpcBenchmarkResult::new("SPSC send+recv", iterations, end - start);
+    
+    // Benchmark 4: FastEndpoint send/recv
+    let (client_ep, _server_ep) = FastEndpoint::create_pair(
+        0x1234,
+        ProcessId::new(1),
+        ProcessId::new(2)
+    );
+    let start = read_tsc();
+    for i in 0..iterations {
+        let msg = FastMessage::new(i);
+        let _ = client_ep.send(msg);
+        let recv = client_ep.recv();
+        core::hint::black_box(recv);
+    }
+    let end = read_tsc();
+    let endpoint_roundtrip = IpcBenchmarkResult::new("Endpoint send+recv", iterations, end - start);
+    
+    [fast_msg_create, fast_msg_bytes, spsc_roundtrip, endpoint_roundtrip]
+}
+
+/// Read CPU timestamp counter
+#[inline]
+fn read_tsc() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let lo: u32;
+        let hi: u32;
+        unsafe {
+            core::arch::asm!(
+                "rdtsc",
+                out("eax") lo,
+                out("edx") hi,
+                options(nostack, nomem)
+            );
+        }
+        ((hi as u64) << 32) | (lo as u64)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        0 // Placeholder for other architectures
+    }
+}

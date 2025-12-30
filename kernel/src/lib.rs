@@ -47,7 +47,12 @@ pub mod mm;
 pub mod sched;
 pub mod process;
 pub mod smp;
-pub mod crypto;
+
+// Crypto: minimal for capabilities, full for monolithic
+#[cfg(feature = "microkernel")]
+pub mod crypto;  // Minimal crypto for capability tokens
+#[cfg(not(feature = "microkernel"))]
+pub mod crypto;  // Full crypto suite
 
 // =============================================================================
 // Hardware Interface Modules (Required for Microkernel)
@@ -58,9 +63,10 @@ pub mod acpi;
 pub mod pci;
 
 // =============================================================================
-// Block Layer (Required for S-STORAGE IPC)
+// Block Layer (Monolithic only - S-STORAGE handles in microkernel)
 // =============================================================================
 
+#[cfg(not(feature = "microkernel"))]
 pub mod block;
 
 // =============================================================================

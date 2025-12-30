@@ -16,7 +16,11 @@ const VGA_WIDTH: usize = 80;
 const VGA_HEIGHT: usize = 25;
 
 /// Scrollback buffer size (number of lines to keep in history)
-const SCROLLBACK_LINES: usize = 200;
+/// Reduced in microkernel mode to save memory
+#[cfg(feature = "microkernel")]
+const SCROLLBACK_LINES: usize = 50;  // ~8KB in microkernel mode
+#[cfg(not(feature = "microkernel"))]
+const SCROLLBACK_LINES: usize = 200; // ~32KB in monolithic mode
 
 /// VGA CRT Controller ports
 const VGA_CRTC_ADDR: u16 = 0x3D4;

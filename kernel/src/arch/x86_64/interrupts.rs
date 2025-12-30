@@ -73,7 +73,11 @@ static COMMAND_BUFFER: Mutex<CommandBuffer> = Mutex::new(CommandBuffer::new());
 static COMMAND_HISTORY: Mutex<CommandHistory> = Mutex::new(CommandHistory::new());
 
 /// Maximum number of commands to keep in history
-const HISTORY_SIZE: usize = 32;
+/// Reduced in microkernel mode to save ~6KB memory
+#[cfg(feature = "microkernel")]
+const HISTORY_SIZE: usize = 8;   // ~2KB
+#[cfg(not(feature = "microkernel"))]
+const HISTORY_SIZE: usize = 32;  // ~8KB
 
 /// Command history buffer
 struct CommandHistory {
@@ -4198,6 +4202,7 @@ fn execute_shell_command(cmd: &str) {
             crate::vga_println!("  help     - Show this help");
             crate::vga_println!("  version  - Kernel version");
             crate::vga_println!("  mem      - Memory stats");
+            crate::vga_println!("  ipcbench - IPC performance benchmark");
             crate::vga_println!("  clear    - Clear screen");
             crate::vga_println!("  reboot   - Reboot system");
             crate::vga_println!("  shutdown - Power off");
@@ -4208,6 +4213,24 @@ fn execute_shell_command(cmd: &str) {
         "mem" => {
             crate::vga_println!("[Microkernel] Memory management active");
             crate::vga_println!("Heap and page allocator running");
+        }
+        "ipcbench" => {
+            use super::vga::Color;
+            super::vga::set_color(Color::Yellow, Color::Black);
+            crate::vga_println!("Running IPC benchmarks...");
+            super::vga::set_color(Color::LightGray, Color::Black);
+            
+            let results = crate::ipc::fastpath::run_ipc_benchmarks();
+            crate::vga_println!();
+            crate::vga_println!("IPC Benchmark Results (10,000 iterations):");
+            crate::vga_println!("{:<25} {:>10} {:>10}", "Operation", "Cycles", "~ns");
+            crate::vga_println!("{:-<25} {:-<10} {:-<10}", "", "", "");
+            for result in &results {
+                super::vga::set_color(Color::LightGreen, Color::Black);
+                crate::vga_println!("{:<25} {:>10} {:>10}", 
+                    result.name, result.avg_cycles, result.estimated_ns);
+            }
+            super::vga::set_color(Color::LightGray, Color::Black);
         }
         "clear" => {
             super::vga::clear();
@@ -4259,6 +4282,7 @@ fn execute_serial_command(cmd: &str) {
             serial_println!("  help     - Show this help");
             serial_println!("  version  - Kernel version");
             serial_println!("  mem      - Memory stats");
+            serial_println!("  ipcbench - IPC performance benchmark");
             serial_println!("  reboot   - Reboot system");
             serial_println!("  shutdown - Power off");
         }
@@ -4268,6 +4292,21 @@ fn execute_serial_command(cmd: &str) {
         "mem" => {
             serial_println!("[Microkernel] Memory management active");
             serial_println!("Heap and page allocator running");
+        }
+        "ipcbench" => {
+            serial_println!("Running IPC benchmarks...");
+            serial_println!();
+            
+            let results = crate::ipc::fastpath::run_ipc_benchmarks();
+            serial_println!("IPC Benchmark Results (10,000 iterations):");
+            serial_println!("{:<25} {:>12} {:>10}", "Operation", "Avg Cycles", "~ns");
+            serial_println!("{:-<25} {:-<12} {:-<10}", "", "", "");
+            for result in &results {
+                serial_println!("{:<25} {:>12} {:>10}", 
+                    result.name, result.avg_cycles, result.estimated_ns);
+            }
+            serial_println!();
+            serial_println!("Target: <500ns for small messages, <2us for service calls");
         }
         "reboot" => {
             serial_println!("Rebooting...");
