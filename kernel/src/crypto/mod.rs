@@ -48,6 +48,7 @@ use alloc::vec::Vec;
 pub mod hash;
 pub mod cipher;
 pub mod mac;
+pub mod asymmetric;
 pub mod kdf;
 pub mod random;
 

@@ -16,6 +16,7 @@
 //! - Shared memory: For IPC zero-copy transfers
 
 pub mod frame;
+pub mod security;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;

@@ -47,6 +47,7 @@ pub mod dns;
 pub mod ssh;
 pub mod firewall;
 pub mod qos;
+pub mod tls;
 
 // Network device drivers
 #[cfg(target_arch = "x86_64")]

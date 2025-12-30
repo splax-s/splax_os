@@ -65,6 +65,7 @@ use alloc::vec::Vec;
 use spin::RwLock;
 
 pub mod microkernel;
+pub mod container;
 
 pub use microkernel::{CoreService, ServiceBootstrap, BootError, BootSummary};
 

@@ -49,6 +49,8 @@
 
 extern crate alloc;
 
+pub mod wasi;
+
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::string::ToString;

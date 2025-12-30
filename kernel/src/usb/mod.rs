@@ -33,6 +33,7 @@ use spin::Mutex;
 pub mod descriptor;
 pub mod hid;
 pub mod xhci;
+pub mod msc;
 
 /// Maximum number of USB devices that can be connected
 pub const MAX_USB_DEVICES: usize = 127;

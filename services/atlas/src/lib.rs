@@ -41,6 +41,8 @@ use alloc::vec::Vec;
 
 use spin::Mutex;
 
+pub mod observability;
+
 // Import shared capability token
 pub use splax_cap::{CapabilityToken, Operations, Permission};
 
