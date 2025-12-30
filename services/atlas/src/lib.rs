@@ -547,6 +547,249 @@ pub enum AtlasError {
     InvalidCapability,
     /// Operation not permitted
     PermissionDenied,
+    /// Service is unhealthy
+    ServiceUnhealthy,
+    /// Restart limit exceeded
+    RestartLimitExceeded,
+}
+
+// =============================================================================
+// Service Health Monitoring & Auto-Restart
+// =============================================================================
+
+/// Restart policy for services
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartPolicy {
+    /// Never restart automatically
+    Never,
+    /// Restart on failure only
+    OnFailure,
+    /// Always restart (unless explicitly stopped)
+    Always,
+}
+
+impl Default for RestartPolicy {
+    fn default() -> Self {
+        Self::OnFailure
+    }
+}
+
+/// Service restart configuration
+#[derive(Debug, Clone)]
+pub struct RestartConfig {
+    /// Restart policy
+    pub policy: RestartPolicy,
+    /// Maximum restarts within the window
+    pub max_restarts: u32,
+    /// Time window for max_restarts (in nanoseconds)
+    pub restart_window: u64,
+    /// Delay before restarting (in nanoseconds)
+    pub restart_delay: u64,
+    /// Current restart count within window
+    pub restart_count: u32,
+    /// Window start time
+    pub window_start: u64,
+}
+
+impl Default for RestartConfig {
+    fn default() -> Self {
+        Self {
+            policy: RestartPolicy::OnFailure,
+            max_restarts: 5,
+            restart_window: 60_000_000_000, // 60 seconds
+            restart_delay: 1_000_000_000,    // 1 second
+            restart_count: 0,
+            window_start: 0,
+        }
+    }
+}
+
+/// Event emitted when service status changes
+#[derive(Debug, Clone)]
+pub struct ServiceEvent {
+    /// Service that generated the event
+    pub service_id: ServiceId,
+    /// Service name
+    pub service_name: String,
+    /// Event type
+    pub event_type: ServiceEventType,
+    /// Timestamp
+    pub timestamp: u64,
+}
+
+/// Service event types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceEventType {
+    /// Service registered
+    Registered,
+    /// Service became healthy
+    Healthy,
+    /// Service became degraded
+    Degraded,
+    /// Service became unhealthy
+    Unhealthy,
+    /// Service is being restarted
+    Restarting,
+    /// Service was restarted successfully
+    Restarted,
+    /// Service restart failed
+    RestartFailed,
+    /// Service was unregistered
+    Unregistered,
+    /// Service is draining
+    Draining,
+}
+
+/// Service supervisor for health monitoring and auto-restart
+pub struct ServiceSupervisor {
+    /// Atlas registry reference
+    atlas: &'static Atlas,
+    /// Restart configurations per service
+    restart_configs: Mutex<BTreeMap<ServiceId, RestartConfig>>,
+    /// Event log (circular buffer)
+    events: Mutex<Vec<ServiceEvent>>,
+    /// Maximum events to keep
+    max_events: usize,
+    /// Callback for restart actions (in real impl, would spawn processes)
+    restart_handler: Option<fn(ServiceId, &ServiceInfo) -> Result<ProcessId, ()>>,
+}
+
+impl ServiceSupervisor {
+    /// Create a new supervisor
+    pub fn new(atlas: &'static Atlas, max_events: usize) -> Self {
+        Self {
+            atlas,
+            restart_configs: Mutex::new(BTreeMap::new()),
+            events: Mutex::new(Vec::with_capacity(max_events)),
+            max_events,
+            restart_handler: None,
+        }
+    }
+    
+    /// Set the restart handler callback
+    pub fn set_restart_handler(&mut self, handler: fn(ServiceId, &ServiceInfo) -> Result<ProcessId, ()>) {
+        self.restart_handler = Some(handler);
+    }
+    
+    /// Configure restart policy for a service
+    pub fn configure_restart(
+        &self,
+        service_id: ServiceId,
+        config: RestartConfig,
+    ) {
+        self.restart_configs.lock().insert(service_id, config);
+    }
+    
+    /// Check and restart unhealthy services
+    pub fn check_and_restart(&self) -> Vec<ServiceEvent> {
+        let mut events = Vec::new();
+        let now = get_monotonic_time();
+        
+        // Get current service states
+        let token = CapabilityToken::default();
+        let services = match self.atlas.list_services(&token) {
+            Ok(s) => s,
+            Err(_) => return events,
+        };
+        
+        for service in services {
+            if service.status == ServiceStatus::Unhealthy {
+                if let Some(event) = self.try_restart_service(service.id, &service.info, now) {
+                    events.push(event);
+                }
+            }
+        }
+        
+        // Log events
+        let mut event_log = self.events.lock();
+        for event in &events {
+            if event_log.len() >= self.max_events {
+                event_log.remove(0);
+            }
+            event_log.push(event.clone());
+        }
+        
+        events
+    }
+    
+    fn try_restart_service(
+        &self,
+        service_id: ServiceId,
+        info: &ServiceInfo,
+        now: u64,
+    ) -> Option<ServiceEvent> {
+        let mut configs = self.restart_configs.lock();
+        let config = configs.entry(service_id).or_insert_with(RestartConfig::default);
+        
+        // Check restart policy
+        if config.policy == RestartPolicy::Never {
+            return None;
+        }
+        
+        // Check if we're within the restart window
+        if now - config.window_start > config.restart_window {
+            // Reset window
+            config.restart_count = 0;
+            config.window_start = now;
+        }
+        
+        // Check restart limit
+        if config.restart_count >= config.max_restarts {
+            return Some(ServiceEvent {
+                service_id,
+                service_name: info.name.clone(),
+                event_type: ServiceEventType::RestartFailed,
+                timestamp: now,
+            });
+        }
+        
+        config.restart_count += 1;
+        
+        // Emit restarting event
+        let restart_event = ServiceEvent {
+            service_id,
+            service_name: info.name.clone(),
+            event_type: ServiceEventType::Restarting,
+            timestamp: now,
+        };
+        
+        // Call restart handler if set
+        if let Some(handler) = self.restart_handler {
+            match handler(service_id, info) {
+                Ok(_new_pid) => {
+                    return Some(ServiceEvent {
+                        service_id,
+                        service_name: info.name.clone(),
+                        event_type: ServiceEventType::Restarted,
+                        timestamp: now,
+                    });
+                }
+                Err(_) => {
+                    return Some(ServiceEvent {
+                        service_id,
+                        service_name: info.name.clone(),
+                        event_type: ServiceEventType::RestartFailed,
+                        timestamp: now,
+                    });
+                }
+            }
+        }
+        
+        Some(restart_event)
+    }
+    
+    /// Get recent events
+    pub fn get_events(&self, count: usize) -> Vec<ServiceEvent> {
+        let events = self.events.lock();
+        let start = events.len().saturating_sub(count);
+        events[start..].to_vec()
+    }
+    
+    /// Get restart stats for a service
+    pub fn get_restart_stats(&self, service_id: ServiceId) -> Option<(u32, u32)> {
+        let configs = self.restart_configs.lock();
+        configs.get(&service_id).map(|c| (c.restart_count, c.max_restarts))
+    }
 }
 
 #[cfg(test)]

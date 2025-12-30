@@ -331,6 +331,97 @@ cargo bench -p splax-kernel --bench ipc_latency
 cargo bench -p splax-kernel --bench service_call
 ```
 
+## Service Supervision (New in v0.1.0)
+
+S-ATLAS now includes a `ServiceSupervisor` for automatic health monitoring and restart of failed services.
+
+### Restart Policies
+
+```rust
+use splax_atlas::{RestartPolicy, RestartConfig};
+
+// Available policies
+pub enum RestartPolicy {
+    Never,     // Never restart (one-shot services)
+    OnFailure, // Restart only on failure (exit code != 0)
+    Always,    // Always restart (daemon services)
+}
+
+// Configuration
+pub struct RestartConfig {
+    pub max_restarts: u32,     // Max restarts before giving up (default: 3)
+    pub restart_window: u64,   // Time window in ms (default: 60000)
+    pub restart_delay: u64,    // Delay before restart in ms (default: 1000)
+}
+```
+
+### Configuring Restart Policies
+
+```rust
+use splax_atlas::supervisor::ServiceSupervisor;
+
+let supervisor = ServiceSupervisor::new();
+
+// Configure S-NET to always restart with defaults
+supervisor.configure_restart("s-net", RestartPolicy::Always, None);
+
+// Configure S-STORAGE with custom limits
+supervisor.configure_restart("s-storage", RestartPolicy::OnFailure, Some(RestartConfig {
+    max_restarts: 5,
+    restart_window: 30000,  // 30 seconds
+    restart_delay: 500,     // 500ms
+}));
+```
+
+### Service Events
+
+The supervisor logs all service lifecycle events:
+
+```rust
+pub enum ServiceEventType {
+    Registered,    // Service added to registry
+    Healthy,       // Health check passed
+    Degraded,      // Health check shows degradation
+    Unhealthy,     // Health check failed
+    Restarting,    // Restart initiated
+    Restarted,     // Restart successful
+    RestartFailed, // Restart limit exceeded
+    Unregistered,  // Service removed
+    Draining,      // Service draining connections
+}
+
+// Get recent events
+let events = supervisor.get_events("s-net", 10);
+for event in events {
+    println!("[{}] {}: {:?}", event.timestamp, event.service_id, event.event_type);
+}
+```
+
+### Health Check Loop
+
+Run periodic health checks in the service manager:
+
+```rust
+// In S-ATLAS main loop
+loop {
+    // Check all services and restart if needed
+    for service_id in atlas.list_services()? {
+        supervisor.check_and_restart(&service_id, &atlas)?;
+    }
+    
+    // Sleep between checks
+    sleep(Duration::from_millis(5000));
+}
+```
+
+### Restart Statistics
+
+```rust
+// Get restart count for a service
+let restarts = supervisor.get_restart_stats("s-net");
+println!("S-NET has restarted {} times", restarts);
+```
+
 ## Troubleshooting
 
 ### Service Won't Start

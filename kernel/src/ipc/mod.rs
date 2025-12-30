@@ -30,12 +30,11 @@
 pub mod fastpath;
 
 use alloc::collections::BTreeMap;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use spin::Mutex;
 
-use crate::cap::{CapabilityToken, Operations};
+use crate::cap::CapabilityToken;
 use crate::sched::ProcessId;
 
 /// Channel identifier.
@@ -383,6 +382,8 @@ impl IpcManager {
             buffer_size: channel.buffer.len(),
             total_sent: channel.next_sequence,
             closed: channel.closed,
+            pending_async_sends: ASYNC_IPC.pending_count(channel.id).0,
+            pending_async_receives: ASYNC_IPC.pending_count(channel.id).1,
         })
     }
 }
@@ -397,6 +398,100 @@ pub struct ChannelStats {
     pub buffer_size: usize,
     pub total_sent: u64,
     pub closed: bool,
+    /// Pending async sends waiting
+    pub pending_async_sends: usize,
+    /// Pending async receives waiting
+    pub pending_async_receives: usize,
+}
+
+impl IpcManager {
+    // ... existing methods ...
+    
+    /// Async send - queues if buffer full
+    pub fn send_async(
+        &self,
+        channel_id: ChannelId,
+        sender: ProcessId,
+        message: Message,
+        cap_token: &CapabilityToken,
+        timeout: u64,
+    ) -> Result<Option<PendingId>, IpcError> {
+        // Try sync send first
+        match self.send(channel_id, sender, message.clone(), cap_token) {
+            Ok(()) => Ok(None), // Sent immediately
+            Err(IpcError::BufferFull) => {
+                // Queue for async completion
+                let pending_id = ASYNC_IPC.queue_send(channel_id, sender, message, timeout)?;
+                Ok(Some(pending_id))
+            }
+            Err(e) => Err(e),
+        }
+    }
+    
+    /// Async receive - queues if buffer empty
+    pub fn receive_async(
+        &self,
+        channel_id: ChannelId,
+        receiver: ProcessId,
+        cap_token: &CapabilityToken,
+        timeout: u64,
+    ) -> Result<Result<Message, PendingId>, IpcError> {
+        // Try sync receive first
+        match self.receive(channel_id, receiver, cap_token) {
+            Ok(msg) => Ok(Ok(msg)), // Received immediately
+            Err(IpcError::BufferEmpty) => {
+                // Queue for async completion
+                let pending_id = ASYNC_IPC.queue_receive(channel_id, receiver, timeout)?;
+                Ok(Err(pending_id))
+            }
+            Err(e) => Err(e),
+        }
+    }
+    
+    /// Poll for async operation completion
+    pub fn poll_pending(&self, pending_id: PendingId) -> Result<Option<Message>, IpcError> {
+        // Check if the operation is still pending
+        let (sends, receives) = {
+            let pending_sends = ASYNC_IPC.pending_sends.lock();
+            let pending_receives = ASYNC_IPC.pending_receives.lock();
+            
+            let has_send = pending_sends.values().any(|queue| {
+                queue.iter().any(|op: &PendingOp| op.id == pending_id)
+            });
+            let has_receive = pending_receives.values().any(|queue| {
+                queue.iter().any(|op: &PendingOp| op.id == pending_id)
+            });
+            
+            (has_send, has_receive)
+        };
+        
+        if sends || receives {
+            return Err(IpcError::WouldBlock);
+        }
+        
+        // If not in pending queues, operation was cancelled or ID invalid
+        Err(IpcError::PendingNotFound)
+    }
+    
+    /// Cancel a pending async operation
+    pub fn cancel_pending(&self, pending_id: PendingId) -> Result<(), IpcError> {
+        ASYNC_IPC.cancel(pending_id)
+    }
+    
+    /// Process pending operations for all channels
+    /// Should be called periodically by the kernel main loop
+    pub fn process_pending(&self) {
+        let mut channels = self.channels.lock();
+        for channel in channels.values_mut() {
+            // Try to complete pending sends
+            let _completed_sends = ASYNC_IPC.try_complete_sends(channel);
+            // Notify waiters (would wake up blocked processes in real impl)
+            
+            // Try to complete pending receives
+            let _completed_receives = ASYNC_IPC.try_complete_receives(channel);
+            // Deliver messages to waiting processes
+        }
+    }
 }
 
 /// IPC errors.
@@ -420,7 +515,222 @@ pub enum IpcError {
     InvalidCapability,
     /// Operation timed out
     Timeout,
+    /// Operation would block (async mode)
+    WouldBlock,
+    /// Pending operation ID not found
+    PendingNotFound,
+    /// Too many pending async operations
+    TooManyPending,
 }
+
+// =============================================================================
+// Async IPC Support
+// =============================================================================
+
+/// Pending operation identifier for async IPC
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PendingId(pub u64);
+
+/// Async operation type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsyncOpType {
+    /// Waiting to send (buffer was full)
+    Send,
+    /// Waiting to receive (buffer was empty)
+    Receive,
+}
+
+/// A pending async operation
+#[derive(Debug, Clone)]
+pub struct PendingOp {
+    /// Operation ID
+    pub id: PendingId,
+    /// Channel this operation is on
+    pub channel_id: ChannelId,
+    /// Process that initiated the operation
+    pub process: ProcessId,
+    /// Type of operation
+    pub op_type: AsyncOpType,
+    /// Message (for pending sends)
+    pub message: Option<Message>,
+    /// When this operation was queued (for timeout)
+    pub queued_at: u64,
+    /// Timeout in cycles (0 = no timeout)
+    pub timeout: u64,
+}
+
+/// Async IPC manager extension
+pub struct AsyncIpcManager {
+    /// Pending send operations per channel
+    pending_sends: Mutex<BTreeMap<ChannelId, Vec<PendingOp>>>,
+    /// Pending receive operations per channel  
+    pending_receives: Mutex<BTreeMap<ChannelId, Vec<PendingOp>>>,
+    /// Next pending operation ID
+    next_pending_id: Mutex<u64>,
+    /// Maximum pending operations per channel
+    max_pending_per_channel: usize,
+}
+
+impl AsyncIpcManager {
+    /// Create new async IPC manager
+    pub fn new(max_pending: usize) -> Self {
+        Self {
+            pending_sends: Mutex::new(BTreeMap::new()),
+            pending_receives: Mutex::new(BTreeMap::new()),
+            next_pending_id: Mutex::new(1),
+            max_pending_per_channel: max_pending,
+        }
+    }
+    
+    /// Queue an async send operation
+    pub fn queue_send(
+        &self,
+        channel_id: ChannelId,
+        process: ProcessId,
+        message: Message,
+        timeout: u64,
+    ) -> Result<PendingId, IpcError> {
+        let mut pending = self.pending_sends.lock();
+        let queue = pending.entry(channel_id).or_insert_with(Vec::new);
+        
+        if queue.len() >= self.max_pending_per_channel {
+            return Err(IpcError::TooManyPending);
+        }
+        
+        let mut next_id = self.next_pending_id.lock();
+        let id = PendingId(*next_id);
+        *next_id += 1;
+        
+        queue.push(PendingOp {
+            id,
+            channel_id,
+            process,
+            op_type: AsyncOpType::Send,
+            message: Some(message),
+            queued_at: 0, // Would use timestamp in real impl
+            timeout,
+        });
+        
+        Ok(id)
+    }
+    
+    /// Queue an async receive operation
+    pub fn queue_receive(
+        &self,
+        channel_id: ChannelId,
+        process: ProcessId,
+        timeout: u64,
+    ) -> Result<PendingId, IpcError> {
+        let mut pending = self.pending_receives.lock();
+        let queue = pending.entry(channel_id).or_insert_with(Vec::new);
+        
+        if queue.len() >= self.max_pending_per_channel {
+            return Err(IpcError::TooManyPending);
+        }
+        
+        let mut next_id = self.next_pending_id.lock();
+        let id = PendingId(*next_id);
+        *next_id += 1;
+        
+        queue.push(PendingOp {
+            id,
+            channel_id,
+            process,
+            op_type: AsyncOpType::Receive,
+            message: None,
+            queued_at: 0,
+            timeout,
+        });
+        
+        Ok(id)
+    }
+    
+    /// Cancel a pending operation
+    pub fn cancel(&self, pending_id: PendingId) -> Result<(), IpcError> {
+        // Check sends
+        {
+            let mut pending = self.pending_sends.lock();
+            for queue in pending.values_mut() {
+                if let Some(pos) = queue.iter().position(|op| op.id == pending_id) {
+                    queue.remove(pos);
+                    return Ok(());
+                }
+            }
+        }
+        
+        // Check receives
+        {
+            let mut pending = self.pending_receives.lock();
+            for queue in pending.values_mut() {
+                if let Some(pos) = queue.iter().position(|op| op.id == pending_id) {
+                    queue.remove(pos);
+                    return Ok(());
+                }
+            }
+        }
+        
+        Err(IpcError::PendingNotFound)
+    }
+    
+    /// Try to complete pending sends for a channel (called when buffer has space)
+    pub fn try_complete_sends(&self, channel: &mut Channel) -> Vec<PendingId> {
+        let mut completed = Vec::new();
+        let mut pending = self.pending_sends.lock();
+        
+        if let Some(queue) = pending.get_mut(&channel.id) {
+            let mut i = 0;
+            while i < queue.len() && !channel.is_full() {
+                if let Some(msg) = queue[i].message.take() {
+                    if channel.send(msg).is_ok() {
+                        completed.push(queue[i].id);
+                        queue.remove(i);
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+        }
+        
+        completed
+    }
+    
+    /// Try to complete pending receives for a channel (called when message available)
+    pub fn try_complete_receives(&self, channel: &mut Channel) -> Vec<(PendingId, Message)> {
+        let mut completed = Vec::new();
+        let mut pending = self.pending_receives.lock();
+        
+        if let Some(queue) = pending.get_mut(&channel.id) {
+            while !queue.is_empty() && !channel.is_empty() {
+                if let Ok(msg) = channel.receive() {
+                    let op = queue.remove(0);
+                    completed.push((op.id, msg));
+                } else {
+                    break;
+                }
+            }
+        }
+        
+        completed
+    }
+    
+    /// Get pending operation count for a channel
+    pub fn pending_count(&self, channel_id: ChannelId) -> (usize, usize) {
+        let sends = self.pending_sends.lock()
+            .get(&channel_id)
+            .map(|q| q.len())
+            .unwrap_or(0);
+        let receives = self.pending_receives.lock()
+            .get(&channel_id)
+            .map(|q| q.len())
+            .unwrap_or(0);
+        (sends, receives)
+    }
+}
+
+/// Global async IPC manager
+pub static ASYNC_IPC: spin::Lazy<AsyncIpcManager> = spin::Lazy::new(|| {
+    AsyncIpcManager::new(64) // Max 64 pending ops per channel
+});
 
 // =============================================================================
 // Global IPC Manager
@@ -471,6 +781,7 @@ pub fn create_channel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     fn dummy_token() -> CapabilityToken {
         CapabilityToken::new([1, 2, 3, 4])

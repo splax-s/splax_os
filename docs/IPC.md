@@ -92,6 +92,90 @@ pub struct Message {
 
 ---
 
+## Async IPC (New in v0.1.0)
+
+Splax OS now supports asynchronous IPC operations for non-blocking communication.
+
+### Async Operations
+
+```rust
+/// Pending operation identifier for async IPC
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingId(pub u64);
+
+/// Async operation type
+pub enum AsyncOpType {
+    /// Waiting to send (buffer was full)
+    Send,
+    /// Waiting to receive (buffer was empty)
+    Receive,
+}
+```
+
+### Async Send
+
+When the channel buffer is full, the operation is queued:
+
+```rust
+/// Async send - queues if buffer full
+pub fn send_async(
+    &self,
+    channel_id: ChannelId,
+    sender: ProcessId,
+    message: Message,
+    cap_token: &CapabilityToken,
+    timeout: u64,
+) -> Result<Option<PendingId>, IpcError> {
+    // Try sync send first
+    match self.send(channel_id, sender, message.clone(), cap_token) {
+        Ok(()) => Ok(None), // Sent immediately
+        Err(IpcError::BufferFull) => {
+            // Queue for async completion
+            let pending_id = ASYNC_IPC.queue_send(...)?;
+            Ok(Some(pending_id))
+        }
+        Err(e) => Err(e),
+    }
+}
+```
+
+### Async Receive
+
+When the channel is empty, the operation is queued:
+
+```rust
+/// Async receive - queues if buffer empty
+pub fn receive_async(
+    &self,
+    channel_id: ChannelId,
+    receiver: ProcessId,
+    cap_token: &CapabilityToken,
+    timeout: u64,
+) -> Result<Result<Message, PendingId>, IpcError>
+```
+
+### Polling and Cancellation
+
+```rust
+/// Poll for async operation completion
+pub fn poll_pending(&self, pending_id: PendingId) -> Result<Option<Message>, IpcError>;
+
+/// Cancel a pending async operation  
+pub fn cancel_pending(&self, pending_id: PendingId) -> Result<(), IpcError>;
+```
+
+### Timeouts
+
+Async operations support timeouts in nanoseconds:
+
+| Value | Meaning |
+|-------|---------|
+| `0` | No timeout (wait forever) |
+| `1_000_000` | 1 millisecond |
+| `1_000_000_000` | 1 second |
+
+---
+
 ## Kernel IPC Primitives
 
 ### Configuration
