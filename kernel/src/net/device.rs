@@ -67,6 +67,10 @@ pub enum NetworkError {
     SocketError,
     /// TLS handshake or encryption error
     TlsError,
+    /// Permission denied
+    PermissionDenied,
+    /// Namespace not found
+    NamespaceNotFound,
 }
 
 /// Network device information.

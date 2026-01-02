@@ -107,11 +107,17 @@ enum SocketInner {
     },
 }
 
+use super::namespace::{NetNsId, NetCapability, get_process_namespace, get_process_capabilities, get_namespace};
+
 /// Socket.
 struct Socket {
     inner: SocketInner,
     /// Non-blocking mode.
     non_blocking: bool,
+    /// Network namespace this socket belongs to.
+    namespace: NetNsId,
+    /// Process ID that owns this socket.
+    owner_pid: u64,
 }
 
 impl Socket {
@@ -122,6 +128,20 @@ impl Socket {
                 local: None,
             },
             non_blocking: false,
+            namespace: NetNsId::DEFAULT,
+            owner_pid: 0,
+        }
+    }
+    
+    fn new_tcp_stream_in_ns(netns: NetNsId, pid: u64) -> Self {
+        Self {
+            inner: SocketInner::TcpStream {
+                connection_key: None,
+                local: None,
+            },
+            non_blocking: false,
+            namespace: netns,
+            owner_pid: pid,
         }
     }
     
@@ -132,6 +152,20 @@ impl Socket {
                 local: None,
             },
             non_blocking: false,
+            namespace: NetNsId::DEFAULT,
+            owner_pid: 0,
+        }
+    }
+    
+    fn new_udp_in_ns(netns: NetNsId, pid: u64) -> Self {
+        Self {
+            inner: SocketInner::Udp {
+                port: None,
+                local: None,
+            },
+            non_blocking: false,
+            namespace: netns,
+            owner_pid: pid,
         }
     }
 }
@@ -183,6 +217,34 @@ pub fn socket(socket_type: SocketType) -> Result<SocketHandle, NetworkError> {
     Ok(handle)
 }
 
+/// Creates a new socket in a specific network namespace.
+/// 
+/// This is the namespace-aware version that checks capabilities and
+/// registers the socket with the namespace.
+pub fn socket_in_ns(socket_type: SocketType, pid: u64) -> Result<SocketHandle, NetworkError> {
+    let netns = get_process_namespace(pid);
+    let caps = get_process_capabilities(pid);
+    
+    // Check basic socket creation capability (implied by Bind or Connect)
+    if !caps.has(NetCapability::Bind) && !caps.has(NetCapability::Connect) {
+        return Err(NetworkError::PermissionDenied);
+    }
+    
+    let socket = match socket_type {
+        SocketType::Stream => Socket::new_tcp_stream_in_ns(netns, pid),
+        SocketType::Datagram => Socket::new_udp_in_ns(netns, pid),
+    };
+    
+    let handle = SOCKET_TABLE.lock().allocate(socket);
+    
+    // Register socket with namespace
+    if let Some(ns) = get_namespace(netns) {
+        ns.lock().register_socket(handle);
+    }
+    
+    Ok(handle)
+}
+
 /// Binds a socket to an address.
 pub fn bind(handle: SocketHandle, addr: SocketAddr) -> Result<(), NetworkError> {
     let mut table = SOCKET_TABLE.lock();
@@ -200,7 +262,59 @@ pub fn bind(handle: SocketHandle, addr: SocketAddr) -> Result<(), NetworkError> 
             Ok(())
         }
         SocketInner::TcpListener { .. } => Err(NetworkError::InvalidOperation),
+        SocketInner::TlsStream { .. } => Err(NetworkError::InvalidOperation),
     }
+}
+
+/// Binds a socket to an address with capability checking.
+/// 
+/// This is the namespace-aware version that verifies the process has
+/// permission to bind to the requested port.
+pub fn bind_with_caps(handle: SocketHandle, addr: SocketAddr) -> Result<(), NetworkError> {
+    let mut table = SOCKET_TABLE.lock();
+    let socket = table.get_mut(handle).ok_or(NetworkError::InvalidSocket)?;
+    
+    let netns = socket.namespace;
+    let pid = socket.owner_pid;
+    let caps = get_process_capabilities(pid);
+    
+    // Check port binding permissions via namespace ACL
+    let protocol = match &socket.inner {
+        SocketInner::TcpStream { .. } | SocketInner::TcpListener { .. } => 6, // TCP
+        SocketInner::Udp { .. } => 17, // UDP
+        SocketInner::TlsStream { .. } => 6, // TLS over TCP
+    };
+    
+    if let Some(ns) = get_namespace(netns) {
+        if !ns.lock().check_port_binding(pid, addr.port, protocol, caps) {
+            return Err(NetworkError::PermissionDenied);
+        }
+    }
+    
+    match &mut socket.inner {
+        SocketInner::TcpStream { local, .. } => {
+            *local = Some(addr);
+            Ok(())
+        }
+        SocketInner::Udp { port, local } => {
+            udp_state().lock().bind(addr.port, addr.addr)?;
+            *port = Some(addr.port);
+            *local = Some(addr);
+            Ok(())
+        }
+        SocketInner::TcpListener { .. } => Err(NetworkError::InvalidOperation),
+        SocketInner::TlsStream { .. } => Err(NetworkError::InvalidOperation),
+    }
+}
+
+/// Get the namespace a socket belongs to.
+pub fn get_socket_namespace(handle: SocketHandle) -> Option<NetNsId> {
+    SOCKET_TABLE.lock().get(handle).map(|s| s.namespace)
+}
+
+/// Get the owner PID of a socket.
+pub fn get_socket_owner(handle: SocketHandle) -> Option<u64> {
+    SOCKET_TABLE.lock().get(handle).map(|s| s.owner_pid)
 }
 
 /// Starts listening on a TCP socket.
@@ -230,6 +344,10 @@ pub fn accept(handle: SocketHandle) -> Result<(SocketHandle, SocketAddr), Networ
     let table = SOCKET_TABLE.lock();
     let socket = table.get(handle).ok_or(NetworkError::InvalidSocket)?;
     
+    // Inherit namespace and owner from listening socket
+    let listener_ns = socket.namespace;
+    let listener_pid = socket.owner_pid;
+    
     match &socket.inner {
         SocketInner::TcpListener { port, .. } => {
             let port = *port;
@@ -248,9 +366,17 @@ pub fn accept(handle: SocketHandle) -> Result<(SocketHandle, SocketAddr), Networ
                             local: Some(SocketAddr::from(conn.key.local)),
                         },
                         non_blocking: false,
+                        namespace: listener_ns,
+                        owner_pid: listener_pid,
                     };
                     
                     let new_handle = SOCKET_TABLE.lock().allocate(new_socket);
+                    
+                    // Register with namespace
+                    if let Some(ns) = get_namespace(listener_ns) {
+                        ns.lock().register_socket(new_handle);
+                    }
+                    
                     Ok((new_handle, remote_addr))
                 }
                 None => Err(NetworkError::WouldBlock),
@@ -429,6 +555,11 @@ pub fn close(handle: SocketHandle) -> Result<(), NetworkError> {
     
     match socket {
         Some(socket) => {
+            // Unregister from namespace
+            if let Some(ns) = get_namespace(socket.namespace) {
+                ns.lock().unregister_socket(handle);
+            }
+            
             match socket.inner {
                 SocketInner::Udp { port: Some(port), .. } => {
                     udp_state().lock().unbind(port);

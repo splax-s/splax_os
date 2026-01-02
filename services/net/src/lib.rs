@@ -75,6 +75,7 @@ pub mod icmp;
 pub mod ip;
 pub mod firewall;
 pub mod config;
+pub mod acl;
 
 use alloc::string::String;
 use alloc::vec::Vec;
