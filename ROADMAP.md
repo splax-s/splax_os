@@ -71,11 +71,11 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 - [x] IPv6 support
 - [x] TCP optimization
 - [x] UDP multicast
-- [ ] Network namespaces
+- [x] Network namespaces
 
 ### Distributed Features
 - [ ] Service mesh integration
-- [ ] Capability-based network ACLs
+- [x] Capability-based network ACLs
 - [x] Encrypted inter-node communication
 - [x] Distributed capability delegation
 

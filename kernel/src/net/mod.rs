@@ -48,6 +48,7 @@ pub mod ssh;
 pub mod firewall;
 pub mod qos;
 pub mod tls;
+pub mod namespace;
 
 // Network device drivers
 #[cfg(target_arch = "x86_64")]
@@ -76,6 +77,10 @@ pub use tcp::{TcpConnection, TcpSegment};
 pub use udp::{UdpDatagram, UdpEndpoint};
 pub use dns::{DnsResolver, RecordType, DnsResponse};
 pub use tls::TlsConnection;
+pub use namespace::{
+    NetNsId, NetCapability, NetCapabilitySet, NetworkNamespace,
+    NamespaceError, VirtualInterface, RouteEntry, PortAcl,
+};
 
 /// Network interface identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

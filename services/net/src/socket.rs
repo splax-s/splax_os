@@ -116,6 +116,10 @@ pub struct Socket {
     pub capability: u64,
     /// TCP Control Block for TCP sockets
     pub tcb: Option<Tcb>,
+    /// Network namespace ID
+    pub namespace_id: u64,
+    /// Owner process ID
+    pub owner_pid: u64,
 }
 
 impl Socket {
@@ -142,7 +146,23 @@ impl Socket {
             pending_connections: Vec::new(),
             capability: 0,
             tcb,
+            namespace_id: 0, // Default namespace
+            owner_pid: 0,
         }
+    }
+
+    /// Creates a new socket in a specific network namespace
+    pub fn new_in_namespace(
+        domain: SocketDomain, 
+        sock_type: SocketType, 
+        protocol: u8, 
+        namespace_id: u64, 
+        owner_pid: u64
+    ) -> Self {
+        let mut socket = Self::new(domain, sock_type, protocol);
+        socket.namespace_id = namespace_id;
+        socket.owner_pid = owner_pid;
+        socket
     }
 
     /// Checks if a port is available for binding
