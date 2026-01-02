@@ -785,14 +785,26 @@ pub fn init_bsp() {
 
 ### AP Startup (x86_64)
 
+**ACPI CPU Enumeration:**
 ```rust
+// kernel/src/acpi/mod.rs provides helper functions:
+pub fn cpu_count() -> usize;        // Total number of enabled CPUs
+pub fn get_apic_ids() -> Vec<u8>;   // APIC IDs of all enabled processors
+pub fn bsp_apic_id() -> Option<u8>; // APIC ID of the bootstrap processor
+```
+
+**INIT-SIPI-SIPI Sequence:**
+```rust
+// kernel/src/smp/mod.rs
 // x86_64 AP startup via INIT-SIPI-SIPI sequence:
-// 1. Parse ACPI MADT table to find AP APIC IDs
+// 1. Parse ACPI MADT table to find AP APIC IDs via acpi::get_apic_ids()
 // 2. For each AP:
 //    a. Send INIT IPI (ICR = 0x00C500 | (apic_id << 56))
 //    b. Wait 10ms
 //    c. Send SIPI IPI twice (ICR = 0x00C600 | vector | (apic_id << 56))
 // 3. APs jump to trampoline code at vector*0x1000
+//
+// The LAPIC (0xFEE00000) is accessible via boot-time 4GB identity mapping
 ```
 
 ### AP Startup (aarch64)

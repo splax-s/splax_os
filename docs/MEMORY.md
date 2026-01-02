@@ -681,6 +681,22 @@ FRAME_ALLOCATOR.reserve_region(kernel_start, kernel_size);
 // Or call init_heap() explicitly
 ```
 
+### Boot-Time Identity Mapping
+
+The bootloader (`kernel/src/boot.S`) sets up an identity mapping of the first 4GB
+of physical address space using 2MB huge pages. This provides early access to:
+
+| Range | Description |
+|-------|-------------|
+| 0x0000_0000 - 0x3FFF_FFFF | Low memory, kernel code/data, ACPI tables |
+| 0x4000_0000 - 0x7FFF_FFFF | Extended RAM (if present) |
+| 0x8000_0000 - 0xBFFF_FFFF | PCI memory-mapped I/O hole |
+| 0xC000_0000 - 0xFFFF_FFFF | Local APIC (0xFEE00000), IOAPIC, PCI config space |
+
+This 4GB mapping ensures the kernel can access hardware registers (LAPIC, IOAPIC,
+PCI BARs) immediately after entering long mode, before the kernel's full memory
+manager is initialized.
+
 ---
 
 ## Shell Commands

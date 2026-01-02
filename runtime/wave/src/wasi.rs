@@ -719,8 +719,35 @@ impl WasiSyscalls {
     pub fn clock_time_get(memory: &mut [u8], clock_id: u32, _precision: u64, time_ptr: u32) -> Errno {
         let time = match ClockId::from_u32(clock_id) {
             Some(ClockId::Realtime) => {
-                // Nanoseconds since Unix epoch (placeholder)
-                1735574400_000_000_000u64 // ~Jan 1, 2025
+                // Use CPU timestamp as base, convert to nanoseconds since epoch
+                // TSC gives cycles since boot; we estimate nanoseconds from that
+                #[cfg(target_arch = "x86_64")]
+                {
+                    // Approximate: TSC cycles / 2 = nanoseconds (assumes ~2GHz)
+                    // Add Unix epoch offset for Jan 1, 2025 as base
+                    const EPOCH_BASE_NS: u64 = 1735689600_000_000_000; // Jan 1, 2025 00:00:00 UTC
+                    let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+                    EPOCH_BASE_NS + (tsc / 2) // Add boot-relative time
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    const EPOCH_BASE_NS: u64 = 1735689600_000_000_000;
+                    let cnt: u64;
+                    let freq: u64;
+                    unsafe {
+                        core::arch::asm!("mrs {}, cntvct_el0", out(reg) cnt, options(nostack, nomem));
+                        core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nostack, nomem));
+                    }
+                    if freq > 0 {
+                        EPOCH_BASE_NS + (cnt * 1_000_000_000 / freq)
+                    } else {
+                        EPOCH_BASE_NS + cnt
+                    }
+                }
+                #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+                {
+                    1735689600_000_000_000u64 // Fallback: Jan 1, 2025
+                }
             }
             Some(ClockId::Monotonic) | Some(ClockId::ProcessCputimeId) | Some(ClockId::ThreadCputimeId) => {
                 // CPU cycles as nanoseconds estimate

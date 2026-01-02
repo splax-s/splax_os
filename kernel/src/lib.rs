@@ -304,6 +304,15 @@ pub extern "C" fn kernel_main(boot_info: *const u8) -> ! {
     smp::init_bsp();
     serial_println!("[kernel] SMP initialized (BSP registered)");
 
+    // Start Application Processors (secondary CPUs)
+    #[cfg(target_arch = "x86_64")]
+    {
+        let cpu_count = smp::start_application_processors();
+        if cpu_count > 1 {
+            serial_println!("[kernel] Started {} application processors", cpu_count - 1);
+        }
+    }
+
     // Print kernel init message
     #[cfg(target_arch = "x86_64")]
     {
@@ -314,6 +323,13 @@ pub extern "C" fn kernel_main(boot_info: *const u8) -> ! {
         #[cfg(feature = "microkernel")]
         let _ = writeln!(serial, "[kernel] Microkernel mode - minimal subsystems...");
         drop(serial);
+    }
+    
+    // Initialize GPU for framebuffer access (needed in both modes for console output)
+    #[cfg(any(not(feature = "microkernel"), feature = "monolithic_gpu"))]
+    {
+        gpu::init();
+        serial_println!("[kernel] GPU/Framebuffer initialized");
     }
     
     // Initialize monolithic subsystems (disabled in microkernel mode)

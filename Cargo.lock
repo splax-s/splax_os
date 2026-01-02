@@ -98,6 +98,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "splax_crypto"
+version = "0.1.0"
+
+[[package]]
 name = "splax_gate"
 version = "0.1.0"
 dependencies = [

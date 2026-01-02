@@ -456,11 +456,21 @@ pub fn probe_partitions(device_name: &'static str) -> Result<Vec<String>, BlockE
         let part_dev = PartitionDevice::new(device_name, partition, sector_size);
         let name = part_dev.info().name.clone();
         
-        // Convert to static lifetime for registration
-        // In real implementation, this would use a proper lifetime management
-        // For now, we just log the partition
-        crate::serial_println!("[PART] Found partition: {} ({})", name, part_dev.info().model);
-        registered.push(name);
+        // Register the partition as a block device
+        crate::serial_println!("[PART] Registering partition: {} (start={}, sectors={})", 
+            name, partition.start_sector, partition.sector_count);
+        
+        // Register with block subsystem
+        match super::register_device(Box::new(part_dev)) {
+            Ok(registered_name) => {
+                crate::serial_println!("[PART] Successfully registered: {}", registered_name);
+                registered.push(registered_name);
+            }
+            Err(e) => {
+                crate::serial_println!("[PART] Failed to register {}: {:?}", name, e);
+                registered.push(name); // Still track it even if registration failed
+            }
+        }
     }
 
     Ok(registered)

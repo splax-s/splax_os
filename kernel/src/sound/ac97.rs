@@ -608,17 +608,35 @@ impl Ac97Controller {
 
     /// Start DMA for a stream
     fn start_dma(&mut self, direction: StreamDirection) -> Result<(), AudioError> {
-        let (bdbar_reg, cr_reg) = match direction {
-            StreamDirection::Playback => (nabm::PO_BDBAR, nabm::PO_CR),
-            StreamDirection::Capture => (nabm::PI_BDBAR, nabm::PI_CR),
+        let (bdbar_reg, cr_reg, lvi_reg) = match direction {
+            StreamDirection::Playback => (nabm::PO_BDBAR, nabm::PO_CR, nabm::PO_LVI),
+            StreamDirection::Capture => (nabm::PI_BDBAR, nabm::PI_CR, nabm::PI_LVI),
         };
 
-        // In real implementation: set up BDL address and start DMA
-        // self.write_nabm32(bdbar_reg, bdl_physical_address);
-        // self.write_nabm8(lvi_reg, last_valid_index);
-        // self.write_nabm8(cr_reg, control::RPBM | control::IOCE);
+        // Get the stream to access its BDL
+        let stream = match direction {
+            StreamDirection::Playback => self.playback_stream.as_ref(),
+            StreamDirection::Capture => self.capture_stream.as_ref(),
+        };
 
-        let _ = bdbar_reg;
+        if let Some(stream) = stream {
+            // Get physical address of BDL
+            // The BDL must be in physical memory accessible by the DMA controller
+            // For now, we use the BDL array address directly (requires identity mapping)
+            let bdl_ptr = stream.bdl.as_ptr() as u64;
+            let bdl_phys = bdl_ptr as u32; // Lower 32 bits for AC'97
+            
+            // Set BDL base address register
+            self.write_nabm32(bdbar_reg, bdl_phys);
+            
+            // Set last valid index (number of valid BDL entries - 1)
+            let last_valid_index = stream.buffers.len().saturating_sub(1).min(31) as u8;
+            self.write_nabm8(lvi_reg, last_valid_index);
+            
+            crate::serial_println!("[ac97] Starting DMA: BDBAR=0x{:x}, LVI={}", bdl_phys, last_valid_index);
+        }
+
+        // Start DMA: set run bit and enable interrupt on completion
         self.write_nabm8(cr_reg, control::RPBM | control::IOCE);
 
         Ok(())

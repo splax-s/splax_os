@@ -338,6 +338,28 @@ pub struct NativeProcess {
 | Serial | `serial.rs` | Debug output |
 | VGA | `vga.rs` | Text mode display |
 | Keyboard | `keyboard.rs` | PS/2 keyboard input |
+| LAPIC | `lapic.rs` | Local APIC for SMP, timers |
+| SMP | `smp/mod.rs` | Application Processor startup |
+
+**CPU Features Enabled:**
+- **FSGSBASE** (CR4 bit 16): Enables fast `RDGSBASE`/`WRGSBASE` instructions for per-CPU data access
+- **PAE**: Physical Address Extension for 4-level paging
+- **NX**: No-Execute page protection
+
+**Boot-time Memory Mapping:**
+The bootloader (`boot.S`) identity-maps the first 4GB of physical memory using 2MB huge pages:
+```
+0x0000_0000 - 0x3FFF_FFFF  (0-1GB)   Low memory, kernel, ACPI
+0x4000_0000 - 0x7FFF_FFFF  (1-2GB)   Extended RAM
+0x8000_0000 - 0xBFFF_FFFF  (2-3GB)   PCI memory hole
+0xC000_0000 - 0xFFFF_FFFF  (3-4GB)   LAPIC (0xFEE00000), IOAPIC, PCI config
+```
+
+**Multi-core Support:**
+- BSP (Bootstrap Processor) initializes kernel
+- APs (Application Processors) started via INIT-SIPI-SIPI sequence
+- ACPI MADT provides APIC IDs for all CPUs
+- `acpi::cpu_count()` and `acpi::get_apic_ids()` for CPU enumeration
 
 ### aarch64
 

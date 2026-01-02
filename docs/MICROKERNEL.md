@@ -207,6 +207,70 @@ while !bootstrap.is_complete() {
 }
 ```
 
+## Service Launcher
+
+**Location:** `kernel/src/process/service.rs`
+
+The kernel provides a service launcher for spawning userspace services:
+
+```rust
+pub enum ServiceId {
+    Init = 1,      // S-INIT: Process manager (PID 1)
+    Dev = 2,       // S-DEV: Device driver manager
+    Storage = 3,   // S-STORAGE: Filesystem service
+    Net = 4,       // S-NET: Network stack
+    Gpu = 5,       // S-GPU: Graphics compositor
+    Canvas = 6,    // S-CANVAS: 2D graphics service
+    Link = 7,      // S-LINK: Network link layer
+    Gate = 8,      // S-GATE: Security gateway
+    Custom(u64),   // User-defined services
+}
+```
+
+**Service Lifecycle:**
+1. Kernel calls `spawn_service(id, config, elf_data)`
+2. Service binary loaded via `process::exec`
+3. IPC channel created for kernel↔service communication
+4. Capability token issued for service operations
+5. Service marked as `Running` in registry
+
+**API:**
+- `spawn_service()` - Start a new service
+- `service_ready()` - Mark service as ready
+- `service_crashed()` - Handle service failure
+- `list_services()` - Enumerate running services
+
+## S-NATIVE Runtime Hooks
+
+**Location:** `kernel/src/process/native.rs`
+
+Kernel hooks for the S-NATIVE sandboxed native execution runtime:
+
+```rust
+pub struct NativeHandle(u64);
+
+pub enum NativeState {
+    Created,    // Sandbox allocated
+    Loading,    // Code being loaded
+    Running,    // Actively executing
+    Suspended,  // Paused
+    Terminated, // Finished
+}
+```
+
+**Sandbox Management:**
+- `create_sandbox(caps)` - Allocate sandbox with capabilities
+- `load_code(handle, data)` - Load executable code
+- `execute_sandbox(handle)` - Start execution
+- `destroy_sandbox(handle)` - Clean up sandbox
+- `get_status(handle)` - Query sandbox state
+- `list_sandboxes()` - Enumerate active sandboxes
+
+**Security:**
+- Each sandbox has a capability token limiting permissions
+- Explicit memory limits enforced
+- Sandboxes isolated via process boundaries
+
 ## Kernel Stubs
 
 The kernel contains stubs that forward requests to userspace:

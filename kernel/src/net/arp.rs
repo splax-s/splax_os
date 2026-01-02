@@ -168,7 +168,10 @@ impl ArpCache {
     
     /// Inserts an entry.
     pub fn insert(&mut self, ip: Ipv4Address, mac: MacAddress) {
-        let now = 0u64; // Would use actual timestamp
+        #[cfg(target_arch = "x86_64")]
+        let now = crate::arch::x86_64::interrupts::get_ticks();
+        #[cfg(not(target_arch = "x86_64"))]
+        let now = 0u64;
         self.entries.insert(ip, ArpEntry { mac, timestamp: now });
     }
     

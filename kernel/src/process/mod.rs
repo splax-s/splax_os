@@ -8,6 +8,8 @@
 //! - `exec`: Process execution (loading and running binaries)
 //! - `signal`: Signal handling (POSIX-style async events)
 //! - `wait`: Process exit and wait (child reaping)
+//! - `native`: S-NATIVE sandbox kernel hooks
+//! - `service`: Microkernel service launcher
 //!
 //! ## Core Types
 //!
@@ -19,6 +21,8 @@ pub mod elf;
 pub mod exec;
 pub mod signal;
 pub mod wait;
+pub mod native;
+pub mod service;
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;

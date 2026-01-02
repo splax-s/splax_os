@@ -8,6 +8,7 @@
 //! All implementations are constant-time to prevent timing attacks.
 
 use core::ops::{Add, Mul, Sub};
+use super::hash::{Hash, Sha512 as CryptoSha512};
 
 // =============================================================================
 // Field Arithmetic (mod 2^255 - 19)
@@ -675,43 +676,12 @@ fn x25519_scalar_mul(scalar: &[u8; 32], u: &FieldElement) -> FieldElement {
 // Helper Functions
 // =============================================================================
 
-/// Simple SHA-512 (placeholder - in real implementation, use crypto module).
+/// SHA-512 hash function using the crypto module.
 fn sha512(data: &[u8]) -> [u8; 64] {
-    // This is a placeholder - real implementation would use the hash module
-    let mut hash = [0u8; 64];
-
-    // Simple deterministic mixing (NOT cryptographically secure)
-    let mut state = [
-        0x6a09e667f3bcc908u64,
-        0xbb67ae8584caa73bu64,
-        0x3c6ef372fe94f82bu64,
-        0xa54ff53a5f1d36f1u64,
-        0x510e527fade682d1u64,
-        0x9b05688c2b3e6c1fu64,
-        0x1f83d9abfb41bd6bu64,
-        0x5be0cd19137e2179u64,
-    ];
-
-    for (i, byte) in data.iter().enumerate() {
-        state[i % 8] = state[i % 8].wrapping_add(*byte as u64);
-        state[i % 8] = state[i % 8].rotate_left(7);
-        state[(i + 1) % 8] ^= state[i % 8];
-    }
-
-    for round in 0..64 {
-        for i in 0..8 {
-            state[i] = state[i].wrapping_add(state[(i + 1) % 8]);
-            state[i] = state[i].rotate_left(13);
-            state[(i + 3) % 8] ^= state[i];
-        }
-        state[round % 8] = state[round % 8].wrapping_mul(0x517cc1b727220a95);
-    }
-
-    for i in 0..8 {
-        hash[i * 8..(i + 1) * 8].copy_from_slice(&state[i].to_le_bytes());
-    }
-
-    hash
+    let hash = CryptoSha512::hash(data);
+    let mut result = [0u8; 64];
+    result.copy_from_slice(&hash[..64]);
+    result
 }
 
 /// Reduce a 512-bit hash to a scalar mod l.

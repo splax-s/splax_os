@@ -40,18 +40,24 @@ pub fn get_stack_canary() -> u64 {
 #[cold]
 #[inline(never)]
 pub fn stack_check_fail() -> ! {
-    // In a real kernel, this would:
+    // Stack buffer overflow is a critical security violation.
+    // Actions taken:
     // 1. Log the violation
-    // 2. Terminate the offending process
-    // 3. Potentially trigger a security alert
+    // 2. Panic to halt execution (kernel cannot continue safely)
+    // 
+    // In userspace, this would terminate the offending process.
+    // In kernel context, we must panic to prevent exploitation.
 
     #[cfg(feature = "security_logging")]
     {
         // Log security violation
         crate::log::security_violation("Stack canary corruption detected");
     }
+    
+    // Log to serial for debugging
+    crate::serial_println!("SECURITY VIOLATION: Stack buffer overflow detected (canary corrupted)");
 
-    // For now, panic
+    // Panic - kernel cannot continue safely after stack corruption
     panic!("SECURITY: Stack buffer overflow detected (canary corrupted)");
 }
 

@@ -24,6 +24,7 @@
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use core::cell::UnsafeCell;
 use alloc::vec::Vec;
+use alloc::sync::Arc;
 use spin::Mutex;
 
 use crate::sched::ProcessId;
@@ -228,10 +229,10 @@ impl Default for SpscRing {
 pub struct FastEndpoint {
     /// Service ID
     pub service_id: u64,
-    /// Send ring buffer (to service)
-    pub tx: SpscRing,
-    /// Receive ring buffer (from service)
-    pub rx: SpscRing,
+    /// Send ring buffer (to peer)
+    pub tx: Arc<SpscRing>,
+    /// Receive ring buffer (from peer)
+    pub rx: Arc<SpscRing>,
     /// Owner process
     pub owner: ProcessId,
     /// Connected peer process
@@ -245,26 +246,29 @@ impl FastEndpoint {
         client: ProcessId,
         server: ProcessId,
     ) -> (Self, Self) {
+        // Create shared ring buffers
+        // client_to_server is TX for client, RX for server
+        // server_to_client is TX for server, RX for client
+        let client_to_server = Arc::new(SpscRing::new());
+        let server_to_client = Arc::new(SpscRing::new());
+        
         // Client endpoint
         let client_ep = Self {
             service_id,
-            tx: SpscRing::new(),
-            rx: SpscRing::new(),
+            tx: Arc::clone(&client_to_server),
+            rx: Arc::clone(&server_to_client),
             owner: client,
             peer: server,
         };
 
-        // Server endpoint (swapped tx/rx)
+        // Server endpoint (swapped - server reads from client_to_server, writes to server_to_client)
         let server_ep = Self {
             service_id,
-            tx: SpscRing::new(),
-            rx: SpscRing::new(),
+            tx: Arc::clone(&server_to_client),
+            rx: Arc::clone(&client_to_server),
             owner: server,
             peer: client,
         };
-
-        // Note: In real implementation, tx/rx would be shared between endpoints
-        // For now, this is a simplified version
 
         (client_ep, server_ep)
     }

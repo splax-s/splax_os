@@ -603,6 +603,44 @@ pub static USB_SUBSYSTEM: Mutex<Option<UsbSubsystem>> = Mutex::new(None);
 pub struct UsbSubsystemHandle;
 
 impl UsbSubsystemHandle {
+    /// Perform a bulk IN transfer (for MSC and other bulk devices)
+    pub fn bulk_transfer_in(
+        &self,
+        device: u8,
+        endpoint: u8,
+        data: &mut [u8],
+    ) -> TransferResult {
+        let mut subsystem = USB_SUBSYSTEM.lock();
+        if let Some(ref mut usb) = *subsystem {
+            if let Some(controller) = usb.controllers.first_mut() {
+                controller.bulk_transfer(device, endpoint, data, Direction::In)
+            } else {
+                TransferResult::HostError
+            }
+        } else {
+            TransferResult::HostError
+        }
+    }
+    
+    /// Perform a bulk OUT transfer (for MSC and other bulk devices)
+    pub fn bulk_transfer_out(
+        &self,
+        device: u8,
+        endpoint: u8,
+        data: &mut [u8],
+    ) -> TransferResult {
+        let mut subsystem = USB_SUBSYSTEM.lock();
+        if let Some(ref mut usb) = *subsystem {
+            if let Some(controller) = usb.controllers.first_mut() {
+                controller.bulk_transfer(device, endpoint, data, Direction::Out)
+            } else {
+                TransferResult::HostError
+            }
+        } else {
+            TransferResult::HostError
+        }
+    }
+
     /// Perform an interrupt IN transfer
     pub fn interrupt_transfer_in(
         &self,

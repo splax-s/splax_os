@@ -16,7 +16,7 @@
 .set MULTIBOOT_FLAGS, 0x00000003  /* Align + Memory info */
 .set MULTIBOOT_CHECKSUM, -(MULTIBOOT_MAGIC + MULTIBOOT_FLAGS)
 
-.section .multiboot_header, "aw"
+.section ".multiboot_header", "aw"
 .align 4
 
 multiboot_header:
@@ -26,27 +26,28 @@ multiboot_header:
 multiboot_header_end:
 
 /* Put page tables in a known safe location - below 1MB (before kernel)
- * Using 0x1000-0x5000 range which is typically unused after BIOS
- * We need multiple PDs to map enough memory for ACPI tables (can be at ~512MB) */
+ * Using 0x1000-0x7000 range which is typically unused after BIOS
+ * We need 4 PDs to map 4GB of physical memory for hardware access (PCI, LAPIC, etc) */
 .set BOOT_PML4, 0x1000
 .set BOOT_PDP,  0x2000  
-.set BOOT_PD,   0x3000   /* PD for 0-1GB */
+.set BOOT_PD0,  0x3000   /* PD for 0-1GB */
+.set BOOT_PD1,  0x4000   /* PD for 1GB-2GB */
+.set BOOT_PD2,  0x5000   /* PD for 2GB-3GB */
+.set BOOT_PD3,  0x6000   /* PD for 3GB-4GB */
 /* Stack at 0x7C00 region (below kernel, unused after boot) */
 .set BOOT_STACK_TOP, 0x7C00
 
 /* Kernel stack in BSS - used after entering 64-bit mode */
-.section .bss
+.bss
 .align 16
 stack_bottom:
     .skip 32768  /* 32 KB stack */
 stack_top:
 
-.section .text
+.text
 .code32
 
 .global _start
-.type _start, @function
-
 _start:
     /* Early debug: write '1' to serial (before anything) */
     mov dx, 0x3F8
@@ -67,38 +68,102 @@ _start:
     /* Clear page tables at safe addresses below 1MB */
     mov edi, BOOT_PML4
     xor eax, eax
-    mov ecx, 4096  /* 4 pages * 1024 dwords = 16KB for PML4+PDP+PD (covers 1GB) */
+    mov ecx, 6144  /* 6 pages * 1024 dwords = 24KB for PML4+PDP+4×PD */
     rep stosd
 
-    /* Set up page tables for identity mapping first 1GB (512 x 2MB pages)
-     * This is needed because ACPI tables can be placed near 512MB by QEMU/BIOS */
+    /* Set up page tables for identity mapping first 4GB
+     * This covers all typical hardware addresses:
+     * - 0-1GB: Low memory, kernel, ACPI tables
+     * - 1GB-2GB: Extended ACPI, possible RAM
+     * - 2GB-3GB: PCI memory hole, device memory
+     * - 3GB-4GB: Local APIC (0xFEE00000), IOAPIC, PCI config space */
     
     /* PML4[0] -> PDP table (BOOT_PDP | 0x03) */
     mov eax, BOOT_PDP
     or eax, 0x03
-    /* mov DWORD PTR [BOOT_PML4], eax - encoded manually */
+    /* mov DWORD PTR [BOOT_PML4], eax - encoded manually for 32-bit absolute */
     .byte 0xa3
     .long BOOT_PML4
 
-    /* PDP[0] -> PD table (BOOT_PD | 0x03) */
-    mov eax, BOOT_PD
+    /* PDP[0] -> PD0 (0-1GB) */
+    mov eax, BOOT_PD0
     or eax, 0x03
     /* mov DWORD PTR [BOOT_PDP], eax */
     .byte 0xa3
     .long BOOT_PDP
 
-    /* Fill PD with 512 entries for 1GB identity mapping (512 x 2MB = 1GB)
+    /* PDP[1] -> PD1 (1GB-2GB) */
+    mov eax, BOOT_PD1
+    or eax, 0x03
+    mov edi, BOOT_PDP
+    add edi, 8
+    mov [edi], eax
+    mov DWORD PTR [edi+4], 0
+
+    /* PDP[2] -> PD2 (2GB-3GB) */
+    mov eax, BOOT_PD2
+    or eax, 0x03
+    mov edi, BOOT_PDP
+    add edi, 16
+    mov [edi], eax
+    mov DWORD PTR [edi+4], 0
+
+    /* PDP[3] -> PD3 (3GB-4GB) */
+    mov eax, BOOT_PD3
+    or eax, 0x03
+    mov edi, BOOT_PDP
+    add edi, 24
+    mov [edi], eax
+    mov DWORD PTR [edi+4], 0
+
+    /* Fill PD0 with 512 entries for 0-1GB (512 x 2MB = 1GB)
      * Each entry: base_addr | 0x83 (present + writable + huge page) */
-    mov edi, BOOT_PD
+    mov edi, BOOT_PD0
     mov eax, 0x83          /* First entry: 0x0 | flags */
-    mov ecx, 512           /* 512 entries for 1GB */
-.fill_pd:
-    mov [edi], eax         /* Store entry */
-    mov DWORD PTR [edi+4], 0  /* Upper 32 bits = 0 */
-    add edi, 8             /* Next entry (8 bytes per entry) */
+    mov ecx, 512
+.fill_pd0:
+    mov [edi], eax
+    mov DWORD PTR [edi+4], 0
+    add edi, 8
     add eax, 0x200000      /* Next 2MB physical address */
     dec ecx
-    jnz .fill_pd
+    jnz .fill_pd0
+
+    /* Fill PD1 for 1GB-2GB */
+    mov edi, BOOT_PD1
+    mov eax, 0x40000083    /* Start at 1GB (0x40000000) | flags */
+    mov ecx, 512
+.fill_pd1:
+    mov [edi], eax
+    mov DWORD PTR [edi+4], 0
+    add edi, 8
+    add eax, 0x200000
+    dec ecx
+    jnz .fill_pd1
+
+    /* Fill PD2 for 2GB-3GB */
+    mov edi, BOOT_PD2
+    mov eax, 0x80000083    /* Start at 2GB (0x80000000) | flags */
+    mov ecx, 512
+.fill_pd2:
+    mov [edi], eax
+    mov DWORD PTR [edi+4], 0
+    add edi, 8
+    add eax, 0x200000
+    dec ecx
+    jnz .fill_pd2
+
+    /* Fill PD3 for 3GB-4GB (includes LAPIC at 0xFEE00000) */
+    mov edi, BOOT_PD3
+    mov eax, 0xC0000083    /* Start at 3GB (0xC0000000) | flags */
+    mov ecx, 512
+.fill_pd3:
+    mov [edi], eax
+    mov DWORD PTR [edi+4], 0
+    add edi, 8
+    add eax, 0x200000
+    dec ecx
+    jnz .fill_pd3
 
     /* Early debug: write '3' */
     mov dx, 0x3F8
@@ -150,8 +215,8 @@ long_mode_start:
     mov gs, ax
     mov ss, ax
 
-    /* Set up 64-bit stack */
-    mov rsp, OFFSET stack_top
+    /* Set up 64-bit stack - use lea to get address */
+    lea rsp, [rip + stack_top]
 
     /* Early debug: write 'S' to serial port */
     mov dx, 0x3F8
@@ -166,8 +231,7 @@ long_mode_start:
 1:  hlt
     jmp 1b
 
-/* 64-bit GDT */
-.section .rodata
+/* 64-bit GDT - placed in text section to avoid section directive issues */
 .align 16
 gdt64:
     .quad 0                 /* null descriptor */

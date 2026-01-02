@@ -83,6 +83,18 @@ pub enum PixelFormat {
 
 ### Initialization
 
+In **monolithic mode** (default), the kernel initializes GPU directly during boot.
+
+In **microkernel mode**, GPU initialization is conditional:
+- Without `monolithic_gpu` feature: S-GPU service handles graphics
+- With `monolithic_gpu` feature: Kernel initializes framebuffer directly
+
+```rust
+// In kernel/src/lib.rs
+#[cfg(any(not(feature = "microkernel"), feature = "monolithic_gpu"))]
+gpu::init();
+```
+
 ```rust
 impl Framebuffer {
     /// Create framebuffer from bootloader info

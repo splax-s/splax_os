@@ -38,6 +38,19 @@ pub mod distributed;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
+/// Get current timestamp for IPC operations.
+#[inline]
+fn get_timestamp() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::arch::x86_64::interrupts::get_ticks()
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        0
+    }
+}
+
 use spin::Mutex;
 
 use crate::cap::CapabilityToken;
@@ -613,7 +626,7 @@ impl AsyncIpcManager {
             process,
             op_type: AsyncOpType::Send,
             message: Some(message),
-            queued_at: 0, // Would use timestamp in real impl
+            queued_at: get_timestamp(),
             timeout,
         });
         
@@ -644,7 +657,7 @@ impl AsyncIpcManager {
             process,
             op_type: AsyncOpType::Receive,
             message: None,
-            queued_at: 0,
+            queued_at: get_timestamp(),
             timeout,
         });
         

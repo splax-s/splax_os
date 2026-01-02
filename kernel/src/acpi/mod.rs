@@ -892,3 +892,25 @@ pub fn shutdown() -> ! {
 pub fn reboot() -> ! {
     acpi().reboot()
 }
+
+/// Returns the number of enabled processors.
+pub fn cpu_count() -> usize {
+    acpi().processor_count()
+}
+
+/// Returns the APIC IDs of all enabled processors.
+pub fn get_apic_ids() -> alloc::vec::Vec<u8> {
+    acpi().processors()
+        .into_iter()
+        .filter(|p| p.enabled)
+        .map(|p| p.apic_id)
+        .collect()
+}
+
+/// Returns the bootstrap processor's APIC ID.
+pub fn bsp_apic_id() -> Option<u8> {
+    acpi().processors()
+        .into_iter()
+        .find(|p| p.is_bsp)
+        .map(|p| p.apic_id)
+}

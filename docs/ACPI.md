@@ -153,7 +153,24 @@ pub struct Madt {
     pub flags: u32,              // Multiple APIC flags
     // Variable-length entries follow
 }
+```
 
+**Helper Functions** (`kernel/src/acpi/mod.rs`):
+
+```rust
+/// Get total number of enabled CPUs from MADT
+pub fn cpu_count() -> usize;
+
+/// Get APIC IDs of all enabled processors
+pub fn get_apic_ids() -> Vec<u8>;
+
+/// Get APIC ID of the Bootstrap Processor
+pub fn bsp_apic_id() -> Option<u8>;
+```
+
+**MADT Entry Types:**
+
+```rust
 #[repr(u8)]
 pub enum MadtEntryType {
     LocalApic = 0,           // Processor Local APIC

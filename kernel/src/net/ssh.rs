@@ -503,14 +503,28 @@ impl SshClient {
         (seed.to_vec(), public.to_vec())
     }
     
-    /// Compute DH shared secret
-    fn compute_dh_shared(&self, _private: &[u8], _server_public: &[u8]) -> Vec<u8> {
-        // Real implementation would compute server_public^private mod p
-        // and derive session keys using the hash
-        let mut shared = alloc::vec![0u8; 32];
-        let random: [u8; 32] = crate::crypto::random::random_bytes();
-        shared.copy_from_slice(&random);
-        shared
+    /// Compute DH shared secret using real X25519.
+    fn compute_dh_shared(&self, private: &[u8], server_public: &[u8]) -> Vec<u8> {
+        use crate::crypto::asymmetric::{X25519SecretKey, X25519PublicKey};
+        
+        // Need 32 bytes for X25519
+        if private.len() < 32 || server_public.len() < 32 {
+            // Fallback to random if keys are wrong size
+            let random: [u8; 32] = crate::crypto::random::random_bytes();
+            return random.to_vec();
+        }
+        
+        let mut priv_key = [0u8; 32];
+        priv_key.copy_from_slice(&private[..32]);
+        
+        let mut pub_key = [0u8; 32];
+        pub_key.copy_from_slice(&server_public[..32]);
+        
+        let secret = X25519SecretKey::from_bytes(&priv_key);
+        let peer_public = X25519PublicKey::from_bytes(&pub_key);
+        let shared = secret.diffie_hellman(&peer_public);
+        
+        shared.to_vec()
     }
     
     /// Send SSH packet

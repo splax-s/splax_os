@@ -381,3 +381,30 @@ pub fn send_tlb_shootdown() {
         unsafe { LAPIC.send_ipi_all_excluding_self(ipi_vectors::TLB_SHOOTDOWN); }
     }
 }
+/// Sends an INIT IPI to a target CPU (for AP startup).
+pub fn send_init_ipi(target_apic_id: u8) {
+    if LAPIC_INITIALIZED.load(Ordering::Acquire) {
+        unsafe { LAPIC.send_init(target_apic_id); }
+    }
+}
+
+/// Sends a STARTUP IPI to a target CPU (for AP startup).
+///
+/// # Arguments
+///
+/// * `target_apic_id` - Target CPU's APIC ID
+/// * `vector` - Startup vector (trampoline address >> 12, must be < 256)
+pub fn send_startup_ipi(target_apic_id: u8, vector: u8) {
+    if LAPIC_INITIALIZED.load(Ordering::Acquire) {
+        unsafe { LAPIC.send_sipi(target_apic_id, vector); }
+    }
+}
+
+/// Returns the Local APIC ID of the current CPU.
+pub fn current_apic_id() -> u8 {
+    if LAPIC_INITIALIZED.load(Ordering::Acquire) {
+        (unsafe { LAPIC.id() } & 0xFF) as u8
+    } else {
+        0
+    }
+}
