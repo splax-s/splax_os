@@ -384,9 +384,15 @@ pub fn init_bsp() {
 fn get_bsp_hw_id() -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
-        // Read Local APIC ID
-        // Simplified: assume 0 for now
-        0
+        // Read Local APIC ID from APIC base register
+        // The APIC ID is at offset 0x20 from APIC base (0xFEE00000)
+        const APIC_BASE: u64 = 0xFEE00000;
+        const APIC_ID_OFFSET: u64 = 0x20;
+        unsafe {
+            let id_ptr = (APIC_BASE + APIC_ID_OFFSET) as *const u32;
+            // APIC ID is in bits 24-31 of the register
+            ((id_ptr.read_volatile() >> 24) & 0xFF) as u64
+        }
     }
 
     #[cfg(target_arch = "aarch64")]
