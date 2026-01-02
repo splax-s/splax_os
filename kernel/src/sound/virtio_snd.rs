@@ -203,6 +203,24 @@ impl VirtioSndStream {
 // VirtIO Sound Device
 // =============================================================================
 
+/// VirtIO common configuration register offsets
+mod virtio_regs {
+    pub const DEVICE_FEATURES: u64 = 0x00;
+    pub const DRIVER_FEATURES: u64 = 0x20;
+    pub const DEVICE_STATUS: u64 = 0x14;
+    pub const QUEUE_SELECT: u64 = 0x30;
+    pub const QUEUE_SIZE: u64 = 0x38;
+    pub const QUEUE_READY: u64 = 0x44;
+}
+
+/// VirtIO device status bits
+mod virtio_status {
+    pub const ACKNOWLEDGE: u8 = 1;
+    pub const DRIVER: u8 = 2;
+    pub const DRIVER_OK: u8 = 4;
+    pub const FEATURES_OK: u8 = 8;
+}
+
 /// VirtIO Sound device
 pub struct VirtioSndDevice {
     /// Device configuration
@@ -215,6 +233,8 @@ pub struct VirtioSndDevice {
     available_output: Vec<u32>,
     /// Available input stream indices
     available_input: Vec<u32>,
+    /// MMIO base address for VirtIO common config
+    mmio_base: u64,
 }
 
 impl VirtioSndDevice {
@@ -230,40 +250,92 @@ impl VirtioSndDevice {
             next_stream_id: AtomicU32::new(1),
             available_output: (0..num_output).collect(),
             available_input: (num_output..config.streams).collect(),
+            mmio_base: 0, // Will be set during probe
         }
+    }
+    
+    /// Creates a new VirtIO sound device with MMIO base address
+    pub fn with_mmio(config: VirtioSndConfig, mmio_base: u64) -> Self {
+        let num_output = config.streams / 2;
+        let num_input = config.streams - num_output;
+        
+        Self {
+            config,
+            streams: BTreeMap::new(),
+            next_stream_id: AtomicU32::new(1),
+            available_output: (0..num_output).collect(),
+            available_input: (num_output..config.streams).collect(),
+            mmio_base,
+        }
+    }
+    
+    /// Read from VirtIO MMIO register
+    fn read_reg(&self, offset: u64) -> u32 {
+        if self.mmio_base == 0 {
+            return 0;
+        }
+        unsafe { core::ptr::read_volatile((self.mmio_base + offset) as *const u32) }
+    }
+    
+    /// Write to VirtIO MMIO register
+    fn write_reg(&self, offset: u64, value: u32) {
+        if self.mmio_base == 0 {
+            return;
+        }
+        unsafe { core::ptr::write_volatile((self.mmio_base + offset) as *mut u32, value) }
     }
     
     /// Initializes the device
     pub fn init(&mut self) -> Result<(), AudioError> {
         // VirtIO sound device initialization sequence:
         
-        // Step 1: Reset device (write 0 to status register)
-        // This would be done via VirtIO common config
-        
-        // Step 2: Negotiate features
-        // VIRTIO_SND_F_CTLS - supports control messages
-        // For now, we accept the device's default features
-        
-        // Step 3: Set up virtqueues
-        // VirtIO sound uses these queues:
-        // - controlq: for control messages (PCM set params, jack info, etc.)
-        // - eventq: for device events (jack connection changes)
-        // - txq: for PCM output data
-        // - rxq: for PCM input data
-        
-        // Step 4: Query PCM stream info
-        // Send VIRTIO_SND_R_PCM_INFO request to get stream capabilities
-        // For each stream, we get:
-        // - direction (output/input)
-        // - supported formats (mask)
-        // - supported rates (mask)
-        // - channels min/max
-        
-        // Step 5: Mark device as ready (set DRIVER_OK in status)
+        if self.mmio_base != 0 {
+            // Step 1: Reset device (write 0 to status register)
+            self.write_reg(virtio_regs::DEVICE_STATUS, 0);
+            
+            // Step 2: Acknowledge the device
+            self.write_reg(virtio_regs::DEVICE_STATUS, virtio_status::ACKNOWLEDGE as u32);
+            
+            // Step 3: Tell device we're a driver
+            self.write_reg(virtio_regs::DEVICE_STATUS, 
+                (virtio_status::ACKNOWLEDGE | virtio_status::DRIVER) as u32);
+            
+            // Step 4: Read and negotiate features
+            let _features = self.read_reg(virtio_regs::DEVICE_FEATURES);
+            // Accept basic features for now
+            self.write_reg(virtio_regs::DRIVER_FEATURES, 0);
+            
+            // Step 5: Set FEATURES_OK
+            self.write_reg(virtio_regs::DEVICE_STATUS,
+                (virtio_status::ACKNOWLEDGE | virtio_status::DRIVER | virtio_status::FEATURES_OK) as u32);
+            
+            // Step 6: Set up virtqueues
+            // Queue 0: controlq
+            self.write_reg(virtio_regs::QUEUE_SELECT, 0);
+            let _queue_size = self.read_reg(virtio_regs::QUEUE_SIZE);
+            self.write_reg(virtio_regs::QUEUE_READY, 1);
+            
+            // Queue 1: eventq
+            self.write_reg(virtio_regs::QUEUE_SELECT, 1);
+            self.write_reg(virtio_regs::QUEUE_READY, 1);
+            
+            // Queue 2: txq (PCM output)
+            self.write_reg(virtio_regs::QUEUE_SELECT, 2);
+            self.write_reg(virtio_regs::QUEUE_READY, 1);
+            
+            // Queue 3: rxq (PCM input)
+            self.write_reg(virtio_regs::QUEUE_SELECT, 3);
+            self.write_reg(virtio_regs::QUEUE_READY, 1);
+            
+            // Step 7: Mark device as ready
+            self.write_reg(virtio_regs::DEVICE_STATUS,
+                (virtio_status::ACKNOWLEDGE | virtio_status::DRIVER | 
+                 virtio_status::FEATURES_OK | virtio_status::DRIVER_OK) as u32);
+            
+            crate::serial_println!("[virtio-snd] Device initialized at MMIO 0x{:x}", self.mmio_base);
+        }
         
         // Device is now initialized and ready for use
-        // Stream parameters are set when opening a stream
-        
         Ok(())
     }
     

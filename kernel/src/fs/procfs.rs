@@ -141,10 +141,36 @@ pub fn read_cmdline() -> String {
 
 /// Reads /proc/loadavg
 pub fn read_loadavg() -> String {
-    // Fake load averages for now
+    // Calculate load averages from scheduler data
     let running = crate::sched::running_process_count();
     let total = crate::sched::total_process_count();
-    format!("0.00 0.00 0.00 {}/{} 1\n", running, total)
+    
+    // Get total load from all CPU run queues
+    let sched = crate::sched::smp::get_smp_scheduler();
+    let cpu_count = crate::sched::smp::cpu_count().max(1);
+    
+    // Calculate load as running processes / CPUs
+    // Scale: 1.00 = one runnable process per CPU
+    let load = if cpu_count > 0 {
+        (running * 100) / cpu_count
+    } else {
+        running * 100
+    };
+    
+    // Format as x.xx (load is scaled by 100)
+    let load_int = load / 100;
+    let load_frac = load % 100;
+    
+    // For 5min and 15min averages, use slightly smoothed values
+    // (In a real kernel, these would be exponentially-weighted moving averages)
+    let load_5 = if load > 0 { load * 90 / 100 } else { 0 };
+    let load_15 = if load > 0 { load * 80 / 100 } else { 0 };
+    
+    format!("{}.{:02} {}.{:02} {}.{:02} {}/{} 1\n", 
+        load_int, load_frac,
+        load_5 / 100, load_5 % 100,
+        load_15 / 100, load_15 % 100,
+        running, total)
 }
 
 /// Reads /proc/stat
@@ -187,14 +213,28 @@ pub fn read_stat() -> String {
 
 /// Reads /proc/net/dev
 pub fn read_net_dev() -> String {
-    let output = String::from(
+    let mut output = String::from(
         "Inter-|   Receive                                                |  Transmit\n\
          face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n"
     );
     
-    // For now, we don't have stats in InterfaceConfig, so just show interface name with zeros
-    // NetworkStats are included in the interface data
-    // Stats are populated when available from the network subsystem
+    // Get interface list and stats from network subsystem
+    let interfaces = crate::net::get_interfaces();
+    
+    for iface in interfaces {
+        let stats = crate::net::get_interface_stats(&iface.name);
+        output.push_str(&format!(
+            "{:>6}: {:>8} {:>7} {:>4} {:>4} {:>4} {:>5} {:>10} {:>9}|{:>8} {:>7} {:>4} {:>4} {:>4} {:>5} {:>7} {:>10}\n",
+            iface.name,
+            stats.rx_bytes, stats.rx_packets, stats.rx_errors, stats.rx_dropped,
+            0, 0, 0, 0,  // fifo, frame, compressed, multicast
+            stats.tx_bytes, stats.tx_packets, stats.tx_errors, stats.tx_dropped,
+            0, 0, 0, 0   // fifo, colls, carrier, compressed
+        ));
+    }
+    
+    // Always show loopback
+    output.push_str("    lo:        0       0    0    0    0     0          0         0|       0       0    0    0    0     0       0          0\n");
     
     output
 }

@@ -685,9 +685,11 @@ pub fn tcp_send(handle: SocketHandle, data: &[u8]) -> Result<usize, NetworkError
     let connections = SOCKET_CONNECTIONS.lock();
     let key = connections.get(&handle.0)
         .ok_or(NetworkError::InvalidSocket)?;
+    let key = *key; // Copy the key before dropping the lock
+    drop(connections);
     
     let mut state = TCP_STATE.lock();
-    let conn = state.connection_mut(*key)
+    let conn = state.connection_mut(key)
         .ok_or(NetworkError::NotConnected)?;
     
     if conn.state != TcpConnectionState::Established {
@@ -697,9 +699,14 @@ pub fn tcp_send(handle: SocketHandle, data: &[u8]) -> Result<usize, NetworkError
     // Queue data for sending
     conn.send_buffer.extend_from_slice(data);
     
-    // Create segment (would be sent via network interface)
-    if let Some(_segment) = conn.send(data) {
-        // In a real implementation, this would be sent via the network device
+    // Create segment and transmit it via the network interface
+    if let Some(segment) = conn.send(data) {
+        // Send the segment through the network stack
+        drop(state); // Release lock before calling transmit
+        if let Err(e) = super::transmit_tcp_segment(&key, &segment) {
+            crate::serial_println!("[tcp] Failed to transmit segment: {:?}", e);
+            return Err(e);
+        }
     }
     
     Ok(data.len())
@@ -753,6 +760,7 @@ pub fn tcp_close(handle: SocketHandle) -> Result<(), NetworkError> {
     let mut connections = SOCKET_CONNECTIONS.lock();
     let key = connections.remove(&handle.0)
         .ok_or(NetworkError::InvalidSocket)?;
+    drop(connections);
     
     // Check if this is a listening socket (remote port == 0)
     if key.remote.port == 0 {
@@ -762,11 +770,18 @@ pub fn tcp_close(handle: SocketHandle) -> Result<(), NetworkError> {
         return Ok(());
     }
     
-    // Close the connection
+    // Close the connection and send FIN segment
     let mut state = TCP_STATE.lock();
     if let Some(conn) = state.connection_mut(key) {
-        let _segment = conn.close();
-        // In a real implementation, the FIN segment would be sent
+        if let Some(fin_segment) = conn.close() {
+            // Release lock before transmitting
+            drop(state);
+            // Send the FIN segment through the network stack
+            if let Err(e) = super::transmit_tcp_segment(&key, &fin_segment) {
+                crate::serial_println!("[tcp] Failed to send FIN segment: {:?}", e);
+                return Err(e);
+            }
+        }
     }
     
     Ok(())

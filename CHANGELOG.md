@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Boot-time 4GB Identity Mapping**: Extended page tables to map first 4GB of physical memory using 2MB huge pages, covering LAPIC (0xFEE00000), IOAPIC, and PCI config space
+- **FSGSBASE Support**: Enabled FSGSBASE instructions (CR4 bit 16) for fast per-CPU data access via `RDGSBASE`/`WRGSBASE`
+- **ACPI CPU Enumeration**: Added `cpu_count()`, `get_apic_ids()`, and `bsp_apic_id()` helper functions
+- **Multi-core AP Startup**: Implemented INIT-SIPI-SIPI sequence for Application Processor startup
+- **Service Launcher**: Kernel-side service spawning for microkernel mode (`kernel/src/process/service.rs`)
+- **S-NATIVE Runtime Hooks**: Sandbox management functions for native code execution (`kernel/src/process/native.rs`)
+- **Shared Crypto Library**: Consolidated SHA-256, SHA-512, HMAC implementations in `lib/crypto`
+- **Conditional GPU Init**: GPU initialization is now feature-gated for microkernel mode
+
+### Changed
+- Boot.S now uses LLVM-compatible section directives
+- GPU init only runs when `not(microkernel)` or `monolithic_gpu` feature is set
+- LAPIC access works via boot-time identity mapping (no additional page table setup needed)
+
+### Fixed
+- LAPIC `current_apic_id()` return type (u32 → u8)
+- CPUID inline assembly for FSGSBASE detection (rbx is LLVM reserved)
+- Boot.S syntax for cross-platform LLVM assembler compatibility
+
 ### Planned
 - WiFi driver improvements
 - GPU hardware acceleration

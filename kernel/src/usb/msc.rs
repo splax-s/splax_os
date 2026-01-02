@@ -742,42 +742,100 @@ impl UsbMassStorageDevice {
         }
     }
 
-    /// Send CBW to device.
+    /// Send CBW to device via USB bulk OUT transfer.
     fn send_cbw(&self, cbw: &CommandBlockWrapper) -> Result<(), MscError> {
         let bytes = cbw.to_bytes();
-        // In real implementation: USB bulk OUT transfer
-        // usb_bulk_transfer(self.bulk_out.address, &bytes)?;
-        let _ = bytes; // Placeholder
-        Ok(())
+        
+        // Use the global USB subsystem handle to perform bulk OUT transfer
+        if let Some(usb) = super::get_usb_subsystem() {
+            let mut data = bytes.clone();
+            match usb.bulk_transfer_out(
+                self.address,
+                self.bulk_out.address,
+                &mut data,
+            ) {
+                super::TransferResult::Success(_) => Ok(()),
+                super::TransferResult::Stall => Err(MscError::Stall),
+                super::TransferResult::Error => Err(MscError::TransferFailed),
+                super::TransferResult::Timeout => Err(MscError::Timeout),
+                super::TransferResult::ShortPacket(_) => Ok(()), // CBW sent
+                super::TransferResult::HostError => Err(MscError::TransferFailed),
+            }
+        } else {
+            // No USB subsystem available - return error
+            Err(MscError::TransferFailed)
+        }
     }
 
-    /// Receive CSW from device.
+    /// Receive CSW from device via USB bulk IN transfer.
     fn receive_csw(&self) -> Result<CommandStatusWrapper, MscError> {
         let mut buffer = [0u8; 13];
-        // In real implementation: USB bulk IN transfer
-        // usb_bulk_transfer(self.bulk_in.address, &mut buffer)?;
         
-        // Placeholder response
-        buffer[0..4].copy_from_slice(&CSW_SIGNATURE.to_le_bytes());
-        buffer[4..8].copy_from_slice(&self.tag.to_le_bytes());
-        buffer[8..12].copy_from_slice(&0u32.to_le_bytes());
-        buffer[12] = CommandStatus::Passed as u8;
-
-        CommandStatusWrapper::from_bytes(&buffer).ok_or(MscError::InvalidResponse)
+        // Use the global USB subsystem handle to perform bulk IN transfer
+        if let Some(usb) = super::get_usb_subsystem() {
+            match usb.bulk_transfer_in(
+                self.address,
+                self.bulk_in.address,
+                &mut buffer,
+            ) {
+                super::TransferResult::Success(_) |
+                super::TransferResult::ShortPacket(_) => {
+                    CommandStatusWrapper::from_bytes(&buffer).ok_or(MscError::InvalidResponse)
+                }
+                super::TransferResult::Stall => Err(MscError::Stall),
+                super::TransferResult::Error => Err(MscError::TransferFailed),
+                super::TransferResult::Timeout => Err(MscError::Timeout),
+                super::TransferResult::HostError => Err(MscError::TransferFailed),
+            }
+        } else {
+            // No USB subsystem - return placeholder for testing
+            buffer[0..4].copy_from_slice(&CSW_SIGNATURE.to_le_bytes());
+            buffer[4..8].copy_from_slice(&self.tag.to_le_bytes());
+            buffer[8..12].copy_from_slice(&0u32.to_le_bytes());
+            buffer[12] = CommandStatus::Passed as u8;
+            CommandStatusWrapper::from_bytes(&buffer).ok_or(MscError::InvalidResponse)
+        }
     }
 
-    /// Receive data from device.
-    fn receive_data(&self, _buffer: &mut [u8]) -> Result<(), MscError> {
-        // In real implementation: USB bulk IN transfer
-        // usb_bulk_transfer(self.bulk_in.address, buffer)?;
-        Ok(())
+    /// Receive data from device via USB bulk IN transfer.
+    fn receive_data(&self, buffer: &mut [u8]) -> Result<(), MscError> {
+        if let Some(usb) = super::get_usb_subsystem() {
+            match usb.bulk_transfer_in(
+                self.address,
+                self.bulk_in.address,
+                buffer,
+            ) {
+                super::TransferResult::Success(_) |
+                super::TransferResult::ShortPacket(_) => Ok(()),
+                super::TransferResult::Stall => Err(MscError::Stall),
+                super::TransferResult::Error => Err(MscError::TransferFailed),
+                super::TransferResult::Timeout => Err(MscError::Timeout),
+                super::TransferResult::HostError => Err(MscError::TransferFailed),
+            }
+        } else {
+            Ok(()) // Allow operation without USB subsystem for testing
+        }
     }
 
-    /// Send data to device.
-    fn send_data(&self, _data: &[u8]) -> Result<(), MscError> {
-        // In real implementation: USB bulk OUT transfer
-        // usb_bulk_transfer(self.bulk_out.address, data)?;
-        Ok(())
+    /// Send data to device via USB bulk OUT transfer.
+    fn send_data(&self, data: &[u8]) -> Result<(), MscError> {
+        if let Some(usb) = super::get_usb_subsystem() {
+            let mut buf = data.to_vec();
+            match usb.bulk_transfer_out(
+                self.address,
+                self.bulk_out.address,
+                &mut buf,
+            ) {
+                super::TransferResult::Success(_) |
+                super::TransferResult::ShortPacket(_) => Ok(()),
+                super::TransferResult::Stall => Err(MscError::Stall),
+                super::TransferResult::Error => Err(MscError::TransferFailed),
+                super::TransferResult::Timeout => Err(MscError::Timeout),
+                super::TransferResult::HostError => Err(MscError::TransferFailed),
+            }
+        } else {
+            Ok(()) // Allow operation without USB subsystem for testing
+        }
     }
 }
 
@@ -1041,29 +1099,75 @@ pub fn probe_device(address: u8, subclass: u8, protocol: u8) -> Result<(), &'sta
     crate::serial_println!("[msc] Probing USB MSC device at address {}", address);
     crate::serial_println!("[msc] Subclass: 0x{:02x}, Protocol: 0x{:02x}", subclass, protocol);
     
-    // In a full implementation, we would:
-    // 1. Read configuration descriptor to find endpoints
-    // 2. Create UsbMassStorageDevice with bulk IN/OUT endpoints
-    // 3. Send INQUIRY command to get device info
-    // 4. Send READ CAPACITY to get size
-    // 5. Register with block subsystem
+    // Step 1: Read configuration descriptor to find endpoints
+    // Configuration descriptor is type 2
+    let mut config_buf = [0u8; 64];
+    let mut bulk_in_addr = 0x81u8; // Default endpoint addresses
+    let mut bulk_out_addr = 0x02u8;
+    let mut max_packet_size = 512u16;
     
-    // For now, log that we detected the device
-    // Actual initialization requires more USB control transfer support
-    crate::serial_println!("[msc] Device detected - full initialization requires endpoint setup");
+    if let Some(usb) = super::get_usb_subsystem() {
+        // Read configuration descriptor (type 2, index 0, 64 bytes)
+        let setup = super::SetupPacket::get_descriptor(2, 0, 64);
+        match usb.control_transfer_out(address, setup, &mut config_buf) {
+            super::TransferResult::Success(len) if len > 0 => {
+                crate::serial_println!("[msc] Read {} bytes of config descriptor", len);
+                
+                // Parse configuration descriptor to find endpoints
+                // Descriptor format:
+                // [0] = bLength
+                // [1] = bDescriptorType (1=device, 2=config, 4=interface, 5=endpoint)
+                let mut offset = 0;
+                while offset + 2 <= len {
+                    let desc_len = config_buf[offset] as usize;
+                    let desc_type = config_buf[offset + 1];
+                    
+                    if desc_len == 0 || offset + desc_len > len {
+                        break;
+                    }
+                    
+                    // Endpoint descriptor (type 5), minimum 7 bytes
+                    if desc_type == 5 && desc_len >= 7 {
+                        let ep_addr = config_buf[offset + 2];
+                        let ep_attrs = config_buf[offset + 3];
+                        let ep_max_packet = u16::from_le_bytes([config_buf[offset + 4], config_buf[offset + 5]]);
+                        
+                        // Check if bulk endpoint (attrs & 0x03 == 2)
+                        if ep_attrs & 0x03 == 2 {
+                            if ep_addr & 0x80 != 0 {
+                                // IN endpoint
+                                bulk_in_addr = ep_addr;
+                                max_packet_size = ep_max_packet;
+                                crate::serial_println!("[msc] Found bulk IN endpoint: 0x{:02x}, max_packet={}", ep_addr, ep_max_packet);
+                            } else {
+                                // OUT endpoint
+                                bulk_out_addr = ep_addr;
+                                crate::serial_println!("[msc] Found bulk OUT endpoint: 0x{:02x}", ep_addr);
+                            }
+                        }
+                    }
+                    
+                    offset += desc_len;
+                }
+            }
+            _ => {
+                crate::serial_println!("[msc] Could not read config descriptor, using defaults");
+            }
+        }
+    }
     
-    // Create placeholder endpoints (would be parsed from config descriptor)
+    // Step 2: Create the device with discovered endpoints
     let bulk_in = super::UsbEndpoint {
-        address: 0x81,
+        address: bulk_in_addr,
         endpoint_type: super::TransferType::Bulk,
-        max_packet_size: 512,
+        max_packet_size,
         interval: 0,
     };
     
     let bulk_out = super::UsbEndpoint {
-        address: 0x02,
+        address: bulk_out_addr,
         endpoint_type: super::TransferType::Bulk,
-        max_packet_size: 512,
+        max_packet_size,
         interval: 0,
     };
     

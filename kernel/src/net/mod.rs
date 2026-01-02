@@ -943,6 +943,30 @@ pub fn get_interface_stats(interface_name: &str) -> InterfaceStats {
     InterfaceStats::default()
 }
 
+/// Interface info for procfs
+#[derive(Debug, Clone)]
+pub struct InterfaceInfo {
+    pub name: alloc::string::String,
+    pub mac: MacAddress,
+    pub ipv4_addr: Ipv4Address,
+}
+
+/// Get list of all network interfaces
+pub fn get_interfaces() -> Vec<InterfaceInfo> {
+    let stack = NETWORK_STACK.lock();
+    let mut interfaces = Vec::new();
+    
+    for iface in stack.interfaces.values() {
+        interfaces.push(InterfaceInfo {
+            name: alloc::string::String::from(iface.config.name),
+            mac: iface.config.mac,
+            ipv4_addr: iface.config.ipv4_addr,
+        });
+    }
+    
+    interfaces
+}
+
 /// Network socket information (for netstat)
 #[derive(Debug, Clone)]
 pub struct SocketInfo {

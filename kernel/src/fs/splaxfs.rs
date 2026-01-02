@@ -36,6 +36,18 @@ use spin::Mutex;
 
 use crate::block::{self, BlockDevice, BlockError};
 
+/// Get current timestamp for journal entries (uses system tick counter)
+fn get_journal_timestamp() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::arch::x86_64::interrupts::get_ticks()
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        0
+    }
+}
+
 /// Filesystem magic number (ASCII "SPLX")
 pub const SPLAXFS_MAGIC: u32 = 0x53504C58;
 
@@ -241,7 +253,7 @@ impl JournalEntry {
             state: JournalState::Pending as u8,
             block_count,
             transaction_id,
-            timestamp: 0, // Would be set from RTC
+            timestamp: get_journal_timestamp(),
             checksum: 0,
             _reserved: [0; 8],
         }
@@ -254,7 +266,7 @@ impl JournalEntry {
             state: JournalState::Committed as u8,
             block_count: 0,
             transaction_id,
-            timestamp: 0,
+            timestamp: get_journal_timestamp(),
             checksum: 0,
             _reserved: [0; 8],
         }
@@ -267,7 +279,7 @@ impl JournalEntry {
             state: JournalState::Free as u8,
             block_count: 0,
             transaction_id,
-            timestamp: 0,
+            timestamp: get_journal_timestamp(),
             checksum: 0,
             _reserved: [0; 8],
         }

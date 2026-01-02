@@ -1,0 +1,47 @@
+1234S
+Splax OS Kernel Starting...
+[x86_64] Initializing architecture...
+[x86_64] GDT loaded
+[x86_64] IDT loaded
+[x86_64] PIC initialized
+[x86_64] PIT initialized at ~1000 Hz
+[x86_64] PS/2 keyboard: old_config=0x61 new_config=0x61 pic_mask=0xec
+[x86_64] PIC initialized
+[x86_64] RTC initialized: 2026-01-02 09:46:23
+[x86_64] Interrupts enabled
+[x86_64] Architecture initialization complete
+
+╔══════════════════════════════════════════════════════════╗
+║            S-CORE: Splax OS Microkernel v0.1.0            ║
+║        Capability-Secure • Distributed-First            ║
+╚══════════════════════════════════════════════════════════╝
+
+[mm] Kernel heap initialized: 1024 KB at 0x11a000 (free-list allocator)
+[kernel] Security hardening initialized (stack canaries + ASLR)
+[acpi] Found RSDP revision 0 at 0xf52e0
+[acpi] RSDT has 4 entries
+[acpi] Parsing FADT
+[acpi] FADT: PM1a=0x604, PM1b=0x0, SCI=9, SMI=0xb2
+[acpi] Parsing MADT
+[acpi] MADT: Local APIC at 0xfee00000, flags=0x1
+[acpi] MADT: Local APIC 0 (ACPI ID 0), enabled=true
+[acpi] MADT: I/O APIC 0 at 0xfec00000, GSI base 0
+[acpi] MADT: IRQ 0 -> GSI 2
+[acpi] MADT: IRQ 5 -> GSI 5
+[acpi] MADT: IRQ 9 -> GSI 9
+[acpi] MADT: IRQ 10 -> GSI 10
+[acpi] MADT: IRQ 11 -> GSI 11
+[acpi] Found HPET table
+[acpi] Found table: WAET
+[acpi] Initialized, 1 processor(s) found
+[kernel] ACPI subsystem ready
+[kernel] SMP initialized (BSP registered)
+[kernel] Microkernel mode - minimal subsystems...
+[kernel] Microkernel ready - services will run in userspace
+[kernel] All subsystems initialized
+[kernel] Entering main loop...
+
+=== Splax OS Serial Console ===
+Type 'help' for available commands.
+
+splax> 

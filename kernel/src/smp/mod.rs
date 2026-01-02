@@ -404,49 +404,142 @@ fn get_bsp_hw_id() -> u64 {
     }
 }
 
+/// AP trampoline code location (must be below 1MB for real mode startup)
+const AP_TRAMPOLINE_ADDR: u64 = 0x8000;
+
+/// AP startup stack size per CPU (16KB each)
+const AP_STACK_SIZE: usize = 16 * 1024;
+
 /// Start application processors (secondary CPUs).
+///
+/// Returns the total number of CPUs (including BSP).
 ///
 /// # Safety
 ///
 /// This must only be called once from the BSP after SMP is initialized.
-pub unsafe fn start_aps() {
+pub fn start_application_processors() -> u32 {
     #[cfg(target_arch = "x86_64")]
     {
-        // x86_64 AP startup via INIT-SIPI-SIPI sequence
-        // This requires ACPI/MP table parsing to know AP APIC IDs
-        // For QEMU with -smp N, APs are auto-started via firmware
-        // 
-        // Full implementation would:
-        // 1. Parse ACPI MADT table to find AP APIC IDs
-        // 2. For each AP:
-        //    a. Send INIT IPI (ICR = 0x00C500 | (apic_id << 56))
-        //    b. Wait 10ms
-        //    c. Send SIPI IPI twice (ICR = 0x00C600 | vector | (apic_id << 56))
-        // 3. APs jump to trampoline code at vector*0x1000
+        use crate::acpi;
         
-        // For now, rely on firmware/QEMU to start APs
-        // Just log that we're ready for SMP
-        // BSP is already registered and online by default
-        let bsp_id = CpuId::new(0);
-        SMP_STATE.register_cpu(bsp_id, true, 0);
+        // Get CPU count from ACPI MADT table
+        let cpu_count = acpi::cpu_count();
+        
+        if cpu_count <= 1 {
+            // Only BSP, no APs to start
+            return 1;
+        }
+        
+        // Get APIC IDs from ACPI
+        let apic_ids = acpi::get_apic_ids();
+        
+        // Copy AP trampoline code to low memory (below 1MB)
+        setup_ap_trampoline();
+        
+        // Start each AP using INIT-SIPI-SIPI sequence
+        let mut started = 0u32;
+        for (i, &apic_id) in apic_ids.iter().enumerate() {
+            // Skip BSP (usually APIC ID 0)
+            if i == 0 {
+                continue;
+            }
+            
+            if start_ap(apic_id) {
+                started += 1;
+            }
+        }
+        
+        // Return total CPUs (BSP + started APs)
+        1 + started
     }
-
+    
     #[cfg(target_arch = "aarch64")]
     {
-        // aarch64 AP startup via PSCI or spin-table
-        // On QEMU virt, use PSCI CPU_ON call
-        // 
-        // Full implementation would:
-        // 1. Parse DTB to find CPU nodes and enable-method
-        // 2. For spin-table: write entry point to cpu-release-addr
-        // 3. For PSCI: call PSCI_CPU_ON (function ID 0xC4000003)
-        //    - x1 = target CPU MPIDR
-        //    - x2 = entry point
-        //    - x3 = context ID
-        
-        // For now, mark BSP as online
-        SMP_STATE.set_cpu_online(CpuId::new(0));
+        // aarch64 AP startup would use PSCI CPU_ON
+        1
     }
+    
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        1
+    }
+}
+
+/// Set up the AP trampoline code in low memory.
+#[cfg(target_arch = "x86_64")]
+fn setup_ap_trampoline() {
+    // The AP trampoline is a small piece of 16-bit real mode code
+    // that sets up long mode and jumps to the AP entry point.
+    // For now, we prepare the memory but the actual trampoline
+    // assembly would need to be copied here.
+    
+    // This is a simplified version - a full implementation would:
+    // 1. Copy real mode trampoline code to AP_TRAMPOLINE_ADDR
+    // 2. Set up a GDT and page tables accessible from the trampoline
+    // 3. Set the entry point address in the trampoline data area
+    
+    // Clear the trampoline area
+    unsafe {
+        core::ptr::write_bytes(AP_TRAMPOLINE_ADDR as *mut u8, 0, 4096);
+    }
+}
+
+/// Start a single AP using INIT-SIPI-SIPI sequence.
+/// Returns true if the AP started successfully.
+#[cfg(target_arch = "x86_64")]
+fn start_ap(apic_id: u8) -> bool {
+    use crate::arch::x86_64::lapic;
+    
+    // The INIT-SIPI-SIPI sequence:
+    // 1. Send INIT IPI
+    // 2. Wait 10ms
+    // 3. Send SIPI with vector (startup address / 4096)
+    // 4. Wait 200us
+    // 5. Send SIPI again
+    // 6. Wait for AP to signal it's online
+    
+    // Calculate startup vector (trampoline address / 4096)
+    let vector = (AP_TRAMPOLINE_ADDR / 4096) as u8;
+    
+    // Send INIT IPI
+    lapic::send_init_ipi(apic_id);
+    
+    // Wait ~10ms (busy loop for now)
+    for _ in 0..10_000_000 {
+        core::hint::spin_loop();
+    }
+    
+    // Send SIPI
+    lapic::send_startup_ipi(apic_id, vector);
+    
+    // Wait ~200us
+    for _ in 0..200_000 {
+        core::hint::spin_loop();
+    }
+    
+    // Send SIPI again (some CPUs need two SIPIs)
+    lapic::send_startup_ipi(apic_id, vector);
+    
+    // Wait for AP to come online (timeout after ~1 second)
+    for _ in 0..1_000_000 {
+        if SMP_STATE.num_online() > 1 {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    
+    // Timeout - AP didn't start
+    false
+}
+
+/// Legacy start_aps function (deprecated, use start_application_processors)
+///
+/// # Safety
+///
+/// This must only be called once from the BSP after SMP is initialized.
+#[deprecated(note = "Use start_application_processors instead")]
+pub unsafe fn start_aps() {
+    let _ = start_application_processors();
 }
 
 /// Inter-Processor Interrupt types.

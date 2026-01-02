@@ -2,6 +2,7 @@
 members = [
     "bootloader",
     "kernel",
+    "lib/crypto",
     "services/cap",
     "services/atlas",
     "services/canvas",

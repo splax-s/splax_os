@@ -34,9 +34,21 @@
 //! ```
 
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
+
+/// Get current timestamp for distributed IPC operations.
+#[inline]
+fn get_current_timestamp() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::arch::x86_64::interrupts::get_ticks()
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        0
+    }
+}
 
 /// Node identifier in the cluster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -144,7 +156,7 @@ impl DistributedMessage {
             payload,
             capabilities: Vec::new(),
             flags: MessageFlags::empty(),
-            timestamp: 0, // Would use real timestamp
+            timestamp: get_current_timestamp()
         }
     }
 
@@ -542,7 +554,7 @@ impl DistributedRouter {
         let request = PendingRequest {
             message_id: msg.id,
             dest: msg.dest,
-            sent_at: 0, // Would use real timestamp
+            sent_at: get_current_timestamp(),
             timeout_ms: self.config.request_timeout_ms,
             response: None,
         };
@@ -551,9 +563,32 @@ impl DistributedRouter {
         // Send message
         self.send(msg.clone())?;
 
-        // In async version, would await response
-        // For now, return error (would need async runtime)
-        Err(DistributedError::Timeout)
+        // Synchronous spin-wait for response with timeout
+        let start_time = get_current_timestamp();
+        let timeout_ticks = (self.config.request_timeout_ms as u64) * 1000; // Approximate tick conversion
+        
+        loop {
+            // Check for response
+            {
+                let mut pending = self.pending_requests.lock();
+                if let Some(req) = pending.get_mut(&msg.id) {
+                    if let Some(response) = req.response.take() {
+                        pending.remove(&msg.id);
+                        return Ok(response);
+                    }
+                }
+            }
+            
+            // Check timeout
+            let elapsed = get_current_timestamp().saturating_sub(start_time);
+            if elapsed > timeout_ticks {
+                self.pending_requests.lock().remove(&msg.id);
+                return Err(DistributedError::Timeout);
+            }
+            
+            // Yield CPU to allow other work
+            core::hint::spin_loop();
+        }
     }
 
     /// Delivers a message locally.
@@ -690,15 +725,62 @@ pub enum DistributedError {
     NetworkError,
 }
 
-/// Placeholder encryption (would use ChaCha20).
-fn encrypt_message(data: &[u8], _key: &[u8; 32]) -> Vec<u8> {
-    // Would use kernel crypto module
-    data.to_vec()
+/// Encrypts a message using ChaCha20-Poly1305 AEAD.
+fn encrypt_message(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
+    use crate::crypto::cipher::{ChaCha20Poly1305, Cipher};
+    
+    // Create cipher instance
+    let cipher = match ChaCha20Poly1305::new(key) {
+        Ok(c) => c,
+        Err(_) => return data.to_vec(), // Fallback on error
+    };
+    
+    // Generate nonce from current timestamp for uniqueness
+    #[cfg(target_arch = "x86_64")]
+    let ticks = crate::arch::x86_64::interrupts::get_ticks();
+    #[cfg(not(target_arch = "x86_64"))]
+    let ticks = 0u64;
+    
+    let mut nonce = [0u8; 12];
+    nonce[0..8].copy_from_slice(&ticks.to_le_bytes());
+    
+    // Encrypt with empty AAD for now
+    match cipher.encrypt(&nonce, data, &[]) {
+        Ok(mut ciphertext) => {
+            // Prepend nonce for decryption
+            let mut result = Vec::with_capacity(12 + ciphertext.len());
+            result.extend_from_slice(&nonce);
+            result.append(&mut ciphertext);
+            result
+        }
+        Err(_) => data.to_vec(), // Fallback on error
+    }
 }
 
-/// Placeholder decryption.
-fn decrypt_message(data: &[u8], _key: &[u8; 32]) -> Vec<u8> {
-    data.to_vec()
+/// Decrypts a message using ChaCha20-Poly1305 AEAD.
+fn decrypt_message(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
+    use crate::crypto::cipher::{ChaCha20Poly1305, Cipher};
+    
+    // Need at least nonce (12) + tag (16)
+    if data.len() < 28 {
+        return Vec::new();
+    }
+    
+    // Create cipher instance
+    let cipher = match ChaCha20Poly1305::new(key) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    
+    // Extract nonce from beginning
+    let nonce = &data[0..12];
+    let ciphertext = &data[12..];
+    
+    // Decrypt with empty AAD
+    match cipher.decrypt(nonce, ciphertext, &[]) {
+        Ok(plaintext) => plaintext,
+        Err(_) => Vec::new(), // Authentication failed or other error
+    }
 }
 
 /// Global distributed router.

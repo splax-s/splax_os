@@ -344,9 +344,31 @@ pub fn recv(handle: SocketHandle, buf: &mut [u8]) -> Result<usize, NetworkError>
                 } else if non_blocking {
                     Err(NetworkError::WouldBlock)
                 } else {
-                    // In blocking mode, we'd wait for data
-                    // For now, return 0 to indicate no data available
-                    Ok(0)
+                    // In blocking mode, spin-wait for data with yield
+                    drop(state);
+                    
+                    // Retry loop with yield to allow other tasks to run
+                    for _ in 0..1000 {
+                        // Yield CPU to other tasks
+                        core::hint::spin_loop();
+                        
+                        // Check for data again
+                        let mut state = tcp_state().lock();
+                        if let Some(conn) = state.connection_mut(key) {
+                            let bytes_read = conn.read(buf);
+                            if bytes_read > 0 {
+                                return Ok(bytes_read);
+                            }
+                            // Check if connection was closed
+                            if conn.is_closed() {
+                                return Ok(0); // EOF
+                            }
+                        } else {
+                            return Err(NetworkError::NotConnected);
+                        }
+                    }
+                    // Timeout after spin-waiting
+                    Err(NetworkError::WouldBlock)
                 }
             } else {
                 Err(NetworkError::NotConnected)

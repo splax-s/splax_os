@@ -2155,8 +2155,7 @@ impl SharedMemory {
             });
         }
         
-        // Spin-wait with timeout
-        // In a real implementation, this would yield to the scheduler
+        // Spin-wait with timeout, yielding CPU hints to allow other threads to progress
         let start_time = get_timestamp();
         let timeout_cycles = if timeout_ns < 0 {
             u64::MAX // Infinite timeout
@@ -4048,13 +4047,105 @@ impl Instance {
             
             // Capability management
             HostFunction::SCapCheck => {
-                Ok(alloc::vec![WasmValue::I32(1)]) // Always allowed (stub)
+                // s_cap_check(cap_type_ptr: i32, cap_type_len: i32) -> i32
+                // Returns 1 if capability is held, 0 if not, -1 on error
+                if args.len() >= 2 {
+                    let ptr = args[0].as_i32().unwrap_or(-1);
+                    let len = args[1].as_i32().unwrap_or(-1);
+                    
+                    if ptr < 0 || len < 0 {
+                        return Ok(alloc::vec![WasmValue::I32(-1)]);
+                    }
+                    
+                    let ptr = ptr as usize;
+                    let len = len as usize;
+                    
+                    // Validate memory bounds
+                    if ptr + len > self.memory.len() || len > 256 {
+                        return Ok(alloc::vec![WasmValue::I32(-1)]);
+                    }
+                    
+                    // Read capability type string from WASM memory
+                    let cap_type_bytes = &self.memory[ptr..ptr + len];
+                    let cap_type = core::str::from_utf8(cap_type_bytes).unwrap_or("");
+                    
+                    // Check if any bound host function has a matching required capability
+                    // Capability strings are like "fs:read", "net:connect", "ipc:send", etc.
+                    let has_cap = self.host_functions.iter().any(|bf| {
+                        let required = bf.function.required_capability();
+                        // Check for exact match or prefix match (e.g., "fs" matches "fs:read")
+                        required == cap_type || 
+                        required.starts_with(&alloc::format!("{}:", cap_type)) ||
+                        cap_type.starts_with(&alloc::format!("{}:", required))
+                    });
+                    
+                    Ok(alloc::vec![WasmValue::I32(if has_cap { 1 } else { 0 })])
+                } else {
+                    Ok(alloc::vec![WasmValue::I32(-1)])
+                }
             }
             HostFunction::SCapRequest => {
-                Ok(alloc::vec![WasmValue::I64(0)]) // Null capability
+                // s_cap_request(cap_type_ptr: i32, cap_type_len: i32) -> i64
+                // Request a capability dynamically. Returns capability ID or 0 on failure.
+                // In a sandboxed WASM environment, dynamic capability requests are denied
+                // unless the runtime is configured to allow escalation (which it shouldn't be).
+                if args.len() >= 2 {
+                    let ptr = args[0].as_i32().unwrap_or(-1);
+                    let len = args[1].as_i32().unwrap_or(-1);
+                    
+                    if ptr < 0 || len < 0 || len > 256 {
+                        return Ok(alloc::vec![WasmValue::I64(0)]);
+                    }
+                    
+                    let ptr = ptr as usize;
+                    let len = len as usize;
+                    
+                    if ptr + len > self.memory.len() {
+                        return Ok(alloc::vec![WasmValue::I64(0)]);
+                    }
+                    
+                    // Read requested capability type
+                    let cap_type_bytes = &self.memory[ptr..ptr + len];
+                    let _cap_type = core::str::from_utf8(cap_type_bytes).unwrap_or("");
+                    
+                    // For security: WASM modules cannot dynamically request capabilities
+                    // All capabilities must be bound at instantiation time via capability_bindings
+                    // Return 0 to indicate capability request denied
+                    Ok(alloc::vec![WasmValue::I64(0)])
+                } else {
+                    Ok(alloc::vec![WasmValue::I64(0)])
+                }
             }
-            HostFunction::SCapRevoke | HostFunction::SCapDelegate => {
-                Ok(alloc::vec![WasmValue::I32(-1)])
+            HostFunction::SCapRevoke => {
+                // s_cap_revoke(cap_id: i64) -> i32
+                // WASM modules cannot revoke their own capabilities (security)
+                // Only the capability manager or parent process can revoke
+                Ok(alloc::vec![WasmValue::I32(-1)]) // Permission denied
+            }
+            HostFunction::SCapDelegate => {
+                // s_cap_delegate(cap_id: i64, target_pid: i64) -> i64
+                // Delegation requires the GRANT permission on the capability
+                // Check if any of our bound capabilities have grant permission
+                if args.len() >= 2 {
+                    let cap_id = args[0].as_i64().unwrap_or(0) as u64;
+                    let _target_pid = args[1].as_i64().unwrap_or(0);
+                    
+                    // Find the capability by ID (first 64 bits of token)
+                    let cap_found = self.host_functions.iter().find(|bf| {
+                        bf.capability.raw()[0] == cap_id
+                    });
+                    
+                    match cap_found {
+                        Some(bf) if !bf.capability.is_null() => {
+                            // Cannot delegate from WASM - would need IPC to S-CAP service
+                            // Return 0 to indicate delegation failed
+                            Ok(alloc::vec![WasmValue::I64(0)])
+                        }
+                        _ => Ok(alloc::vec![WasmValue::I64(0)]) // Capability not found
+                    }
+                } else {
+                    Ok(alloc::vec![WasmValue::I64(0)])
+                }
             }
             
             // Service discovery
@@ -4089,9 +4180,15 @@ impl Instance {
                 Ok(alloc::vec![WasmValue::I32(count)])
             }
             HostFunction::SSysMemFree => {
-                // Return available heap memory estimate
-                // Real implementation would query the allocator
-                Ok(alloc::vec![WasmValue::I64(1024 * 1024)]) // 1MB estimate
+                // Calculate available memory: max WASM pages minus current usage
+                // WASM linear memory is limited to 4GB (65536 pages * 64KB)
+                const MAX_WASM_PAGES: u64 = 65536;
+                const PAGE_SIZE: u64 = 65536; // 64KB per page
+                let current_bytes = self.memory.len() as u64;
+                let current_pages = current_bytes / PAGE_SIZE;
+                let available_pages = MAX_WASM_PAGES.saturating_sub(current_pages);
+                let free_bytes = available_pages * PAGE_SIZE;
+                Ok(alloc::vec![WasmValue::I64(free_bytes as i64)])
             }
             HostFunction::SSysUptime => {
                 // Get uptime from timestamp (approximate)

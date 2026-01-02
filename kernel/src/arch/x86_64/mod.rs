@@ -47,6 +47,9 @@ pub fn init() {
     // Initialize VGA text mode for screen output
     vga::init();
     
+    // Enable FSGSBASE instructions in CR4 for fast per-CPU access
+    enable_fsgsbase();
+    
     // Set up GDT with TSS
     unsafe {
         let tss_addr = &raw const TSS as u64;
@@ -93,6 +96,54 @@ pub fn init() {
         let mut s = serial::SERIAL.lock();
         let _ = writeln!(s, "[x86_64] Interrupts enabled");
         let _ = writeln!(s, "[x86_64] Architecture initialization complete");
+    }
+}
+
+/// Enable FSGSBASE instructions in CR4.
+/// This allows fast read/write of FS.base and GS.base registers
+/// without going through MSRs, which is faster for per-CPU data access.
+fn enable_fsgsbase() {
+    use core::fmt::Write;
+    
+    // Check if CPU supports FSGSBASE (CPUID.7.0:EBX bit 0)
+    // Note: We need to save/restore rbx because LLVM reserves it internally
+    let cpuid_result: u32;
+    unsafe {
+        core::arch::asm!(
+            "push rbx",        // Save rbx (LLVM reserved)
+            "mov eax, 7",
+            "xor ecx, ecx",
+            "cpuid",
+            "mov {0:e}, ebx",  // Copy ebx to output before restore
+            "pop rbx",         // Restore rbx
+            out(reg) cpuid_result,
+            out("eax") _,
+            out("ecx") _,
+            out("edx") _,
+            options(nostack)
+        );
+    }
+    
+    if cpuid_result & 1 != 0 {
+        // CPU supports FSGSBASE - enable it in CR4
+        unsafe {
+            core::arch::asm!(
+                "mov rax, cr4",
+                "or rax, {fsgsbase_bit}",
+                "mov cr4, rax",
+                fsgsbase_bit = const 0x10000u64, // CR4.FSGSBASE (bit 16)
+                options(nostack, nomem)
+            );
+        }
+        {
+            let mut s = serial::SERIAL.lock();
+            let _ = writeln!(s, "[x86_64] FSGSBASE enabled (fast per-CPU access)");
+        }
+    } else {
+        {
+            let mut s = serial::SERIAL.lock();
+            let _ = writeln!(s, "[x86_64] FSGSBASE not supported (using MSR fallback)");
+        }
     }
 }
 

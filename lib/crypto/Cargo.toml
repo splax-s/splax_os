@@ -1,0 +1,17 @@
+[package]
+name = "splax_crypto"
+version = "0.1.0"
+edition = "2021"
+description = "Shared cryptographic primitives for Splax OS"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "splax_crypto"
+path = "src/lib.rs"
+
+[features]
+default = ["alloc"]
+alloc = []
+std = ["alloc"]
+
+[dependencies]
