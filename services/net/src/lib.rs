@@ -79,6 +79,8 @@ pub mod config;
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
+use socket::Socket;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// S-NET service version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -136,23 +138,76 @@ pub struct InterfaceInfo {
     pub up: bool,
 }
 
+/// Socket manager for tracking active sockets
+pub struct SocketManager {
+    /// Active sockets by handle
+    sockets: BTreeMap<u32, Socket>,
+    /// Next socket handle
+    next_handle: AtomicU32,
+    /// Maximum allowed sockets
+    max_sockets: usize,
+}
+
+impl SocketManager {
+    /// Create a new socket manager
+    pub fn new(max_sockets: usize) -> Self {
+        Self {
+            sockets: BTreeMap::new(),
+            next_handle: AtomicU32::new(1),
+            max_sockets,
+        }
+    }
+
+    /// Create a new socket
+    pub fn create(&mut self, domain: SocketDomain, sock_type: SocketType, protocol: u8) -> Result<u32, NetError> {
+        if self.sockets.len() >= self.max_sockets {
+            return Err(NetError::TooManySockets);
+        }
+        let socket = Socket::new(domain, sock_type, protocol);
+        let handle = socket.handle;
+        self.sockets.insert(handle, socket);
+        Ok(handle)
+    }
+
+    /// Get a socket by handle
+    pub fn get(&self, handle: u32) -> Option<&Socket> {
+        self.sockets.get(&handle)
+    }
+
+    /// Get a mutable socket by handle
+    pub fn get_mut(&mut self, handle: u32) -> Option<&mut Socket> {
+        self.sockets.get_mut(&handle)
+    }
+
+    /// Close and remove a socket
+    pub fn close(&mut self, handle: u32) -> Result<(), NetError> {
+        self.sockets.remove(&handle).map(|_| ()).ok_or(NetError::InvalidSocket)
+    }
+
+    /// Get the number of active sockets
+    pub fn count(&self) -> usize {
+        self.sockets.len()
+    }
+}
+
 /// Network service state
 pub struct NetService {
     /// Configuration
     config: NetConfig,
     /// Network interfaces
     interfaces: BTreeMap<String, InterfaceInfo>,
-    /// Socket manager (stub)
-    socket_count: usize,
+    /// Socket manager
+    sockets: SocketManager,
 }
 
 impl NetService {
     /// Creates a new network service
     pub fn new(config: NetConfig) -> Self {
+        let max_sockets = config.max_sockets;
         Self {
             config,
             interfaces: BTreeMap::new(),
-            socket_count: 0,
+            sockets: SocketManager::new(max_sockets),
         }
     }
 
