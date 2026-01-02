@@ -1,0 +1,20 @@
+[package]
+name = "splax-canvas"
+version = "0.1.0"
+edition = "2024"
+authors = ["Splax Contributors"]
+description = "S-CANVAS userspace windowing and compositor service for Splax OS"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+
+[features]
+default = []
+# Hardware-accelerated compositing
+hw_accel = []
+# Software-only compositing
+software = []
+# Wayland-compatible protocol
+wayland = []

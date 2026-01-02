@@ -45,6 +45,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "splax-canvas"
+version = "0.1.0"
+
+[[package]]
 name = "splax-dev"
 version = "0.1.0"
 dependencies = [

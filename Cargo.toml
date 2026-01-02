@@ -4,6 +4,7 @@ members = [
     "kernel",
     "services/cap",
     "services/atlas",
+    "services/canvas",
     "services/dev",
     "services/gpu",
     "services/init",

@@ -25,18 +25,20 @@
 //! └───────────────┘ └───────────────┘ └───────────────┘
 //!         │                 │                 │
 //!         └────────┬────────┴─────────────────┘
-//!                  ▼
-//!          ┌───────────────┐
-//!          │     S-NET     │
-//!          │  (Network)    │
-//!          └───────────────┘
-//!                  │
-//!         ┌────────┴────────┐
-//!         ▼                 ▼
-//! ┌───────────────┐ ┌───────────────┐
-//! │    S-GATE     │ │   S-ATLAS     │
-//! │   (Gateway)   │ │    (GUI)      │
-//! └───────────────┘ └───────────────┘
+//!                  │                 │
+//!         ┌────────┴────────┐        ▼
+//!         ▼                 ▼ ┌───────────────┐
+//! ┌───────────────┐           │   S-CANVAS    │
+//! │     S-NET     │           │  (Windowing)  │
+//! │  (Network)    │           └───────┬───────┘
+//! └───────────────┘                   │
+//!         │                           │
+//!         ├───────────────────────────┘
+//!         ▼                 ▼                 ▼
+//! ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
+//! │    S-GATE     │ │    S-PKG      │ │   S-ATLAS     │
+//! │   (Gateway)   │ │  (Packages)   │ │   (Shell)     │
+//! └───────────────┘ └───────────────┘ └───────────────┘
 //! ```
 
 use alloc::string::String;
@@ -53,14 +55,16 @@ pub enum CoreService {
     Dev = 2,
     /// S-GPU: Graphics and framebuffer
     Gpu = 3,
+    /// S-CANVAS: Windowing and compositor
+    Canvas = 4,
     /// S-NET: Network stack
-    Net = 4,
+    Net = 5,
     /// S-PKG: Package manager
-    Pkg = 5,
+    Pkg = 6,
     /// S-GATE: External gateway
-    Gate = 6,
-    /// S-ATLAS: Window manager / GUI
-    Atlas = 7,
+    Gate = 7,
+    /// S-ATLAS: Application launcher / GUI shell
+    Atlas = 8,
 }
 
 impl CoreService {
@@ -70,6 +74,7 @@ impl CoreService {
             CoreService::Storage => "s-storage",
             CoreService::Dev => "s-dev",
             CoreService::Gpu => "s-gpu",
+            CoreService::Canvas => "s-canvas",
             CoreService::Net => "s-net",
             CoreService::Pkg => "s-pkg",
             CoreService::Gate => "s-gate",
@@ -83,6 +88,7 @@ impl CoreService {
             CoreService::Storage => "/sbin/s-storage",
             CoreService::Dev => "/sbin/s-dev",
             CoreService::Gpu => "/sbin/s-gpu",
+            CoreService::Canvas => "/sbin/s-canvas",
             CoreService::Net => "/sbin/s-net",
             CoreService::Pkg => "/sbin/s-pkg",
             CoreService::Gate => "/sbin/s-gate",
@@ -96,10 +102,11 @@ impl CoreService {
             CoreService::Storage => "Virtual filesystem and block device manager",
             CoreService::Dev => "Userspace device driver manager",
             CoreService::Gpu => "Graphics and display service",
+            CoreService::Canvas => "Windowing system and compositor",
             CoreService::Net => "Network stack and socket service",
             CoreService::Pkg => "Package manager and software installation",
             CoreService::Gate => "External network gateway and firewall",
-            CoreService::Atlas => "Window manager and GUI compositor",
+            CoreService::Atlas => "Application launcher and GUI shell",
         }
     }
     
@@ -109,16 +116,17 @@ impl CoreService {
             CoreService::Storage => &[], // First service, no deps
             CoreService::Dev => &[], // Independent of storage
             CoreService::Gpu => &[], // Can start independently
+            CoreService::Canvas => &[CoreService::Gpu, CoreService::Dev], // Needs GPU and input devices
             CoreService::Net => &[CoreService::Storage, CoreService::Dev],
             CoreService::Pkg => &[CoreService::Storage, CoreService::Net], // Needs storage and network
             CoreService::Gate => &[CoreService::Net],
-            CoreService::Atlas => &[CoreService::Gpu],
+            CoreService::Atlas => &[CoreService::Canvas], // Needs windowing system
         }
     }
     
     /// Check if this is a critical service
     pub fn is_critical(&self) -> bool {
-        matches!(self, CoreService::Storage | CoreService::Dev | CoreService::Net)
+        matches!(self, CoreService::Storage | CoreService::Dev | CoreService::Net | CoreService::Gpu)
     }
     
     /// Get restart policy
@@ -156,6 +164,7 @@ impl CoreService {
             CoreService::Storage,
             CoreService::Dev,
             CoreService::Gpu,
+            CoreService::Canvas,
             CoreService::Net,
             CoreService::Pkg,
             CoreService::Gate,
@@ -169,8 +178,8 @@ impl CoreService {
             // Group 1: No dependencies, start immediately
             &[CoreService::Storage, CoreService::Dev, CoreService::Gpu],
             // Group 2: Depends on group 1
-            &[CoreService::Net],
-            // Group 3: Depends on net or gpu
+            &[CoreService::Canvas, CoreService::Net],
+            // Group 3: Depends on Canvas or Net
             &[CoreService::Pkg, CoreService::Gate, CoreService::Atlas],
         ]
     }
@@ -309,12 +318,14 @@ pub mod channels {
     pub const DEV_DRIVER: u64 = 0x44455600; // "DEV\0"
     /// S-GPU framebuffer channel endpoint
     pub const GPU_FB: u64 = 0x47505500; // "GPU\0"
+    /// S-CANVAS windowing channel endpoint
+    pub const CANVAS_WM: u64 = 0x434E5653; // "CNVS"
     /// S-NET socket channel endpoint
     pub const NET_SOCKET: u64 = 0x4E455400; // "NET\0"
     /// S-GATE gateway channel endpoint
     pub const GATE_GW: u64 = 0x47415445; // "GATE"
-    /// S-ATLAS window channel endpoint
-    pub const ATLAS_WM: u64 = 0x41544C53; // "ATLS"
+    /// S-ATLAS launcher channel endpoint
+    pub const ATLAS_SHELL: u64 = 0x41544C53; // "ATLS"
 }
 
 /// Capability tokens for core services
@@ -340,6 +351,8 @@ pub mod capabilities {
     pub const CAP_GPU: u64 = 0xCA01_0000_0000_0005;
     /// Capability for IPC channel creation
     pub const CAP_IPC: u64 = 0xCA01_0000_0000_0006;
+    /// Capability for windowing access
+    pub const CAP_CANVAS: u64 = 0xCA01_0000_0000_0007;
 }
 
 #[cfg(test)]
