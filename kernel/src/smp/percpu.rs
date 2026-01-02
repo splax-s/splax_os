@@ -146,14 +146,16 @@ pub fn init_bsp() {
     #[cfg(target_arch = "x86_64")]
     {
         // Set GS base to point to per-CPU data
-        // This requires the FSGSBASE feature or MSR writes
+        // Use MSR write (IA32_GS_BASE = 0xC0000101) which always works
+        // WRGSBASE requires FSGSBASE feature to be enabled in CR4
         unsafe {
             let ptr = data as *const PerCpuData as u64;
             // Write to IA32_GS_BASE MSR (0xC0000101)
-            // For now, we'll use WRGSBASE if available
             core::arch::asm!(
-                "wrgsbase {}",
-                in(reg) ptr,
+                "wrmsr",
+                in("ecx") 0xC0000101u32,
+                in("eax") (ptr as u32),
+                in("edx") ((ptr >> 32) as u32),
                 options(nomem, nostack)
             );
         }
@@ -193,11 +195,14 @@ pub unsafe fn init_ap(cpu_id: CpuId) {
 
     #[cfg(target_arch = "x86_64")]
     {
+        // Use MSR write (IA32_GS_BASE = 0xC0000101) which always works
         unsafe {
             let ptr = data as *const PerCpuData as u64;
             core::arch::asm!(
-                "wrgsbase {}",
-                in(reg) ptr,
+                "wrmsr",
+                in("ecx") 0xC0000101u32,
+                in("eax") (ptr as u32),
+                in("edx") ((ptr >> 32) as u32),
                 options(nomem, nostack)
             );
         }

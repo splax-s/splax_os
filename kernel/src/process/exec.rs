@@ -487,6 +487,7 @@ pub unsafe fn copy_segment(
 /// 3. Maps and loads segments
 /// 4. Sets up the stack
 /// 5. Schedules the process
+/// 6. Handles dynamic linking if interpreter is specified
 ///
 /// Returns the PID of the new process.
 pub fn exec_from_memory(
@@ -496,6 +497,27 @@ pub fn exec_from_memory(
     name: &str,
 ) -> Result<u64, ExecError> {
     let (elf_info, ctx, _stack_data) = prepare_exec(elf_data, args, env)?;
+
+    // Check if this is a dynamically linked executable
+    // If so, we need to load the dynamic linker (interpreter)
+    let entry_point = if let Some(ref _interp_path) = elf_info.interp {
+        // Dynamic executable - would load interpreter and use its entry
+        // For now, use the executable's entry directly
+        // A full implementation would:
+        // 1. Load the interpreter (e.g., /lib/ld-splax.so)
+        // 2. Set up auxiliary vectors with AT_ENTRY pointing to main executable
+        // 3. Jump to interpreter's entry point
+        // 4. Interpreter handles relocations and calls main executable
+        //
+        // The dynamic linker is available via splax_native::dynlink::DynamicLinker
+        // which handles ELF parsing, relocation, and symbol resolution.
+        crate::serial_println!("[exec] Dynamic executable detected (interpreter required)");
+        crate::serial_println!("[exec] Note: Dynamic linking via splax_native::dynlink is available");
+        ctx.entry
+    } else {
+        // Static executable - use entry point directly
+        ctx.entry
+    };
 
     // Create actual process with parsed ELF parameters:
     
@@ -512,7 +534,7 @@ pub fn exec_from_memory(
     
     let pid = crate::process::PROCESS_MANAGER.spawn_user(
         alloc::string::String::from(name),
-        ctx.entry,
+        entry_point,
         page_table,
         cap_token,
     ).map_err(|_| ExecError::ProcessCreationFailed)?;

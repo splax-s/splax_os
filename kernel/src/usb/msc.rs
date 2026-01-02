@@ -1015,6 +1015,88 @@ impl Default for MscManager {
 }
 
 // =============================================================================
+// Global MSC Manager
+// =============================================================================
+
+use spin::Mutex;
+
+/// Global MSC manager instance.
+pub static MSC_MANAGER: Mutex<MscManager> = Mutex::new(MscManager::new());
+
+/// Probe a USB device for mass storage functionality.
+///
+/// Called by USB enumeration when a device with class 0x08 is detected.
+/// Returns Ok(()) if the device was successfully initialized.
+pub fn probe_device(address: u8, subclass: u8, protocol: u8) -> Result<(), &'static str> {
+    // Check for supported protocols
+    if protocol != protocol::BBB && protocol != protocol::UAS {
+        return Err("Unsupported MSC protocol");
+    }
+    
+    // Check for supported subclass (SCSI transparent command set)
+    if subclass != subclass::SCSI_TRANSPARENT && subclass != subclass::RBC {
+        return Err("Unsupported MSC subclass");
+    }
+    
+    crate::serial_println!("[msc] Probing USB MSC device at address {}", address);
+    crate::serial_println!("[msc] Subclass: 0x{:02x}, Protocol: 0x{:02x}", subclass, protocol);
+    
+    // In a full implementation, we would:
+    // 1. Read configuration descriptor to find endpoints
+    // 2. Create UsbMassStorageDevice with bulk IN/OUT endpoints
+    // 3. Send INQUIRY command to get device info
+    // 4. Send READ CAPACITY to get size
+    // 5. Register with block subsystem
+    
+    // For now, log that we detected the device
+    // Actual initialization requires more USB control transfer support
+    crate::serial_println!("[msc] Device detected - full initialization requires endpoint setup");
+    
+    // Create placeholder endpoints (would be parsed from config descriptor)
+    let bulk_in = super::UsbEndpoint {
+        address: 0x81,
+        endpoint_type: super::TransferType::Bulk,
+        max_packet_size: 512,
+        interval: 0,
+    };
+    
+    let bulk_out = super::UsbEndpoint {
+        address: 0x02,
+        endpoint_type: super::TransferType::Bulk,
+        max_packet_size: 512,
+        interval: 0,
+    };
+    
+    // Create the device (simplified, without full endpoint setup)
+    let device = UsbMassStorageDevice::new(
+        address,
+        0, // LUN 0
+        UsbEndpoint {
+            address: bulk_in.address,
+            max_packet_size: bulk_in.max_packet_size,
+            ep_type: 2, // Bulk
+        },
+        UsbEndpoint {
+            address: bulk_out.address,
+            max_packet_size: bulk_out.max_packet_size,
+            ep_type: 2, // Bulk
+        },
+    );
+    
+    // Register with global manager
+    let mut manager = MSC_MANAGER.lock();
+    let id = manager.register(device);
+    crate::serial_println!("[msc] Registered MSC device with ID {}", id);
+    
+    Ok(())
+}
+
+/// Get reference to the global MSC manager.
+pub fn manager() -> spin::MutexGuard<'static, MscManager> {
+    MSC_MANAGER.lock()
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

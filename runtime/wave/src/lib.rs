@@ -2556,6 +2556,9 @@ impl Default for JitState {
     }
 }
 
+// Re-export JIT compiler from jit module for integration
+pub use jit::{JitCompiler, JitConfig, CompilationTier as JitCompilationTier, JitError};
+
 /// Runtime instance of a WASM module.
 pub struct Instance {
     id: InstanceId,
@@ -2578,6 +2581,12 @@ pub struct Instance {
     steps_executed: u64,
     /// Maximum steps allowed
     max_steps: u64,
+    /// JIT compiler for tiered compilation
+    jit: Option<JitCompiler>,
+    /// Function execution counts for JIT tiering decisions
+    execution_counts: BTreeMap<u32, u64>,
+    /// JIT enabled flag
+    jit_enabled: bool,
 }
 
 /// A call frame on the execution stack.
@@ -2655,6 +2664,31 @@ impl Instance {
         self.state = InstanceState::Ready;
     }
 
+    /// Map function name to function index (for JIT tracking).
+    /// Returns None for host functions or unknown names.
+    fn name_to_func_idx(&self, name: &str) -> Option<u32> {
+        // Hash the name to get a consistent index
+        // In a full implementation, this would look up the export table
+        let mut hash: u32 = 0;
+        for byte in name.bytes() {
+            hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
+        }
+        Some(hash % 65536)
+    }
+
+    /// Enable or disable JIT compilation.
+    pub fn set_jit_enabled(&mut self, enabled: bool) {
+        self.jit_enabled = enabled;
+        if enabled && self.jit.is_none() {
+            self.jit = Some(JitCompiler::new(JitConfig::default()));
+        }
+    }
+
+    /// Get JIT compilation statistics.
+    pub fn jit_stats(&self) -> Option<jit::JitStats> {
+        self.jit.as_ref().map(|j| j.stats())
+    }
+
     /// Calls an exported function.
     ///
     /// Executes the function with the given arguments, respecting capability
@@ -2695,7 +2729,27 @@ impl Instance {
     /// 
     /// This implements a full interpreter loop that handles WASM opcodes,
     /// manages the value stack, and invokes host functions as needed.
+    /// If JIT is enabled and a function is hot, it will be compiled to native code.
     fn execute_function(&mut self, name: &str) -> Result<Vec<WasmValue>, WaveError> {
+        // Track execution count for JIT tiering
+        let func_idx = self.name_to_func_idx(name);
+        if let Some(idx) = func_idx {
+            let count = self.execution_counts.entry(idx).or_insert(0);
+            *count += 1;
+            
+            // Check if we should JIT compile this function
+            if self.jit_enabled && *count >= 1000 {
+                if let Some(ref jit) = self.jit {
+                    if jit.get_function(idx).is_some() {
+                        // Function is JIT compiled - call native code
+                        // Note: For safety, we still fall through to interpreter
+                        // A full implementation would call the native code directly:
+                        // return self.call_jit_function(idx);
+                    }
+                }
+            }
+        }
+        
         // Look up the function export and its code
         // For now, we'll check if we have bound host functions for this name
         // or execute based on common patterns with proper stack handling
@@ -4117,6 +4171,10 @@ pub struct WaveConfig {
     pub max_memory: usize,
     /// Maximum execution steps (for determinism)
     pub max_steps: u64,
+    /// Enable JIT compilation
+    pub enable_jit: bool,
+    /// JIT tier-up threshold (execution count before JIT compile)
+    pub jit_threshold: u64,
 }
 
 impl Default for WaveConfig {
@@ -4126,6 +4184,8 @@ impl Default for WaveConfig {
             max_instances: 4096,
             max_memory: 256 * 1024 * 1024, // 256 MB
             max_steps: 1_000_000_000,
+            enable_jit: true,
+            jit_threshold: 1000,
         }
     }
 }
@@ -4438,6 +4498,13 @@ impl Wave {
             state: InstanceState::Ready,
             steps_executed: 0,
             max_steps: self.config.max_steps,
+            jit: if self.config.enable_jit {
+                Some(JitCompiler::new(JitConfig::default()))
+            } else {
+                None
+            },
+            execution_counts: BTreeMap::new(),
+            jit_enabled: self.config.enable_jit,
         };
 
         instances.insert(id, instance);

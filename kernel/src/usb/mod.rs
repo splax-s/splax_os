@@ -528,6 +528,22 @@ impl UsbSubsystem {
                                     device.vendor_id = u16::from_le_bytes([desc_buf[8], desc_buf[9]]);
                                     device.product_id = u16::from_le_bytes([desc_buf[10], desc_buf[11]]);
                                     device.device_version = u16::from_le_bytes([desc_buf[12], desc_buf[13]]);
+                                    
+                                    // Check for Mass Storage class (0x08)
+                                    if device.device_class == ClassCode::MassStorage as u8 {
+                                        crate::serial_println!("[usb] Mass Storage device detected: {:04x}:{:04x}",
+                                            device.vendor_id, device.product_id);
+                                        // Probe MSC device - the msc module will handle initialization
+                                        if let Err(e) = msc::probe_device(address, device.device_subclass, device.device_protocol) {
+                                            crate::serial_println!("[usb] MSC probe failed: {}", e);
+                                        }
+                                    }
+                                    
+                                    // Check for HID class (0x03)
+                                    if device.device_class == ClassCode::Hid as u8 {
+                                        crate::serial_println!("[usb] HID device detected: {:04x}:{:04x}",
+                                            device.vendor_id, device.product_id);
+                                    }
                                 }
                                 
                                 self.devices.push(device);

@@ -71,9 +71,11 @@ pub use device::{NetworkDevice, NetworkDeviceInfo, NetworkError};
 pub use ethernet::{EthernetFrame, MacAddress};
 pub use ip::{Ipv4Address, Ipv4Packet};
 pub use socket::{SocketAddr, SocketHandle, SocketType};
+pub use socket::{connect_tls, accept_tls, send_tls, recv_tls, is_tls};
 pub use tcp::{TcpConnection, TcpSegment};
 pub use udp::{UdpDatagram, UdpEndpoint};
 pub use dns::{DnsResolver, RecordType, DnsResponse};
+pub use tls::TlsConnection;
 
 /// Network interface identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

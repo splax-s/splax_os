@@ -26,10 +26,11 @@ multiboot_header:
 multiboot_header_end:
 
 /* Put page tables in a known safe location - below 1MB (before kernel)
- * Using 0x1000-0x4000 range which is typically unused after BIOS */
+ * Using 0x1000-0x5000 range which is typically unused after BIOS
+ * We need multiple PDs to map enough memory for ACPI tables (can be at ~512MB) */
 .set BOOT_PML4, 0x1000
 .set BOOT_PDP,  0x2000  
-.set BOOT_PD,   0x3000
+.set BOOT_PD,   0x3000   /* PD for 0-1GB */
 /* Stack at 0x7C00 region (below kernel, unused after boot) */
 .set BOOT_STACK_TOP, 0x7C00
 
@@ -66,10 +67,11 @@ _start:
     /* Clear page tables at safe addresses below 1MB */
     mov edi, BOOT_PML4
     xor eax, eax
-    mov ecx, 3072  /* 3 pages * 1024 dwords */
+    mov ecx, 4096  /* 4 pages * 1024 dwords = 16KB for PML4+PDP+PD (covers 1GB) */
     rep stosd
 
-    /* Set up page tables for identity mapping first 2MB */
+    /* Set up page tables for identity mapping first 1GB (512 x 2MB pages)
+     * This is needed because ACPI tables can be placed near 512MB by QEMU/BIOS */
     
     /* PML4[0] -> PDP table (BOOT_PDP | 0x03) */
     mov eax, BOOT_PDP
@@ -85,18 +87,18 @@ _start:
     .byte 0xa3
     .long BOOT_PDP
 
-    /* PD[0] -> 2MB page at 0x0 (0x83 = present + writable + huge) */
-    mov eax, 0x83
-    /* mov DWORD PTR [BOOT_PD], eax */
-    .byte 0xa3
-    .long BOOT_PD
-
-    /* PD[1] -> 2MB page at 0x200000 (0x200083 = present + writable + huge + base) */
-    /* This covers 0x200000 - 0x3FFFFF, needed for kernel BSS which extends beyond 2MB */
-    mov eax, 0x200083
-    /* mov DWORD PTR [BOOT_PD + 8], eax */
-    .byte 0xa3
-    .long BOOT_PD + 8
+    /* Fill PD with 512 entries for 1GB identity mapping (512 x 2MB = 1GB)
+     * Each entry: base_addr | 0x83 (present + writable + huge page) */
+    mov edi, BOOT_PD
+    mov eax, 0x83          /* First entry: 0x0 | flags */
+    mov ecx, 512           /* 512 entries for 1GB */
+.fill_pd:
+    mov [edi], eax         /* Store entry */
+    mov DWORD PTR [edi+4], 0  /* Upper 32 bits = 0 */
+    add edi, 8             /* Next entry (8 bytes per entry) */
+    add eax, 0x200000      /* Next 2MB physical address */
+    dec ecx
+    jnz .fill_pd
 
     /* Early debug: write '3' */
     mov dx, 0x3F8

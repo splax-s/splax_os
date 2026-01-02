@@ -632,19 +632,70 @@ impl PcmStream {
 /// Global audio core instance
 pub static AUDIO_CORE: Mutex<AudioCore> = Mutex::new(AudioCore::new());
 
+/// Global audio mixer for software mixing
+pub static AUDIO_MIXER: Mutex<Option<mixer::AudioMixer>> = Mutex::new(None);
+
 /// Next device ID counter for audio devices
 pub static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Initializes the audio subsystem
 pub fn init() {
+    // Initialize the software mixer
+    {
+        let mut mixer_guard = AUDIO_MIXER.lock();
+        *mixer_guard = Some(mixer::AudioMixer::new());
+        crate::serial_println!("[sound] Audio mixer initialized");
+    }
+    
     // Probe for HDA devices
     if let Some(hda) = hda::probe() {
         let _ = AUDIO_CORE.lock().register_device(hda);
+        crate::serial_println!("[sound] HDA audio device registered");
     }
     
     // Probe for VirtIO-snd devices
     if let Some(virtio) = virtio_snd::probe() {
         let _ = AUDIO_CORE.lock().register_device(virtio);
+        crate::serial_println!("[sound] VirtIO-snd device registered");
+    }
+}
+
+/// Get a reference to the audio mixer
+pub fn get_mixer() -> spin::MutexGuard<'static, Option<mixer::AudioMixer>> {
+    AUDIO_MIXER.lock()
+}
+
+/// Create a mixing stream that will be mixed with other streams
+pub fn create_mix_stream(name: &str) -> Option<u32> {
+    let mut mixer_guard = AUDIO_MIXER.lock();
+    if let Some(ref mut mixer) = *mixer_guard {
+        let format = mixer::AudioFormat::standard();
+        mixer.create_stream(alloc::string::String::from(name), format)
+    } else {
+        None
+    }
+}
+
+/// Write audio data to a mixing stream
+pub fn write_to_mix_stream(stream_id: u32, data: &[f32]) -> bool {
+    let mut mixer_guard = AUDIO_MIXER.lock();
+    if let Some(ref mut mixer) = *mixer_guard {
+        if let Some(stream) = mixer.get_stream_mut(stream_id) {
+            stream.write(data);
+            return true;
+        }
+    }
+    false
+}
+
+/// Mix all active streams and return output buffer
+/// This should be called by the audio driver's callback
+pub fn mix_audio_output(output: &mut [u8]) -> usize {
+    let mut mixer_guard = AUDIO_MIXER.lock();
+    if let Some(ref mut mixer) = *mixer_guard {
+        mixer.mix(output)
+    } else {
+        0
     }
 }
 

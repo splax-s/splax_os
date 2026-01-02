@@ -55,10 +55,12 @@ pub enum CoreService {
     Gpu = 3,
     /// S-NET: Network stack
     Net = 4,
+    /// S-PKG: Package manager
+    Pkg = 5,
     /// S-GATE: External gateway
-    Gate = 5,
+    Gate = 6,
     /// S-ATLAS: Window manager / GUI
-    Atlas = 6,
+    Atlas = 7,
 }
 
 impl CoreService {
@@ -69,6 +71,7 @@ impl CoreService {
             CoreService::Dev => "s-dev",
             CoreService::Gpu => "s-gpu",
             CoreService::Net => "s-net",
+            CoreService::Pkg => "s-pkg",
             CoreService::Gate => "s-gate",
             CoreService::Atlas => "s-atlas",
         }
@@ -81,6 +84,7 @@ impl CoreService {
             CoreService::Dev => "/sbin/s-dev",
             CoreService::Gpu => "/sbin/s-gpu",
             CoreService::Net => "/sbin/s-net",
+            CoreService::Pkg => "/sbin/s-pkg",
             CoreService::Gate => "/sbin/s-gate",
             CoreService::Atlas => "/sbin/s-atlas",
         }
@@ -93,6 +97,7 @@ impl CoreService {
             CoreService::Dev => "Userspace device driver manager",
             CoreService::Gpu => "Graphics and display service",
             CoreService::Net => "Network stack and socket service",
+            CoreService::Pkg => "Package manager and software installation",
             CoreService::Gate => "External network gateway and firewall",
             CoreService::Atlas => "Window manager and GUI compositor",
         }
@@ -105,6 +110,7 @@ impl CoreService {
             CoreService::Dev => &[], // Independent of storage
             CoreService::Gpu => &[], // Can start independently
             CoreService::Net => &[CoreService::Storage, CoreService::Dev],
+            CoreService::Pkg => &[CoreService::Storage, CoreService::Net], // Needs storage and network
             CoreService::Gate => &[CoreService::Net],
             CoreService::Atlas => &[CoreService::Gpu],
         }
@@ -151,6 +157,7 @@ impl CoreService {
             CoreService::Dev,
             CoreService::Gpu,
             CoreService::Net,
+            CoreService::Pkg,
             CoreService::Gate,
             CoreService::Atlas,
         ]
@@ -164,7 +171,7 @@ impl CoreService {
             // Group 2: Depends on group 1
             &[CoreService::Net],
             // Group 3: Depends on net or gpu
-            &[CoreService::Gate, CoreService::Atlas],
+            &[CoreService::Pkg, CoreService::Gate, CoreService::Atlas],
         ]
     }
 }

@@ -163,7 +163,7 @@ pub unsafe extern "C" fn switch_context(_old: *mut Context, _new: *const Context
 /// - The context must be valid
 /// - This function never returns
 #[unsafe(naked)]
-pub unsafe extern "C" fn init_context(_ctx: *const Context) -> ! {
+pub unsafe extern "C" fn init_context(_ctx: *const Context) {
     naked_asm!(
         // Load CR3 if set
         "mov rax, [rdi + 0x48]",
@@ -188,7 +188,7 @@ pub unsafe extern "C" fn init_context(_ctx: *const Context) -> ! {
         // Load stack pointer
         "mov rsp, [rdi + 0x38]",
         
-        // Jump to entry point
+        // Jump to entry point (never returns)
         "mov rax, [rdi + 0x30]",
         "jmp rax",
     );

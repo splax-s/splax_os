@@ -327,6 +327,10 @@ pub struct InputManager {
     focus_handler: Option<u64>,
     /// Pointer handler (receives all mouse events)
     pointer_handler: Option<u64>,
+    /// Touchpad driver (if present)
+    touchpad: Option<super::touchpad::TouchpadDriver>,
+    /// Gesture callback
+    gesture_handler: Option<u64>,
 }
 
 impl InputManager {
@@ -339,7 +343,108 @@ impl InputManager {
             next_device_id: 1,
             focus_handler: None,
             pointer_handler: None,
+            touchpad: None,
+            gesture_handler: None,
         }
+    }
+
+    /// Initialize touchpad driver if hardware is present
+    pub fn init_touchpad(&mut self) -> Result<u32, DevError> {
+        use super::touchpad::{TouchpadDriver, TouchpadInfo, TouchpadProtocol};
+        
+        // Create touchpad info with default hardware capabilities
+        let info = TouchpadInfo {
+            name: {
+                let mut name = [0u8; 64];
+                let n = b"Generic Touchpad";
+                name[..n.len()].copy_from_slice(n);
+                name
+            },
+            vendor_id: 0,
+            product_id: 0,
+            protocol: TouchpadProtocol::Generic,
+            x_res: 10,
+            y_res: 10,
+            x_min: 0,
+            x_max: 1920,
+            y_min: 0,
+            y_max: 1080,
+            pressure_max: 255,
+            max_slots: 5,
+            is_clickpad: true,
+            has_buttons: true,
+            palm_detect: true,
+        };
+        
+        let driver = TouchpadDriver::new(info);
+        
+        // Register as input device
+        let device_id = self.register_device("Touchpad", InputDeviceType::Touchpad);
+        
+        self.touchpad = Some(driver);
+        Ok(device_id)
+    }
+
+    /// Process a touchpad event and generate gestures
+    pub fn process_touchpad_event(&mut self, event: InputEvent) {
+        if let Some(ref mut touchpad) = self.touchpad {
+            let timestamp = event.timestamp;
+            
+            // Process the raw event
+            touchpad.process_event(&event, timestamp);
+            
+            // Sync to complete the event processing
+            touchpad.sync(timestamp);
+            
+            // Check gesture state and generate appropriate input events
+            let active_count = touchpad.state.active_touch_count();
+            
+            // Get scroll delta from two-finger movement
+            if active_count == 2 && touchpad.config.two_finger_scroll {
+                // Two-finger scroll: calculate delta from touch points
+                let touches: Vec<_> = touchpad.state.active_touches().collect();
+                    
+                if touches.len() >= 2 {
+                    let dx = touches[0].x - touches[0].start_x;
+                    let dy = touches[0].y - touches[0].start_y;
+                    
+                    // Generate scroll events if movement is significant
+                    if dy.abs() > 10 {
+                        let scroll_event = InputEvent {
+                            timestamp: event.timestamp,
+                            event_type: InputEventType::Relative,
+                            code: rel_codes::REL_WHEEL,
+                            value: if touchpad.config.natural_scroll { dy / 10 } else { -dy / 10 },
+                        };
+                        self.mouse_state.scroll_y = self.mouse_state.scroll_y.saturating_add(scroll_event.value);
+                        if let Some(device_id) = self.devices.keys().next().copied() {
+                            if let Some(device) = self.devices.get_mut(&device_id) {
+                                device.queue_event(scroll_event);
+                            }
+                        }
+                    }
+                    if dx.abs() > 10 && touchpad.config.horizontal_scroll {
+                        let hscroll_event = InputEvent {
+                            timestamp: event.timestamp,
+                            event_type: InputEventType::Relative,
+                            code: rel_codes::REL_HWHEEL,
+                            value: dx / 10,
+                        };
+                        self.mouse_state.scroll_x = self.mouse_state.scroll_x.saturating_add(hscroll_event.value);
+                        if let Some(device_id) = self.devices.keys().next().copied() {
+                            if let Some(device) = self.devices.get_mut(&device_id) {
+                                device.queue_event(hscroll_event);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Set gesture handler
+    pub fn set_gesture_handler(&mut self, handler: u64) {
+        self.gesture_handler = Some(handler);
     }
 
     /// Registers an input device

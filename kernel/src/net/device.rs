@@ -65,6 +65,8 @@ pub enum NetworkError {
     TimedOut,
     /// Socket error
     SocketError,
+    /// TLS handshake or encryption error
+    TlsError,
 }
 
 /// Network device information.

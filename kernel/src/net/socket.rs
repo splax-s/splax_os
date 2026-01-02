@@ -1,14 +1,17 @@
 //! # Socket Abstraction
 //!
-//! High-level socket API for network communication.
+//! High-level socket API for network communication, including TLS support
+//! for secure connections.
 
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use spin::Mutex;
 
 use super::device::NetworkError;
 use super::ip::Ipv4Address;
 use super::tcp::{tcp_state, TcpConnectionKey, TcpEndpoint};
 use super::udp::{udp_state, UdpEndpoint};
+use super::tls::TlsConnection;
 
 /// Socket type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +95,15 @@ enum SocketInner {
         port: Option<u16>,
         /// Local address.
         local: Option<SocketAddr>,
+    },
+    /// TLS-encrypted TCP stream.
+    TlsStream {
+        /// Underlying TCP connection key.
+        connection_key: TcpConnectionKey,
+        /// Local address.
+        local: SocketAddr,
+        /// TLS connection state.
+        tls: TlsConnection,
     },
 }
 
@@ -424,6 +436,7 @@ pub fn local_addr(handle: SocketHandle) -> Result<SocketAddr, NetworkError> {
         SocketInner::TcpStream { local: Some(addr), .. } => Ok(*addr),
         SocketInner::TcpListener { local, .. } => Ok(*local),
         SocketInner::Udp { local: Some(addr), .. } => Ok(*addr),
+        SocketInner::TlsStream { local, .. } => Ok(*local),
         _ => Err(NetworkError::NotBound),
     }
 }
@@ -438,6 +451,199 @@ pub fn peer_addr(handle: SocketHandle) -> Result<SocketAddr, NetworkError> {
             connection_key: Some(key),
             ..
         } => Ok(SocketAddr::from(key.remote)),
+        SocketInner::TlsStream { connection_key, .. } => Ok(SocketAddr::from(connection_key.remote)),
         _ => Err(NetworkError::NotConnected),
+    }
+}
+
+// =============================================================================
+// TLS Socket Functions
+// =============================================================================
+
+/// Upgrades a connected TCP socket to TLS (client mode).
+///
+/// The socket must already be connected. This function initiates the TLS
+/// handshake and returns once the secure connection is established.
+pub fn connect_tls(handle: SocketHandle) -> Result<(), NetworkError> {
+    let mut table = SOCKET_TABLE.lock();
+    let socket = table.get_mut(handle).ok_or(NetworkError::InvalidSocket)?;
+    
+    // Extract TCP connection info
+    let (connection_key, local) = match &socket.inner {
+        SocketInner::TcpStream {
+            connection_key: Some(key),
+            local: Some(local),
+        } => (*key, *local),
+        SocketInner::TcpStream { connection_key: None, .. } => {
+            return Err(NetworkError::NotConnected);
+        }
+        _ => return Err(NetworkError::InvalidOperation),
+    };
+    
+    // Create TLS client connection
+    let mut tls = TlsConnection::new_client();
+    
+    // Start the handshake
+    let client_hello = tls.start_handshake()
+        .map_err(|_| NetworkError::TlsError)?;
+    
+    // Send ClientHello via TCP
+    drop(table);
+    let _ = send_raw_tcp(&connection_key, &client_hello);
+    
+    // Update socket to TLS mode
+    let mut table = SOCKET_TABLE.lock();
+    let socket = table.get_mut(handle).ok_or(NetworkError::InvalidSocket)?;
+    
+    socket.inner = SocketInner::TlsStream {
+        connection_key,
+        local,
+        tls,
+    };
+    
+    crate::println!("[net] TLS handshake initiated for socket {}", handle);
+    Ok(())
+}
+
+/// Accepts a TLS connection on a connected TCP socket (server mode).
+///
+/// This is used after accept() to upgrade the connection to TLS.
+pub fn accept_tls(handle: SocketHandle) -> Result<(), NetworkError> {
+    let mut table = SOCKET_TABLE.lock();
+    let socket = table.get_mut(handle).ok_or(NetworkError::InvalidSocket)?;
+    
+    // Extract TCP connection info
+    let (connection_key, local) = match &socket.inner {
+        SocketInner::TcpStream {
+            connection_key: Some(key),
+            local: Some(local),
+        } => (*key, *local),
+        SocketInner::TcpStream { connection_key: None, .. } => {
+            return Err(NetworkError::NotConnected);
+        }
+        _ => return Err(NetworkError::InvalidOperation),
+    };
+    
+    // Create TLS server connection
+    let tls = TlsConnection::new_server();
+    
+    // Update socket to TLS mode
+    socket.inner = SocketInner::TlsStream {
+        connection_key,
+        local,
+        tls,
+    };
+    
+    crate::println!("[net] TLS server mode enabled for socket {}", handle);
+    Ok(())
+}
+
+/// Sends encrypted data over a TLS socket.
+pub fn send_tls(handle: SocketHandle, data: &[u8]) -> Result<usize, NetworkError> {
+    let mut table = SOCKET_TABLE.lock();
+    let socket = table.get_mut(handle).ok_or(NetworkError::InvalidSocket)?;
+    
+    match &mut socket.inner {
+        SocketInner::TlsStream { connection_key, tls, .. } => {
+            let key = *connection_key;
+            
+            // Encrypt the data
+            let encrypted = tls.encrypt(data)
+                .map_err(|_| NetworkError::TlsError)?;
+            
+            drop(table);
+            
+            // Send encrypted data via TCP
+            send_raw_tcp(&key, &encrypted)?;
+            
+            Ok(data.len())
+        }
+        _ => Err(NetworkError::InvalidOperation),
+    }
+}
+
+/// Receives and decrypts data from a TLS socket.
+pub fn recv_tls(handle: SocketHandle, buf: &mut [u8]) -> Result<usize, NetworkError> {
+    let mut table = SOCKET_TABLE.lock();
+    let socket = table.get_mut(handle).ok_or(NetworkError::InvalidSocket)?;
+    let non_blocking = socket.non_blocking;
+    
+    match &mut socket.inner {
+        SocketInner::TlsStream { connection_key, tls, .. } => {
+            let key = *connection_key;
+            drop(table);
+            
+            // Read encrypted data from TCP
+            let mut encrypted_buf = [0u8; 16384];
+            let encrypted_len = recv_raw_tcp(&key, &mut encrypted_buf, non_blocking)?;
+            
+            if encrypted_len == 0 {
+                return if non_blocking {
+                    Err(NetworkError::WouldBlock)
+                } else {
+                    Ok(0)
+                };
+            }
+            
+            // Re-acquire lock and decrypt
+            let mut table = SOCKET_TABLE.lock();
+            let socket = table.get_mut(handle).ok_or(NetworkError::InvalidSocket)?;
+            
+            match &mut socket.inner {
+                SocketInner::TlsStream { tls, .. } => {
+                    let decrypted = tls.decrypt(&encrypted_buf[..encrypted_len])
+                        .map_err(|_| NetworkError::TlsError)?;
+                    
+                    let len = buf.len().min(decrypted.len());
+                    buf[..len].copy_from_slice(&decrypted[..len]);
+                    Ok(len)
+                }
+                _ => Err(NetworkError::InvalidSocket),
+            }
+        }
+        _ => Err(NetworkError::InvalidOperation),
+    }
+}
+
+/// Checks if a socket is using TLS.
+pub fn is_tls(handle: SocketHandle) -> bool {
+    let table = SOCKET_TABLE.lock();
+    if let Some(socket) = table.get(handle) {
+        matches!(socket.inner, SocketInner::TlsStream { .. })
+    } else {
+        false
+    }
+}
+
+// Helper function to send raw TCP data
+fn send_raw_tcp(key: &TcpConnectionKey, data: &[u8]) -> Result<(), NetworkError> {
+    let mut state = tcp_state().lock();
+    if let Some(conn) = state.connection_mut(*key) {
+        if let Some(segment) = conn.send(data) {
+            drop(state);
+            super::transmit_tcp_segment(key, &segment)?;
+            Ok(())
+        } else {
+            Err(NetworkError::NotConnected)
+        }
+    } else {
+        Err(NetworkError::NotConnected)
+    }
+}
+
+// Helper function to receive raw TCP data
+fn recv_raw_tcp(key: &TcpConnectionKey, buf: &mut [u8], non_blocking: bool) -> Result<usize, NetworkError> {
+    let mut state = tcp_state().lock();
+    if let Some(conn) = state.connection_mut(*key) {
+        let bytes_read = conn.read(buf);
+        if bytes_read > 0 {
+            Ok(bytes_read)
+        } else if non_blocking {
+            Err(NetworkError::WouldBlock)
+        } else {
+            Ok(0)
+        }
+    } else {
+        Err(NetworkError::NotConnected)
     }
 }

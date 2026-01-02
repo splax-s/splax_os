@@ -273,6 +273,37 @@ pub extern "C" fn kernel_main(boot_info: *const u8) -> ! {
     };
     let mut kernel = Kernel::new(config);
 
+    // Initialize security hardening (stack canaries, ASLR)
+    // Use RDTSC as entropy source for random seed
+    #[cfg(target_arch = "x86_64")]
+    {
+        let seed = unsafe { core::arch::x86_64::_rdtsc() };
+        mm::security::init_security(seed);
+        serial_println!("[kernel] Security hardening initialized (stack canaries + ASLR)");
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let seed: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) seed, options(nostack, nomem));
+        }
+        mm::security::init_security(seed);
+    }
+
+    // Initialize ACPI subsystem (required for SMP and power management)
+    #[cfg(target_arch = "x86_64")]
+    {
+        if acpi::init() {
+            serial_println!("[kernel] ACPI subsystem ready");
+        } else {
+            serial_println!("[kernel] ACPI not available (continuing without)");
+        }
+    }
+
+    // Initialize SMP (multi-core support)
+    smp::init_bsp();
+    serial_println!("[kernel] SMP initialized (BSP registered)");
+
     // Print kernel init message
     #[cfg(target_arch = "x86_64")]
     {
@@ -305,6 +336,16 @@ pub extern "C" fn kernel_main(boot_info: *const u8) -> ! {
         net::run_diagnostics();
         
         serial_println!("[kernel] Diagnostics complete");
+        
+        // Initialize USB subsystem
+        match usb::init() {
+            Ok(()) => serial_println!("[kernel] USB subsystem initialized"),
+            Err(e) => serial_println!("[kernel] USB init skipped: {}", e),
+        }
+        
+        // Initialize sound subsystem
+        sound::init();
+        serial_println!("[kernel] Sound subsystem initialized");
 
         // Initialize WASM runtime
         wasm::init();
