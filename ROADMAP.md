@@ -87,7 +87,7 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 - [x] Basic WASM interpreter
 - [x] WASI implementation
 - [x] JIT compilation
-- [ ] Ahead-of-time compilation
+- [x] Ahead-of-time compilation
 - [x] Capability-based WASM permissions
 
 ### Native Runtime
@@ -98,8 +98,8 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 
 ### Shell & Tools
 - [x] Serial console shell
-- [ ] Full terminal emulator (S-TERM)
-- [ ] Code editor (S-CODE)
+- [x] Full terminal emulator (S-TERM)
+- [x] Code editor (S-CODE)
 - [x] Package manager (S-PKG)
 
 ---

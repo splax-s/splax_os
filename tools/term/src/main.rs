@@ -25,6 +25,8 @@
 
 extern crate alloc;
 
+pub mod emulator;
+
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
