@@ -51,6 +51,7 @@ extern crate alloc;
 
 pub mod wasi;
 pub mod jit;
+pub mod aot;
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;

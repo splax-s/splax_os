@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **S-TERM Terminal Emulator**: Full ANSI/VT100 terminal emulation with:
+  - Complete CSI, OSC, DCS escape sequence parsing
+  - 256-color and true color (RGB) support
+  - Scrollback buffer with configurable history
+  - Alternate screen buffer for full-screen apps
+  - Cursor styles (block, underline, bar)
+  - Character attributes (bold, italic, underline, etc.)
+- **S-CODE Syntax Highlighting**: Multi-language syntax highlighting engine with:
+  - Token-based highlighting (keywords, types, strings, comments, etc.)
+  - Language registry for Rust, JavaScript, Python, C
+  - Dark and light color themes
+  - Multi-line comment and string state tracking
+- **AOT WASM Compilation**: Ahead-of-time compilation for WebAssembly modules:
+  - Serializable compiled module format (.swc)
+  - Module cache with LRU eviction
+  - Relocation support for runtime patching
+  - Cross-function inlining and optimization
 - **Boot-time 4GB Identity Mapping**: Extended page tables to map first 4GB of physical memory using 2MB huge pages, covering LAPIC (0xFEE00000), IOAPIC, and PCI config space
 - **FSGSBASE Support**: Enabled FSGSBASE instructions (CR4 bit 16) for fast per-CPU data access via `RDGSBASE`/`WRGSBASE`
 - **ACPI CPU Enumeration**: Added `cpu_count()`, `get_apic_ids()`, and `bsp_apic_id()` helper functions
