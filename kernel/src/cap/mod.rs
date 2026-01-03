@@ -24,6 +24,8 @@
 //! cap_table.check(process_id, token, "file:read")?;
 //! ```
 
+pub mod revocation;
+
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -64,6 +66,12 @@ impl CapabilityToken {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Operations {
     bits: u32,
+}
+
+impl Default for Operations {
+    fn default() -> Self {
+        Self::NONE
+    }
 }
 
 impl Operations {

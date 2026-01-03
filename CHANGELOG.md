@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Capability Revocation Engine**: Advanced capability lifecycle management with:
+  - Revocation bloom filter for O(1) revocation checks
+  - Delegation chain tracking with depth limits
+  - Time-limited capabilities with configurable durations
+  - Revocation audit log with comprehensive metadata
+  - Cascade revocation for derived capabilities
+  - Renewal support for renewable time-limited tokens
+- **Secure Key Storage**: Kernel-level cryptographic key management with:
+  - Key generation, import, derivation via HKDF
+  - ChaCha20-Poly1305 encryption at rest
+  - Key usage flags (ENCRYPT, DECRYPT, SIGN, VERIFY, DERIVE)
+  - Key rotation with successor tracking
+  - Extractable/non-extractable key policies
+  - Per-process key ownership and access control
+- **Operations Default trait**: Added Default implementation for capability Operations
 - **S-TERM Terminal Emulator**: Full ANSI/VT100 terminal emulation with:
   - Complete CSI, OSC, DCS escape sequence parsing
   - 256-color and true color (RGB) support

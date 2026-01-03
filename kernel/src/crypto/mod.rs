@@ -51,6 +51,7 @@ pub mod mac;
 pub mod asymmetric;
 pub mod kdf;
 pub mod random;
+pub mod keystore;
 
 pub use hash::{Hash, Sha256, Sha512, XxHash3};
 pub use cipher::{Cipher, AesGcm, ChaCha20Poly1305, CipherError};
