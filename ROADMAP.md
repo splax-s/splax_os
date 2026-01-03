@@ -138,9 +138,9 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 
 ### Capability System
 - [ ] Formal verification of capability model
-- [ ] Capability revocation
-- [ ] Capability delegation chains
-- [ ] Time-limited capabilities
+- [x] Capability revocation
+- [x] Capability delegation chains
+- [x] Time-limited capabilities
 
 ### Isolation
 - [ ] Memory tagging (aarch64 MTE)
@@ -154,7 +154,7 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 - [x] Symmetric encryption (AES-GCM, ChaCha20-Poly1305)
 - [x] Asymmetric cryptography (Ed25519)
 - [x] TLS support
-- [ ] Secure key storage
+- [x] Secure key storage
 
 ---
 
