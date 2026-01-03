@@ -48,6 +48,7 @@ pub mod ssh;
 pub mod firewall;
 pub mod qos;
 pub mod tls;
+pub mod mesh;
 pub mod namespace;
 
 // Network device drivers

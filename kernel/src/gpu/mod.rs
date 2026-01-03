@@ -23,6 +23,9 @@ pub mod font;
 pub mod framebuffer;
 pub mod console;
 pub mod primitives;
+pub mod intel;
+pub mod amd;
+pub mod wayland;
 
 pub use color::Color;
 pub use framebuffer::{DisplayMode, FramebufferInfo, PixelFormat, FRAMEBUFFER};

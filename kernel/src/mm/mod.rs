@@ -17,6 +17,8 @@
 
 pub mod frame;
 pub mod security;
+pub mod cfi;
+pub mod mte;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
