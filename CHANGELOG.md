@@ -8,6 +8,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Control Flow Integrity (CFI)**: Hardware-assisted control flow protection with:
+  - Shadow stack implementation with per-CPU stacks
+  - Landing pad registry for indirect call validation
+  - Intel CET and ARM BTI/PAC hardware support detection
+  - Configurable policies: Permissive, Enforcing, Strict
+  - Per-thread CFI context tracking
+- **Memory Tagging Extension (MTE)**: AArch64 memory tagging for spatial safety:
+  - Hardware tag generation and checking
+  - Synchronous, asynchronous, and asymmetric modes
+  - Tagged allocation with automatic coloring
+  - MTE capability detection and runtime configuration
+  - Kernel and userspace memory tagging support
+- **Formal Verification Framework**: Separation logic for capability model:
+  - Verified capability tokens with mathematical proofs
+  - Separation assertions (disjoint, implies, resources)
+  - Property verification (transitivity, non-forgeability, revocation)
+  - Delegation chain verification
+  - Proof obligation tracking
+- **Service Mesh Integration**: Istio-compatible service mesh in kernel:
+  - Sidecar proxy with transparent traffic interception
+  - Client-side load balancing (round-robin, weighted, least connections)
+  - Circuit breaker pattern with configurable thresholds
+  - Health checking and endpoint management
+  - Traffic metrics collection
+- **Intel Integrated Graphics Driver**: Gen9+ Intel GPU support with:
+  - Ring buffer command submission
+  - GTT (Graphics Translation Table) management
+  - Display pipe configuration
+  - Power state management
+  - Multi-display support
+- **AMD GPU Driver**: RDNA/RDNA2/RDNA3 GPU support with:
+  - SDMA ring buffer engine
+  - GART (Graphics Address Remapping Table)
+  - DCN display controller support
+  - Multi-monitor configuration
+  - GPU power management
+- **Wayland Compositor**: Full Wayland protocol implementation with:
+  - XDG shell toplevel and popup support
+  - SHM buffer management for CPU rendering
+  - DMA-BUF support for GPU buffers
+  - Input event handling (keyboard, pointer, touch)
+  - Subsurface composition
+  - Double-buffered state management
+- **Low-Latency Audio Engine**: Real-time audio processing with:
+  - Lock-free ring buffer for zero-copy audio
+  - Audio graph processing with multiple node types
+  - Gain, mixer, delay, and filter nodes
+  - Biquad filter implementation
+  - Configurable buffer sizes and sample rates
+  - Priority scheduling for audio threads
+- **USB Video Class (UVC) Driver**: USB camera support with:
+  - UVC descriptor parsing
+  - Multiple video format support (YUYV, MJPEG, H.264)
+  - Camera and processing unit controls
+  - Video streaming with frame callbacks
+  - Resolution and frame rate configuration
+
+### Changed
+- Security initialization now includes CFI on x86_64 and MTE on aarch64
+- GPU initialization includes Intel and AMD driver probing
+- Sound initialization includes low-latency audio engine setup
+- USB initialization includes UVC driver registration
+- Network initialization includes service mesh setup
+- Capability system includes formal verification hooks
+- VGA boot output shows all new subsystem status
+
+### Fixed
+- CapabilityToken now has `value()` accessor method for verification
+- CfiPolicy enum uses `Enforcing` variant correctly
+
+---
+
+### Added (Previous)
 - **Capability Revocation Engine**: Advanced capability lifecycle management with:
   - Revocation bloom filter for O(1) revocation checks
   - Delegation chain tracking with depth limits

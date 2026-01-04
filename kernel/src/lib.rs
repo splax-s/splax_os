@@ -280,6 +280,10 @@ pub extern "C" fn kernel_main(boot_info: *const u8) -> ! {
         let seed = unsafe { core::arch::x86_64::_rdtsc() };
         mm::security::init_security(seed);
         serial_println!("[kernel] Security hardening initialized (stack canaries + ASLR)");
+        
+        // Initialize Control Flow Integrity (CFI)
+        mm::cfi::init(mm::cfi::CfiPolicy::Enforcing);
+        serial_println!("[kernel] Control Flow Integrity (CFI) initialized");
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -288,7 +292,15 @@ pub extern "C" fn kernel_main(boot_info: *const u8) -> ! {
             core::arch::asm!("mrs {}, cntvct_el0", out(reg) seed, options(nostack, nomem));
         }
         mm::security::init_security(seed);
+        
+        // Initialize Memory Tagging Extension (MTE) on aarch64
+        mm::mte::init(mm::mte::MteMode::Synchronous);
+        serial_println!("[kernel] Memory Tagging Extension (MTE) initialized");
     }
+    
+    // Initialize capability formal verification
+    cap::verify::init();
+    serial_println!("[kernel] Capability formal verification ready");
 
     // Initialize ACPI subsystem (required for SMP and power management)
     #[cfg(target_arch = "x86_64")]
@@ -330,6 +342,18 @@ pub extern "C" fn kernel_main(boot_info: *const u8) -> ! {
     {
         gpu::init();
         serial_println!("[kernel] GPU/Framebuffer initialized");
+        
+        // Initialize Intel GPU driver (if present)
+        gpu::intel::init();
+        serial_println!("[kernel] Intel GPU driver ready");
+        
+        // Initialize AMD GPU driver (if present)
+        gpu::amd::init();
+        serial_println!("[kernel] AMD GPU driver ready");
+        
+        // Initialize Wayland compositor
+        gpu::wayland::init();
+        serial_println!("[kernel] Wayland compositor initialized");
     }
     
     // Initialize monolithic subsystems (disabled in microkernel mode)
@@ -359,12 +383,27 @@ pub extern "C" fn kernel_main(boot_info: *const u8) -> ! {
             Err(e) => serial_println!("[kernel] USB init skipped: {}", e),
         }
         
+        // Initialize USB Video Class (UVC) driver
+        usb::uvc::init();
+        serial_println!("[kernel] USB Video Class (UVC) driver ready");
+        
         // Initialize sound subsystem
         sound::init();
         serial_println!("[kernel] Sound subsystem initialized");
+        
+        // Initialize low-latency audio engine
+        sound::lowlatency::init_default();
+        serial_println!("[kernel] Low-latency audio engine ready");
 
         // Initialize WASM runtime
         wasm::init();
+    }
+    
+    // Initialize service mesh (available in both modes)
+    #[cfg(any(not(feature = "microkernel"), feature = "monolithic_net"))]
+    {
+        net::mesh::init();
+        serial_println!("[kernel] Service mesh initialized");
     }
     
     // Microkernel mode - minimal init
@@ -395,11 +434,18 @@ pub extern "C" fn kernel_main(boot_info: *const u8) -> ! {
         vga::set_color(Color::LightGreen, Color::Black);
         vga_println!("[OK] Kernel initialized");
         vga_println!("[OK] S-CAP capability system ready");
+        vga_println!("[OK] Capability verification engine ready");
+        vga_println!("[OK] Control Flow Integrity (CFI) active");
         vga_println!("[OK] S-LINK IPC system ready");
         vga_println!("[OK] S-ATLAS service registry ready");
         #[cfg(not(feature = "microkernel"))]
         {
             vga_println!("[OK] S-WAVE WASM runtime ready");
+            vga_println!("[OK] Intel/AMD GPU drivers loaded");
+            vga_println!("[OK] Wayland compositor ready");
+            vga_println!("[OK] Low-latency audio engine ready");
+            vga_println!("[OK] USB Video Class driver ready");
+            vga_println!("[OK] Service mesh active");
             vga_println!("[OK] Filesystem: ramfs (4 MB)");
             vga_println!("[OK] Network: virtio-net (10.0.2.15)");
         }

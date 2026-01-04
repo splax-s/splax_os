@@ -4,7 +4,7 @@
 
 ## Overview
 
-The Splax OS sound subsystem provides a unified audio API supporting multiple audio backends including Intel High Definition Audio (HDA), VirtIO Sound, AC'97, and USB Audio. It enables audio playback and capture with software mixing and volume control.
+The Splax OS sound subsystem provides a unified audio API supporting multiple audio backends including Intel High Definition Audio (HDA), VirtIO Sound, AC'97, USB Audio, and a low-latency audio engine for professional audio applications. It enables audio playback and capture with software mixing, real-time processing, and volume control.
 
 ## Architecture
 
@@ -16,22 +16,58 @@ The Splax OS sound subsystem provides a unified audio API supporting multiple au
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
+│                 Low-Latency Audio Engine                        │
+│               (kernel/src/sound/lowlatency.rs)                  │
+│    Lock-free buffers, audio graph, real-time processing         │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
 │                    AudioDevice Trait                            │
 │                 (kernel/src/sound/mod.rs)                       │
 │         Common interface for all audio drivers                  │
 └─────────────────────────────────────────────────────────────────┘
                               │
-          ┌───────────────────┼───────────────────┐
-          ▼                   ▼                   ▼
-┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
-│       HDA        │ │   VirtIO Sound   │ │      AC'97       │
-│  (Intel HD Audio)│ │  (QEMU/VMs)      │ │  (Legacy audio)  │
-└──────────────────┘ └──────────────────┘ └──────────────────┘
-          │                   │                   │
-          ▼                   ▼                   ▼
+          ┌───────────────────┼───────────────────┬───────────────┐
+          ▼                   ▼                   ▼               ▼
+┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
+│       HDA        │ │   VirtIO Sound   │ │      AC'97       │ │   USB Audio      │
+│  (Intel HD Audio)│ │  (QEMU/VMs)      │ │  (Legacy audio)  │ │  (UAC 1.0/2.0)   │
+└──────────────────┘ └──────────────────┘ └──────────────────┘ └──────────────────┘
+          │                   │                   │                   │
+          ▼                   ▼                   ▼                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Hardware / PCI                               │
+│                    Hardware / PCI / USB                         │
 └─────────────────────────────────────────────────────────────────┘
+```
+
+## Low-Latency Audio Engine
+
+**Location:** `kernel/src/sound/lowlatency.rs`
+
+Real-time audio processing with professional-grade latency:
+
+### Features
+
+- **Lock-Free Ring Buffer**: Zero-copy audio data transfer
+- **Audio Graph**: Node-based processing pipeline
+- **Node Types**:
+  - Gain: Volume adjustment with dB control
+  - Mixer: Multi-channel mixing
+  - Delay: Sample-accurate delay lines
+  - Filter: Biquad filters (low-pass, high-pass, band-pass, notch)
+- **Priority Scheduling**: Real-time thread priority for audio callbacks
+- **Configurable Latency**: Buffer sizes from 64 to 8192 samples
+
+### Configuration
+
+```rust
+pub struct LowLatencyConfig {
+    sample_rate: u32,      // 44100, 48000, 96000 Hz
+    buffer_size: u32,      // 64-8192 samples
+    channels: u32,         // 1-8 channels
+    format: SampleFormat,  // F32, I16, I24, I32
+}
 ```
 
 ---

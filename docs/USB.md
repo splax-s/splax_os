@@ -2,12 +2,12 @@
 
 ## Overview
 
-Splax OS implements a comprehensive USB (Universal Serial Bus) subsystem supporting USB 1.0 through USB 3.x devices. The subsystem provides a layered architecture with host controller drivers, a core USB stack, and device-class drivers.
+Splax OS implements a comprehensive USB (Universal Serial Bus) subsystem supporting USB 1.0 through USB 3.x devices. The subsystem provides a layered architecture with host controller drivers, a core USB stack, and device-class drivers including USB Audio Class (UAC) and USB Video Class (UVC).
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │                     USB Device Drivers                      │
-│         (HID Keyboard, Mass Storage, Hub, Audio)           │
+│    (HID Keyboard, Mass Storage, Hub, Audio UAC, Video UVC) │
 ├─────────────────────────────────────────────────────────────┤
 │                      USB Core Layer                         │
 │      (Device enumeration, descriptor parsing, transfers)    │
@@ -17,6 +17,38 @@ Splax OS implements a comprehensive USB (Universal Serial Bus) subsystem support
 ├─────────────────────────────────────────────────────────────┤
 │                   PCI/MMIO Interface                        │
 └─────────────────────────────────────────────────────────────┘
+```
+
+## USB Video Class (UVC) Driver
+
+**Location:** `kernel/src/usb/uvc.rs`
+
+Full USB Video Class support for webcams and capture devices:
+
+### Features
+
+- **UVC 1.0/1.1/1.5**: Complete descriptor parsing
+- **Video Formats**: YUYV, MJPEG, H.264, NV12
+- **Controls**:
+  - Camera: exposure, focus, zoom, pan/tilt
+  - Processing: brightness, contrast, saturation, sharpness
+- **Streaming**: Isochronous and bulk transfer modes
+- **Multi-resolution**: Dynamic resolution switching
+
+### Usage
+
+```rust
+// Enumerate UVC devices
+let devices = usb::uvc::enumerate_cameras();
+
+// Open a camera
+let camera = usb::uvc::open(device_id)?;
+
+// Start streaming
+camera.start_streaming(|frame| {
+    // Process video frame
+    process_frame(frame.data, frame.width, frame.height);
+})?;
 ```
 
 ---

@@ -4,7 +4,7 @@
 
 ## Overview
 
-The Splax OS GPU subsystem provides framebuffer-based graphics, text console rendering, and basic drawing primitives. It supports UEFI GOP (Graphics Output Protocol) framebuffers and VGA text mode for maximum compatibility.
+The Splax OS GPU subsystem provides framebuffer-based graphics, text console rendering, GPU acceleration (Intel/AMD), and a Wayland-compatible compositor. It supports UEFI GOP (Graphics Output Protocol) framebuffers, native GPU drivers, and VGA text mode for maximum compatibility.
 
 ## Architecture
 
@@ -12,6 +12,13 @@ The Splax OS GPU subsystem provides framebuffer-based graphics, text console ren
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Applications                               │
 │                  (GUI, terminal, games)                         │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   Wayland Compositor                            │
+│                (kernel/src/gpu/wayland.rs)                      │
+│   XDG Shell, SHM buffers, DMA-BUF, input handling               │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -36,11 +43,54 @@ The Splax OS GPU subsystem provides framebuffer-based graphics, text console ren
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
+┌───────────────┬─────────────────────────┬───────────────────────┐
+│  Intel GPU    │      AMD GPU            │    VirtIO GPU         │
+│ (intel.rs)    │     (amd.rs)            │   (virtio.rs)         │
+│  Gen9+, CET   │  RDNA/RDNA2/RDNA3       │   Para-virtualized    │
+└───────────────┴─────────────────────────┴───────────────────────┘
+                              │
+                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Hardware Layer                               │
-│            UEFI GOP / VBE / VGA Text Mode                       │
+│      Intel iGPU / AMD dGPU / UEFI GOP / VBE / VGA Text          │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+## GPU Drivers
+
+### Intel Integrated Graphics (Gen9+)
+
+**Location:** `kernel/src/gpu/intel.rs`
+
+Supports Intel HD Graphics, UHD Graphics, and Iris series:
+
+- **Ring Buffer**: Command submission via ELSP
+- **GTT Management**: Graphics Translation Table for GPU address space
+- **Display Pipes**: Multi-monitor support with HDMI, DP, eDP
+- **Power States**: D0-D3 power management
+
+### AMD GPU (RDNA/RDNA2/RDNA3)
+
+**Location:** `kernel/src/gpu/amd.rs`
+
+Supports Radeon RX 5000/6000/7000 series:
+
+- **SDMA Ring**: System DMA for buffer copies
+- **GART**: Graphics Address Remapping Table
+- **DCN Display**: Display Core Next controller
+- **Multi-monitor**: Up to 4 simultaneous displays
+
+### Wayland Compositor
+
+**Location:** `kernel/src/gpu/wayland.rs`
+
+Full Wayland protocol implementation:
+
+- **XDG Shell**: Desktop window management
+- **SHM Buffers**: CPU-rendered client buffers
+- **DMA-BUF**: Zero-copy GPU buffer sharing
+- **Input Handling**: Keyboard, pointer, touch events
+- **Subsurfaces**: Window composition hierarchy
 
 ---
 

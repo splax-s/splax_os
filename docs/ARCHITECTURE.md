@@ -437,6 +437,67 @@ The bootloader (`boot.S`) identity-maps the first 4GB of physical memory using 2
 
 ## Security Model
 
+### Hardware Security Features
+
+Splax OS leverages modern CPU security features for defense-in-depth:
+
+#### Control Flow Integrity (CFI)
+
+**Location:** `kernel/src/mm/cfi.rs`
+
+Protects against return-oriented programming (ROP) and jump-oriented programming (JOP):
+
+- **Shadow Stack**: Per-CPU shadow stacks track return addresses
+- **Landing Pads**: Indirect calls validated against registered targets
+- **Hardware Support**: Intel CET (Shadow Stack, IBT) and ARM BTI/PAC
+- **Policies**: Permissive (log only), Enforcing (terminate), Strict (extra checks)
+
+```rust
+pub struct CfiManager {
+    shadow_stack: PerCpuShadowStack,
+    landing_pads: LandingPadRegistry,
+    policy: CfiPolicy,
+}
+```
+
+#### Memory Tagging Extension (MTE)
+
+**Location:** `kernel/src/mm/mte.rs`
+
+AArch64-specific hardware memory tagging for spatial memory safety:
+
+- **Tag Coloring**: 4-bit tags on 16-byte granules
+- **Modes**: Synchronous (immediate fault), Asynchronous (deferred), Asymmetric
+- **Kernel/User**: Separate tagging for kernel and userspace allocations
+- **Zero Performance Overhead**: Hardware-accelerated tag checking
+
+```rust
+pub struct MteManager {
+    capabilities: MteCapabilities,
+    mode: MteMode,
+    excluded_tags: u16,
+}
+```
+
+#### Formal Verification
+
+**Location:** `kernel/src/cap/verify.rs`
+
+Mathematical verification of capability system properties:
+
+- **Separation Logic**: Proves resource disjointness
+- **Property Verification**: Non-forgeability, transitivity, revocation soundness
+- **Delegation Chain Verification**: Validates capability derivation
+- **Proof Obligations**: Tracked assertions for auditing
+
+```rust
+pub struct VerifiedCapability<P> {
+    token: CapabilityToken,
+    proof: SeparationProof,
+    _property: PhantomData<P>,
+}
+```
+
 ### Capability Flow
 
 ```

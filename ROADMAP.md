@@ -74,7 +74,7 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 - [x] Network namespaces
 
 ### Distributed Features
-- [ ] Service mesh integration
+- [x] Service mesh integration
 - [x] Capability-based network ACLs
 - [x] Encrypted inter-node communication
 - [x] Distributed capability delegation
@@ -109,22 +109,22 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 ### Graphics
 - [x] Basic framebuffer
 - [x] VirtIO GPU
-- [ ] Intel integrated graphics
-- [ ] AMD GPU support
-- [ ] Wayland-compatible compositor
+- [x] Intel integrated graphics
+- [x] AMD GPU support
+- [x] Wayland-compatible compositor
 
 ### Audio
 - [x] Intel HDA driver
 - [x] AC97 driver
 - [x] Audio mixing
-- [ ] Low-latency audio
+- [x] Low-latency audio
 
 ### USB
 - [x] xHCI (USB 3.0) controller
 - [x] USB HID (keyboard/mouse)
 - [x] USB mass storage
-- [ ] USB audio
-- [ ] USB video
+- [x] USB audio
+- [x] USB video
 
 ### Input
 - [x] PS/2 keyboard
@@ -137,14 +137,14 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 ## Phase 6: Security Hardening (Q3 2025)
 
 ### Capability System
-- [ ] Formal verification of capability model
+- [x] Formal verification of capability model
 - [x] Capability revocation
 - [x] Capability delegation chains
 - [x] Time-limited capabilities
 
 ### Isolation
-- [ ] Memory tagging (aarch64 MTE)
-- [ ] Control flow integrity
+- [x] Memory tagging (aarch64 MTE)
+- [x] Control flow integrity
 - [x] Stack canaries
 - [x] ASLR
 
@@ -248,4 +248,4 @@ We welcome contributions at any phase! See [CONTRIBUTING.md](CONTRIBUTING.md) fo
 
 *This roadmap is a living document and will be updated as priorities evolve.*
 
-*Last updated: December 2025*
+*Last updated: January 2026*
