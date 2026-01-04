@@ -167,10 +167,10 @@ Splax OS is currently in **alpha** stage. The kernel boots, basic drivers work, 
 - [x] Container storage
 
 ### Orchestration
-- [ ] Kubernetes node support
-- [ ] Custom orchestrator (S-CLUSTER)
-- [ ] Service discovery
-- [ ] Load balancing
+- [x] Kubernetes node support
+- [x] Custom orchestrator (S-CLUSTER)
+- [x] Service discovery
+- [x] Load balancing
 
 ### Observability
 - [x] Metrics collection

@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Kubernetes Node Support (S-KUBELET)**: Full Kubernetes node agent with:
+  - CRI shim for container runtime interface
+  - CNI plugin for container networking
+  - Pod lifecycle management with phases
+  - Container state tracking and resource limits
+  - Node info reporting and registration
+  - Volume mounting and port mappings
+- **S-CLUSTER Orchestrator**: Native container orchestration with:
+  - Deployment management with replicas and selectors
+  - Rolling update and recreate strategies
+  - Horizontal Pod Autoscaler (HPA) with CPU/memory metrics
+  - Service definitions with ClusterIP and NodePort types
+  - Node affinity, anti-affinity, and tolerations
+  - Pod templates with init containers
+- **Service Discovery**: DNS-based service discovery with:
+  - Internal DNS server for service resolution
+  - Service registry with endpoints
+  - Health checking with configurable intervals
+  - A, AAAA, SRV, CNAME, TXT record support
+  - Watch callbacks for service changes
+  - Automatic endpoint management
+- **Load Balancing**: Advanced L4/L7 load balancing with:
+  - Multiple algorithms: round-robin, weighted, least connections, consistent hash
+  - Session affinity with client IP, cookie, and header support
+  - Circuit breaker pattern for cascade failure prevention
+  - Zone-aware backend selection
+  - Backend health monitoring and automatic failover
+  - Connection tracking and resource limits
 - **Control Flow Integrity (CFI)**: Hardware-assisted control flow protection with:
   - Shadow stack implementation with per-CPU stacks
   - Landing pad registry for indirect call validation

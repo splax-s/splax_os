@@ -64,6 +64,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use alloc::vec;
 
 use super::jit::{JitConfig, JitCompiler, JitError, CompilationTier};
 use super::jit::memory::ExecutableMemory;

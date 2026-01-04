@@ -51,6 +51,12 @@ pub mod tls;
 pub mod mesh;
 pub mod namespace;
 
+// Cloud-native orchestration
+pub mod k8s;
+pub mod cluster;
+pub mod discovery;
+pub mod loadbalancer;
+
 // Network device drivers
 #[cfg(target_arch = "x86_64")]
 pub mod virtio;

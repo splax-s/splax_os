@@ -597,7 +597,7 @@ mod tests {
     #[test]
     fn test_separation_assertions() {
         // Test that assertions implement the trait correctly
-        let token = CapabilityToken::generate();
+        let token = CapabilityToken::new([1u64; 4]); // Replace with actual constructor or mock
         let owns = Owns::new(ProcessId::new(1), token);
         
         // Would need actual capability table for holds() to return true
