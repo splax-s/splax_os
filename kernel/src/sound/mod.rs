@@ -33,6 +33,7 @@ pub mod hda;
 pub mod usb_audio;
 pub mod virtio_snd;
 pub mod mixer;
+pub mod lowlatency;
 
 // =============================================================================
 // Audio Types

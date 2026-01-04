@@ -25,6 +25,7 @@
 //! ```
 
 pub mod revocation;
+pub mod verify;
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -59,6 +60,11 @@ impl CapabilityToken {
             bytes[i * 8..(i + 1) * 8].copy_from_slice(&v.to_le_bytes());
         }
         bytes
+    }
+
+    /// Returns the raw token value.
+    pub fn value(&self) -> &[u64; 4] {
+        &self.value
     }
 }
 
