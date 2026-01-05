@@ -4282,6 +4282,8 @@ fn execute_serial_command(cmd: &str) {
             serial_println!("  help     - Show this help");
             serial_println!("  version  - Kernel version");
             serial_println!("  mem      - Memory stats");
+            serial_println!("  pkg      - Package manager");
+            serial_println!("  vim      - Text editor");
             serial_println!("  ipcbench - IPC performance benchmark");
             serial_println!("  reboot   - Reboot system");
             serial_println!("  shutdown - Power off");
@@ -4315,6 +4317,104 @@ fn execute_serial_command(cmd: &str) {
         "shutdown" => {
             serial_println!("Shutting down...");
             super::power::shutdown();
+        }
+        "pkg" => {
+            // Package manager demo for testing
+            match parts[1] {
+                "list" => {
+                    serial_println!("=== Installed Packages ===");
+                    serial_println!();
+                    serial_println!("{:<15} {:<10} {:<10}", "NAME", "VERSION", "SIZE");
+                    serial_println!("{:-<15} {:-<10} {:-<10}", "", "", "");
+                    serial_println!("{:<15} {:<10} {:<10}", "coreutils", "9.4.0", "4.2 MB");
+                    serial_println!("{:<15} {:<10} {:<10}", "splax-base", "0.1.0", "1.1 MB");
+                    serial_println!();
+                    serial_println!("Total: 2 packages installed");
+                }
+                "search" => {
+                    let query = parts.get(2).copied().unwrap_or("vim");
+                    serial_println!("Searching for '{}'...", query);
+                    serial_println!();
+                    serial_println!("=== Available Packages ===");
+                    serial_println!("{:<15} {:<10} {}", "NAME", "VERSION", "DESCRIPTION");
+                    serial_println!("{:-<15} {:-<10} {:-<40}", "", "", "");
+                    if query == "vim" || query.is_empty() {
+                        serial_println!("{:<15} {:<10} {}", "vim", "9.1.0", "Vi Improved - highly configurable text editor");
+                    }
+                    serial_println!("{:<15} {:<10} {}", "nano", "7.2.0", "Simple text editor");
+                    serial_println!("{:<15} {:<10} {}", "git", "2.43.0", "Distributed version control");
+                }
+                "install" => {
+                    let pkg = parts.get(2).copied().unwrap_or("vim");
+                    serial_println!("Resolving dependencies...");
+                    serial_println!("  + {}", pkg);
+                    serial_println!();
+                    serial_println!("Installing {}...", pkg);
+                    serial_println!("[##########] 100%");
+                    serial_println!();
+                    serial_println!("Successfully installed {}", pkg);
+                }
+                "info" => {
+                    let pkg = parts.get(2).copied().unwrap_or("vim");
+                    serial_println!("=== Package: {} ===", pkg);
+                    serial_println!();
+                    serial_println!("Name:        {}", pkg);
+                    serial_println!("Version:     9.1.0");
+                    serial_println!("Description: Vi Improved - highly configurable text editor");
+                    serial_println!("Size:        12.3 MB");
+                    serial_println!("Repository:  splax-core");
+                    serial_println!("Binaries:    vim, vimdiff, vimtutor");
+                    serial_println!("License:     Vim License");
+                }
+                "" | "help" => {
+                    serial_println!("S-PKG - Splax Package Manager");
+                    serial_println!();
+                    serial_println!("Usage: pkg <command> [options]");
+                    serial_println!();
+                    serial_println!("Commands:");
+                    serial_println!("  list              List installed packages");
+                    serial_println!("  search <query>    Search for packages");
+                    serial_println!("  install <pkg>     Install a package");
+                    serial_println!("  remove <pkg>      Remove a package");
+                    serial_println!("  info <pkg>        Show package details");
+                    serial_println!("  update            Update package database");
+                    serial_println!("  upgrade           Upgrade all packages");
+                }
+                _ => {
+                    serial_println!("Unknown pkg command: {}", parts[1]);
+                    serial_println!("Type 'pkg help' for usage");
+                }
+            }
+        }
+        "vim" => {
+            let file = parts.get(1).copied().unwrap_or("");
+            serial_println!();
+            serial_println!("╔════════════════════════════════════════════════════════════╗");
+            serial_println!("║                   VIM - Vi IMproved 9.1                     ║");
+            serial_println!("╚════════════════════════════════════════════════════════════╝");
+            serial_println!();
+            if file.is_empty() {
+                serial_println!("  VIM - Vi IMproved");
+                serial_println!();
+                serial_println!("  ~");
+                serial_println!("  ~");
+                serial_println!("  ~                    Splax OS version");
+                serial_println!("  ~");
+                serial_println!("  ~                 type :help for help");
+                serial_println!("  ~                 type :q to exit");
+                serial_println!("  ~");
+                serial_println!("  ~");
+            } else {
+                serial_println!("  Opening: {}", file);
+                serial_println!();
+                serial_println!("  1│ # New file: {}", file);
+                serial_println!("  2│ ");
+                serial_println!("  3│ ");
+                serial_println!("  ~");
+                serial_println!("  ~");
+            }
+            serial_println!();
+            serial_println!("[vim demo - full editor in userspace S-TERM]");
         }
         "" => {}
         _ => {

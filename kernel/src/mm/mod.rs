@@ -29,8 +29,8 @@ use spin::Mutex;
 
 pub use frame::{FrameAllocator, FrameNumber, FRAME_ALLOCATOR, PAGE_SIZE};
 
-/// Kernel heap size: 1 MB (enough for virtio buffers and data structures)
-const KERNEL_HEAP_SIZE: usize = 1024 * 1024;
+/// Kernel heap size: 8 MB (enough for virtio buffers, verification, and data structures)
+const KERNEL_HEAP_SIZE: usize = 8 * 1024 * 1024;
 
 /// Static kernel heap memory region
 /// This is placed in BSS and will be zero-initialized
