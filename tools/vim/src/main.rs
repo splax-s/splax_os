@@ -15,8 +15,8 @@
 //! - Basic syntax highlighting
 //! - Multiple buffers and windows
 
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 extern crate alloc;
 
@@ -1530,9 +1530,11 @@ pub enum EditorAction {
 // Entry Point
 // =============================================================================
 
-/// Stub allocator for tools.
+/// Stub allocator for tools (only used in no_std builds, not tests).
+#[cfg(not(test))]
 struct StubAllocator;
 
+#[cfg(not(test))]
 unsafe impl core::alloc::GlobalAlloc for StubAllocator {
     unsafe fn alloc(&self, _layout: core::alloc::Layout) -> *mut u8 {
         core::ptr::null_mut()
@@ -1540,10 +1542,12 @@ unsafe impl core::alloc::GlobalAlloc for StubAllocator {
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
 }
 
+#[cfg(not(test))]
 #[global_allocator]
 static ALLOCATOR: StubAllocator = StubAllocator;
 
 /// Entry point.
+#[cfg(not(test))]
 #[no_mangle]
 pub extern "C" fn main() -> i32 {
     // Initialize vim

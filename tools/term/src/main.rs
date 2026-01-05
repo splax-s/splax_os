@@ -20,8 +20,8 @@
 //! - `gateway` - Manage S-GATE gateways
 //! - `cap` - Capability management
 
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 extern crate alloc;
 
@@ -1740,8 +1740,10 @@ impl Default for Shell {
 }
 
 /// Stub allocator for tools (would be provided by runtime).
+#[cfg(not(test))]
 struct StubAllocator;
 
+#[cfg(not(test))]
 unsafe impl core::alloc::GlobalAlloc for StubAllocator {
     unsafe fn alloc(&self, _layout: core::alloc::Layout) -> *mut u8 {
         core::ptr::null_mut()
@@ -1749,10 +1751,12 @@ unsafe impl core::alloc::GlobalAlloc for StubAllocator {
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
 }
 
+#[cfg(not(test))]
 #[global_allocator]
 static ALLOCATOR: StubAllocator = StubAllocator;
 
 /// Entry point (placeholder - would be called by runtime).
+#[cfg(not(test))]
 #[no_mangle]
 pub extern "C" fn main() -> i32 {
     // Initialize shell instance
