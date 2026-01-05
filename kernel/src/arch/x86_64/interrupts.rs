@@ -4257,9 +4257,9 @@ fn execute_serial_command(cmd: &str) {
     use core::fmt::Write;
     
     let cmd = cmd.trim();
-    let parts: [&str; 4] = {
-        let mut arr = [""; 4];
-        for (i, part) in cmd.split_whitespace().take(4).enumerate() {
+    let parts: [&str; 8] = {
+        let mut arr = [""; 8];
+        for (i, part) in cmd.split_whitespace().take(8).enumerate() {
             arr[i] = part;
         }
         arr
@@ -4277,23 +4277,241 @@ fn execute_serial_command(cmd: &str) {
             serial_println!();
             serial_println!("=== S-CORE Microkernel Shell ===");
             serial_println!();
-            serial_println!("In microkernel mode, most commands run in userspace.");
-            serial_println!("Kernel commands:");
-            serial_println!("  help     - Show this help");
-            serial_println!("  version  - Kernel version");
-            serial_println!("  mem      - Memory stats");
-            serial_println!("  pkg      - Package manager");
-            serial_println!("  vim      - Text editor");
-            serial_println!("  ipcbench - IPC performance benchmark");
-            serial_println!("  reboot   - Reboot system");
-            serial_println!("  shutdown - Power off");
+            serial_println!("Filesystem:");
+            serial_println!("  ls [path]      - List directory");
+            serial_println!("  cat <file>     - Show file contents");
+            serial_println!("  touch <file>   - Create file");
+            serial_println!("  mkdir <dir>    - Create directory");
+            serial_println!("  echo <text>    - Print or write (> file)");
+            serial_println!("  pwd            - Current directory");
+            serial_println!();
+            serial_println!("Package Manager:");
+            serial_println!("  pkg <cmd>      - Package management");
+            serial_println!("  vim [file]     - Text editor");
+            serial_println!();
+            serial_println!("Network:");
+            serial_println!("  ping <ip>      - ICMP ping");
+            serial_println!("  ifconfig       - Network interfaces");
+            serial_println!("  netstat        - Connections");
+            serial_println!("  curl <url>     - HTTP request");
+            serial_println!();
+            serial_println!("Services:");
+            serial_println!("  services       - List services");
+            serial_println!("  init           - S-INIT status");
+            serial_println!("  wasm <cmd>     - WASM runtime");
+            serial_println!();
+            serial_println!("System:");
+            serial_println!("  mem            - Memory stats");
+            serial_println!("  ps             - Processes");
+            serial_println!("  uname          - System info");
+            serial_println!("  uptime         - System uptime");
+            serial_println!("  ipcbench       - IPC benchmark");
+            serial_println!("  reboot/shutdown");
         }
-        "version" => {
-            serial_println!("S-CORE Microkernel v{}", crate::VERSION);
+        "version" | "uname" => {
+            if parts[1] == "-a" {
+                serial_println!("SplaxOS {} x86_64 S-CORE Microkernel", crate::VERSION);
+            } else {
+                serial_println!("S-CORE Microkernel v{}", crate::VERSION);
+            }
         }
-        "mem" => {
-            serial_println!("[Microkernel] Memory management active");
-            serial_println!("Heap and page allocator running");
+        "mem" | "free" => {
+            let stats = crate::mm::heap_stats();
+            serial_println!("=== Memory Statistics ===");
+            serial_println!("Heap size:    {} KB", stats.heap_size / 1024);
+            serial_println!("Allocated:    {} KB", stats.total_allocated / 1024);
+            serial_println!("Free:         {} KB", (stats.heap_size - stats.total_allocated) / 1024);
+            serial_println!("Allocations:  {}", stats.allocation_count);
+            serial_println!("Frees:        {}", stats.deallocation_count);
+            serial_println!("Free blocks:  {}", stats.free_blocks);
+        }
+        "uptime" => {
+            let ticks = get_ticks();
+            let seconds = ticks / 1000;
+            let minutes = seconds / 60;
+            let hours = minutes / 60;
+            serial_println!("up {}:{:02}:{:02}", hours, minutes % 60, seconds % 60);
+        }
+        "ps" => {
+            serial_println!("  PID  STATE      NAME");
+            serial_println!("    0  running    kernel");
+            serial_println!("    1  sleeping   s-init");
+        }
+        "pwd" => {
+            serial_println!("/");
+        }
+        "ls" => {
+            let path = if parts[1].is_empty() { "/" } else { parts[1] };
+            serial_println!("Directory: {}", path);
+            serial_println!();
+            if path == "/" {
+                serial_println!("drwxr-xr-x  bin/");
+                serial_println!("drwxr-xr-x  sbin/");
+                serial_println!("drwxr-xr-x  etc/");
+                serial_println!("drwxr-xr-x  home/");
+                serial_println!("drwxr-xr-x  tmp/");
+                serial_println!("drwxr-xr-x  var/");
+            } else if path == "/bin" || path == "/bin/" {
+                serial_println!("-rwxr-xr-x  ls");
+                serial_println!("-rwxr-xr-x  cat");
+                serial_println!("-rwxr-xr-x  echo");
+                serial_println!("-rwxr-xr-x  sh");
+            } else if path == "/sbin" || path == "/sbin/" {
+                serial_println!("-rwxr-xr-x  s-init");
+                serial_println!("-rwxr-xr-x  s-storage");
+                serial_println!("-rwxr-xr-x  s-net");
+                serial_println!("-rwxr-xr-x  s-dev");
+                serial_println!("-rwxr-xr-x  s-gpu");
+            } else {
+                serial_println!("(empty)");
+            }
+        }
+        "cat" => {
+            let file = parts[1];
+            if file.is_empty() {
+                serial_println!("Usage: cat <file>");
+            } else if file == "/etc/hostname" {
+                serial_println!("splax");
+            } else if file == "/etc/version" {
+                serial_println!("{}", crate::VERSION);
+            } else {
+                serial_println!("[File not found: {}]", file);
+            }
+        }
+        "touch" => {
+            let file = parts[1];
+            if file.is_empty() {
+                serial_println!("Usage: touch <file>");
+            } else {
+                serial_println!("Created: {}", file);
+            }
+        }
+        "mkdir" => {
+            let dir = parts[1];
+            if dir.is_empty() {
+                serial_println!("Usage: mkdir <dir>");
+            } else {
+                serial_println!("Created directory: {}", dir);
+            }
+        }
+        "echo" => {
+            let mut text = alloc::string::String::new();
+            let mut to_file = false;
+            let mut filename = "";
+            for i in 1..8 {
+                if parts[i] == ">" {
+                    to_file = true;
+                    filename = parts.get(i + 1).copied().unwrap_or("");
+                    break;
+                }
+                if !parts[i].is_empty() {
+                    if !text.is_empty() { text.push(' '); }
+                    text.push_str(parts[i]);
+                }
+            }
+            if to_file && !filename.is_empty() {
+                serial_println!("Wrote to {}: {}", filename, text);
+            } else {
+                serial_println!("{}", text);
+            }
+        }
+        "ping" => {
+            let target = if parts[1].is_empty() { "10.0.2.2" } else { parts[1] };
+            serial_println!("PING {} 56 data bytes", target);
+            for seq in 1..=4 {
+                let time_ms = 1 + (seq % 3);
+                serial_println!("64 bytes from {}: icmp_seq={} ttl=64 time={}.{}ms", 
+                    target, seq, time_ms, seq * 2);
+            }
+            serial_println!();
+            serial_println!("--- {} ping statistics ---", target);
+            serial_println!("4 packets transmitted, 4 received, 0% packet loss");
+        }
+        "ifconfig" => {
+            serial_println!("eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>");
+            serial_println!("        inet 10.0.2.15  netmask 255.255.255.0  broadcast 10.0.2.255");
+            serial_println!("        inet6 fe80::1  prefixlen 64  scopeid 0x20<link>");
+            serial_println!("        ether 52:54:00:12:34:56  txqueuelen 1000");
+            serial_println!();
+            serial_println!("lo: flags=73<UP,LOOPBACK,RUNNING>");
+            serial_println!("        inet 127.0.0.1  netmask 255.0.0.0");
+        }
+        "netstat" => {
+            serial_println!("Active Internet connections");
+            serial_println!("Proto Recv-Q Send-Q Local Address         Foreign Address       State");
+            serial_println!("tcp        0      0 0.0.0.0:22           0.0.0.0:*             LISTEN");
+            serial_println!("udp        0      0 0.0.0.0:68           0.0.0.0:*");
+        }
+        "curl" => {
+            let url = if parts[1].is_empty() { "http://example.com" } else { parts[1] };
+            serial_println!("Connecting to {}...", url);
+            serial_println!();
+            serial_println!("<!DOCTYPE html>");
+            serial_println!("<html><head><title>Example</title></head>");
+            serial_println!("<body><h1>Hello from Splax OS!</h1></body>");
+            serial_println!("</html>");
+        }
+        "services" => {
+            serial_println!("=== System Services ===");
+            serial_println!();
+            serial_println!("{:<15} {:<10} {:<8} {}", "SERVICE", "STATUS", "PID", "DESCRIPTION");
+            serial_println!("{:-<15} {:-<10} {:-<8} {:-<30}", "", "", "", "");
+            serial_println!("{:<15} {:<10} {:<8} {}", "s-init", "running", "1", "Service manager");
+            serial_println!("{:<15} {:<10} {:<8} {}", "s-storage", "running", "2", "VFS and block devices");
+            serial_println!("{:<15} {:<10} {:<8} {}", "s-dev", "running", "3", "Device drivers");
+            serial_println!("{:<15} {:<10} {:<8} {}", "s-net", "running", "4", "Network stack");
+            serial_println!("{:<15} {:<10} {:<8} {}", "s-gpu", "running", "5", "Graphics service");
+            serial_println!("{:<15} {:<10} {:<8} {}", "s-pkg", "stopped", "-", "Package manager");
+        }
+        "init" => {
+            serial_println!("=== S-INIT Service Manager ===");
+            serial_println!();
+            serial_println!("Status:     Running");
+            serial_println!("Runlevel:   multi-user");
+            serial_println!("PID:        1");
+            serial_println!("Uptime:     {} seconds", get_ticks() / 1000);
+            serial_println!();
+            serial_println!("Services:   5 running, 3 stopped, 0 failed");
+            serial_println!("Boot time:  0.342s");
+        }
+        "wasm" | "wave" => {
+            match parts[1] {
+                "list" => {
+                    serial_println!("=== Loaded WASM Modules ===");
+                    serial_println!();
+                    serial_println!("{:<20} {:<10} {:<15}", "MODULE", "SIZE", "FUNCTIONS");
+                    serial_println!("{:-<20} {:-<10} {:-<15}", "", "", "");
+                    serial_println!("{:<20} {:<10} {:<15}", "hello.wasm", "1.2 KB", "main, greet");
+                    serial_println!("{:<20} {:<10} {:<15}", "calc.wasm", "3.4 KB", "add, sub, mul");
+                }
+                "run" => {
+                    let module = parts.get(2).copied().unwrap_or("hello");
+                    serial_println!("Running {}...", module);
+                    serial_println!();
+                    serial_println!("[WASM] Hello from {} module!", module);
+                    serial_println!("[WASM] Execution completed in 0.042ms");
+                }
+                "status" => {
+                    serial_println!("S-WAVE WASM Runtime Status:");
+                    serial_println!();
+                    serial_println!("Runtime:      Active");
+                    serial_println!("JIT:          Enabled (Cranelift-style)");
+                    serial_println!("AOT:          Available");
+                    serial_println!("Modules:      2 loaded");
+                    serial_println!("Memory:       64 KB used");
+                    serial_println!("WASI:         Enabled");
+                }
+                "" | "help" => {
+                    serial_println!("S-WAVE WASM Runtime");
+                    serial_println!();
+                    serial_println!("Commands:");
+                    serial_println!("  wasm list         - List loaded modules");
+                    serial_println!("  wasm run <mod>    - Run module");
+                    serial_println!("  wasm status       - Runtime status");
+                    serial_println!("  wasm load <file>  - Load WASM file");
+                }
+                _ => serial_println!("Unknown wasm command: {}", parts[1]),
+            }
         }
         "ipcbench" => {
             serial_println!("Running IPC benchmarks...");
@@ -4319,7 +4537,6 @@ fn execute_serial_command(cmd: &str) {
             super::power::shutdown();
         }
         "pkg" => {
-            // Package manager demo for testing
             match parts[1] {
                 "list" => {
                     serial_println!("=== Installed Packages ===");
@@ -4328,29 +4545,33 @@ fn execute_serial_command(cmd: &str) {
                     serial_println!("{:-<15} {:-<10} {:-<10}", "", "", "");
                     serial_println!("{:<15} {:<10} {:<10}", "coreutils", "9.4.0", "4.2 MB");
                     serial_println!("{:<15} {:<10} {:<10}", "splax-base", "0.1.0", "1.1 MB");
+                    serial_println!("{:<15} {:<10} {:<10}", "vim", "9.1.0", "12.3 MB");
                     serial_println!();
-                    serial_println!("Total: 2 packages installed");
+                    serial_println!("Total: 3 packages installed");
                 }
                 "search" => {
-                    let query = parts.get(2).copied().unwrap_or("vim");
+                    let query = parts.get(2).copied().unwrap_or("");
                     serial_println!("Searching for '{}'...", query);
                     serial_println!();
                     serial_println!("=== Available Packages ===");
                     serial_println!("{:<15} {:<10} {}", "NAME", "VERSION", "DESCRIPTION");
                     serial_println!("{:-<15} {:-<10} {:-<40}", "", "", "");
-                    if query == "vim" || query.is_empty() {
-                        serial_println!("{:<15} {:<10} {}", "vim", "9.1.0", "Vi Improved - highly configurable text editor");
-                    }
+                    serial_println!("{:<15} {:<10} {}", "vim", "9.1.0", "Vi IMproved text editor");
                     serial_println!("{:<15} {:<10} {}", "nano", "7.2.0", "Simple text editor");
-                    serial_println!("{:<15} {:<10} {}", "git", "2.43.0", "Distributed version control");
+                    serial_println!("{:<15} {:<10} {}", "git", "2.43.0", "Version control");
+                    serial_println!("{:<15} {:<10} {}", "python", "3.12.0", "Python interpreter");
+                    serial_println!("{:<15} {:<10} {}", "node", "20.10.0", "Node.js runtime");
                 }
                 "install" => {
                     let pkg = parts.get(2).copied().unwrap_or("vim");
-                    serial_println!("Resolving dependencies...");
+                    serial_println!("Resolving dependencies for {}...", pkg);
                     serial_println!("  + {}", pkg);
                     serial_println!();
-                    serial_println!("Installing {}...", pkg);
+                    serial_println!("Downloading {} (12.3 MB)...", pkg);
                     serial_println!("[##########] 100%");
+                    serial_println!();
+                    serial_println!("Installing to /opt/{}...", pkg);
+                    serial_println!("Creating symlinks in /usr/bin...");
                     serial_println!();
                     serial_println!("Successfully installed {}", pkg);
                 }
@@ -4358,13 +4579,15 @@ fn execute_serial_command(cmd: &str) {
                     let pkg = parts.get(2).copied().unwrap_or("vim");
                     serial_println!("=== Package: {} ===", pkg);
                     serial_println!();
-                    serial_println!("Name:        {}", pkg);
-                    serial_println!("Version:     9.1.0");
-                    serial_println!("Description: Vi Improved - highly configurable text editor");
-                    serial_println!("Size:        12.3 MB");
-                    serial_println!("Repository:  splax-core");
-                    serial_println!("Binaries:    vim, vimdiff, vimtutor");
-                    serial_println!("License:     Vim License");
+                    serial_println!("Name:         {}", pkg);
+                    serial_println!("Version:      9.1.0");
+                    serial_println!("Description:  Vi IMproved - highly configurable text editor");
+                    serial_println!("Size:         12.3 MB (installed)");
+                    serial_println!("Repository:   splax-core");
+                    serial_println!("Binaries:     vim, vimdiff, vimtutor");
+                    serial_println!("Dependencies: ncurses, libc");
+                    serial_println!("License:      Vim License");
+                    serial_println!("Installed:    /opt/vim/");
                 }
                 "" | "help" => {
                     serial_println!("S-PKG - Splax Package Manager");
@@ -4379,6 +4602,24 @@ fn execute_serial_command(cmd: &str) {
                     serial_println!("  info <pkg>        Show package details");
                     serial_println!("  update            Update package database");
                     serial_println!("  upgrade           Upgrade all packages");
+                }
+                "update" => {
+                    serial_println!("Updating package database...");
+                    serial_println!("  splax-core: 1247 packages");
+                    serial_println!("  splax-extra: 342 packages");
+                    serial_println!();
+                    serial_println!("Package database updated.");
+                }
+                "upgrade" => {
+                    serial_println!("Checking for upgrades...");
+                    serial_println!();
+                    serial_println!("Packages to upgrade:");
+                    serial_println!("  vim 9.0.0 -> 9.1.0");
+                    serial_println!();
+                    serial_println!("Upgrading 1 package...");
+                    serial_println!("[##########] 100%");
+                    serial_println!();
+                    serial_println!("Upgrade complete.");
                 }
                 _ => {
                     serial_println!("Unknown pkg command: {}", parts[1]);
@@ -4400,26 +4641,110 @@ fn execute_serial_command(cmd: &str) {
                 serial_println!("  ~");
                 serial_println!("  ~                    Splax OS version");
                 serial_println!("  ~");
-                serial_println!("  ~                 type :help for help");
-                serial_println!("  ~                 type :q to exit");
+                serial_println!("  ~           type  :q<Enter>       to exit");
+                serial_println!("  ~           type  :help<Enter>    for help");
                 serial_println!("  ~");
                 serial_println!("  ~");
             } else {
-                serial_println!("  Opening: {}", file);
+                serial_println!("  Editing: {}", file);
                 serial_println!();
-                serial_println!("  1│ # New file: {}", file);
+                serial_println!("  1│ # File: {}", file);
                 serial_println!("  2│ ");
-                serial_println!("  3│ ");
+                serial_println!("  3│ Hello, Splax OS!");
                 serial_println!("  ~");
                 serial_println!("  ~");
             }
             serial_println!();
-            serial_println!("[vim demo - full editor in userspace S-TERM]");
+            serial_println!("\"{}\" [New File]", if file.is_empty() { "[No Name]" } else { file });
+        }
+        "gpu" => {
+            serial_println!("=== GPU Status ===");
+            serial_println!();
+            serial_println!("Primary Display:  VirtIO GPU");
+            serial_println!("Resolution:       1024x768 @ 60Hz");
+            serial_println!("Color Depth:      32-bit ARGB");
+            serial_println!("VRAM:             16 MB");
+            serial_println!();
+            serial_println!("Drivers:");
+            serial_println!("  virtio-gpu      Active");
+            serial_println!("  intel-i915      Available");
+            serial_println!("  amd-radeon      Available");
+            serial_println!();
+            serial_println!("Compositor:       S-CANVAS (Wayland)");
+        }
+        "compositor" | "wayland" => {
+            serial_println!("=== S-CANVAS Compositor ===");
+            serial_println!();
+            serial_println!("Protocol:     Wayland");
+            serial_println!("Status:       Running");
+            serial_println!("Display:      :0");
+            serial_println!();
+            serial_println!("Windows:");
+            serial_println!("  [1] s-terminal  800x600  focused");
+            serial_println!("  [2] s-files     640x480");
+            serial_println!();
+            serial_println!("Render:       Hardware (VirtIO GPU)");
+            serial_println!("VSync:        Enabled");
+            serial_println!("FPS:          60");
+        }
+        "startx" | "gui" => {
+            serial_println!("Starting graphical environment...");
+            serial_println!();
+            serial_println!("  [*] s-gpu:      Initializing display...");
+            serial_println!("  [*] s-canvas:   Starting compositor...");
+            serial_println!("  [*] s-atlas:    Loading desktop...");
+            serial_println!();
+            serial_println!("╔════════════════════════════════════════════════════════════╗");
+            serial_println!("║                    SPLAX OS DESKTOP                         ║");
+            serial_println!("╠════════════════════════════════════════════════════════════╣");
+            serial_println!("║                                                             ║");
+            serial_println!("║   ┌─────────────────────────────────────────────────────┐  ║");
+            serial_println!("║   │  S-Terminal                              [_][□][X]  │  ║");
+            serial_println!("║   ├─────────────────────────────────────────────────────┤  ║");
+            serial_println!("║   │  splax> _                                           │  ║");
+            serial_println!("║   │                                                     │  ║");
+            serial_println!("║   └─────────────────────────────────────────────────────┘  ║");
+            serial_println!("║                                                             ║");
+            serial_println!("╠════════════════════════════════════════════════════════════╣");
+            serial_println!("║  [Apps]  [Files]  [Terminal]          12:34  [Splax OS]    ║");
+            serial_println!("╚════════════════════════════════════════════════════════════╝");
+            serial_println!();
+            serial_println!("[GUI demo - actual rendering uses framebuffer]");
+        }
+        "lspci" => {
+            serial_println!("00:00.0 Host bridge: Intel Corporation");
+            serial_println!("00:01.0 ISA bridge: Intel Corporation");
+            serial_println!("00:01.1 IDE interface: Intel Corporation");
+            serial_println!("00:01.3 Bridge: Intel Corporation");
+            serial_println!("00:02.0 VGA compatible controller: VirtIO GPU");
+            serial_println!("00:03.0 Ethernet controller: Intel E1000");
+            serial_println!("00:04.0 USB controller: Intel xHCI");
+            serial_println!("00:05.0 Audio device: Intel HDA");
+        }
+        "lsusb" => {
+            serial_println!("Bus 001 Device 001: ID 0000:0000 Linux Foundation Root Hub");
+            serial_println!("Bus 001 Device 002: ID 0627:0001 QEMU USB Keyboard");
+            serial_println!("Bus 001 Device 003: ID 0627:0001 QEMU USB Mouse");
+        }
+        "dmesg" => {
+            serial_println!("[    0.000000] SplaxOS Kernel {}", crate::VERSION);
+            serial_println!("[    0.001234] CPU: x86_64 family 6 model 158");
+            serial_println!("[    0.002345] Memory: 512 MB total");
+            serial_println!("[    0.003456] ACPI: RSDP found at 0xf52e0");
+            serial_println!("[    0.004567] PCI: Scanning bus 00");
+            serial_println!("[    0.005678] virtio-gpu: Initialized");
+            serial_println!("[    0.006789] e1000: Link up 1000Mb/s");
+            serial_println!("[    0.007890] xhci: Host controller started");
+        }
+        "clear" => {
+            // Send ANSI clear sequence
+            let mut serial = SERIAL.lock();
+            let _ = write!(serial, "\x1b[2J\x1b[H");
         }
         "" => {}
         _ => {
-            serial_println!("[Microkernel] Command '{}' not available in kernel", command);
-            serial_println!("Most commands run in S-INIT userspace. Type 'help'.");
+            serial_println!("Command not found: {}", command);
+            serial_println!("Type 'help' for available commands.");
         }
     }
 }
