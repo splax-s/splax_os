@@ -1,0 +1,13 @@
+[package]
+name = "splax_vim"
+version = "0.1.0"
+edition = "2021"
+description = "Vi IMproved text editor for Splax OS"
+authors = ["Splax OS Contributors"]
+license = "Vim License"
+
+[[bin]]
+name = "vim"
+path = "src/main.rs"
+
+[dependencies]

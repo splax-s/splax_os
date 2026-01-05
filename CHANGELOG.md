@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **S-PKG Package Manager Enhancements**:
+  - Built-in package registry with 35+ packages (vim, git, grep, curl, python, node, etc.)
+  - Package search, install, remove, update, upgrade commands
+  - Package info and dependency tracking
+  - Repository management system
+- **Vim Text Editor**: Full vi-compatible editor implementation:
+  - Modal editing (normal, insert, visual, command-line modes)
+  - Movement commands (h/j/k/l, w/b/e, 0/$, gg/G)
+  - Editing commands (i/a/o/O, x, dd, yy, p/P)
+  - Search and replace (/pattern, :s/old/new/)
+  - Undo/redo support
+  - Visual mode selection
+  - Ex command mode (:w, :q, :wq, :e, :set)
+  - Multiple buffer support
+- **Shell Package Commands**: New `pkg` command for package management
+- **Binary Execution**: `run` command to execute installed package binaries
 - **Comprehensive Unit Test Suite**: Full test framework with:
   - Test macros (assert_eq, assert_ok, assert_err, skip)
   - Test suites for memory, capability, IPC, scheduler, filesystem, network, crypto, process

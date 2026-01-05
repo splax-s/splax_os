@@ -177,6 +177,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "splax_vim"
+version = "0.1.0"
+
+[[package]]
 name = "splax_wave"
 version = "0.1.0"
 dependencies = [

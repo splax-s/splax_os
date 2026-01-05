@@ -19,6 +19,7 @@ members = [
     "runtime/native",
     "tools/term",
     "tools/code",
+    "tools/vim",
 ]
 resolver = "2"
 

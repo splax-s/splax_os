@@ -34,12 +34,16 @@
 
 extern crate alloc;
 
+pub mod registry;
+
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::vec;
 
 use spin::Mutex;
+
+pub use registry::{BuiltinRegistry, RegistryPackage, PackageType};
 
 // =============================================================================
 // Package Errors
